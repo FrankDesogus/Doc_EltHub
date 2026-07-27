@@ -163,7 +163,21 @@ def submit_version_for_approval(version, requested_by, approvers, due_date=None,
         now = timezone.now()
         version.status = DocumentVersion.Status.IN_APPROVAL
         version.submitted_at = now
-        version.save(update_fields=['status', 'submitted_at'])
+        update_fields = ['status', 'submitted_at']
+
+        # Il flag è disattivato proprio ora, al momento dell'invio: questo è il
+        # punto di congelamento del comportamento (vedi documents/pdf_gate.py).
+        # Un'eventuale representation_pdf residua di quando il flag era ancora
+        # attivo va scollegata qui, altrimenti la generazione del PDF
+        # approvato (che si basa sulla sola presenza di representation_pdf_id,
+        # senza rileggere il flag — vedi approvals/services.py) la
+        # rigenererebbe comunque per una revisione inviata a flusso PDF
+        # disattivato, contraddicendo quanto comunicato in UI.
+        if not version.document.requires_approved_pdf and version.representation_pdf_id is not None:
+            version.representation_pdf = None
+            update_fields.append('representation_pdf')
+
+        version.save(update_fields=update_fields)
 
         approval_request = ApprovalRequest.objects.create(
             document_version=version,

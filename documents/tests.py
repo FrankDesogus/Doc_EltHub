@@ -5392,3 +5392,93 @@ class DocumentPDFPolicyHistoricalNonRetroactivityTests(TestCase):
         finally:
             import shutil
             shutil.rmtree(temp_media, ignore_errors=True)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class DocumentPDFPolicyChangedWhileDraftExistsTests(TestCase):
+    """
+    TASK-035 (fix) — cambio della policy PDF mentre esiste una bozza non
+    ancora inviata (non durante l'approvazione, ma prima): il congelamento
+    avviene esattamente al momento dell'invio, non prima e non dopo.
+    """
+
+    @staticmethod
+    def _real_pdf_bytes(text='Contenuto'):
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        buf = io.BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        pdf.drawString(50, 800, text)
+        pdf.showPage()
+        pdf.save()
+        return buf.getvalue()
+
+    def setUp(self):
+        self.author = User.objects.create_user('draftcfg-author', password='pw')
+        self.approver = User.objects.create_user('draftcfg-approver', password='pw')
+
+    def test_disabling_after_representation_pdf_exists_but_before_submission_skips_generation(self):
+        """
+        Riproduce lo scenario: bozza creata con policy attiva (representation_pdf
+        generata), poi la policy viene disattivata PRIMA dell'invio. L'invio deve
+        seguire il flag corrente (disattivato: nessun gate) e l'approvazione
+        finale NON deve generare un PDF approvato, nonostante la
+        representation_pdf residua fosse ancora collegata alla revisione.
+        """
+        import shutil
+        import tempfile
+        from approvals.services import approve_version
+
+        temp_media = tempfile.mkdtemp()
+        try:
+            with self.settings(MEDIA_ROOT=temp_media):
+                document = make_document(code='DRAFTCFG-001', owner=self.author, requires_approved_pdf=True)
+                source = _make_source_document_file(self.author, 'a.pdf', self._real_pdf_bytes(), content_type='application/pdf')
+                version = create_new_revision(document, self.author, 'A', 1, file=source)
+                self.assertIsNotNone(version.representation_pdf_id)  # generata mentre il flag era attivo
+
+                # L'operatore disattiva la policy PRIMA dell'invio.
+                document.requires_approved_pdf = False
+                document.save(update_fields=['requires_approved_pdf'])
+
+                # L'invio segue il flag corrente (disattivato): nessun gate, consentito.
+                req = submit_version_for_approval(version, self.author, [self.approver])
+                version.refresh_from_db()
+                self.assertEqual(version.status, DocumentVersion.Status.IN_APPROVAL)
+                # Coerenza interna: la representation_pdf residua viene scollegata
+                # al momento dell'invio, così il comportamento a valle (generazione
+                # del PDF approvato) resta coerente con "policy disattivata".
+                self.assertIsNone(version.representation_pdf_id)
+
+                approve_version(req, self.approver)
+                version.refresh_from_db()
+                self.assertEqual(version.status, DocumentVersion.Status.APPROVED)
+                self.assertIsNone(
+                    version.approved_pdf,
+                    "Il PDF approvato non deve essere generato: la policy era disattivata al momento dell'invio.",
+                )
+        finally:
+            shutil.rmtree(temp_media, ignore_errors=True)
+
+    def test_enabling_after_draft_created_disabled_blocks_submission_until_pdf_provided(self):
+        """Caso inverso (simmetrico): bozza creata a policy disattivata, poi
+        attivata prima dell'invio — l'invio deve essere bloccato finché non
+        esiste un PDF di rappresentazione valido."""
+        document = make_document(code='DRAFTCFG-002', owner=self.author, requires_approved_pdf=False)
+        import tempfile
+        import shutil
+        temp_media = tempfile.mkdtemp()
+        try:
+            with self.settings(MEDIA_ROOT=temp_media):
+                source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+                version = create_new_revision(document, self.author, 'A', 1, file=source)
+                self.assertIsNone(version.representation_pdf)  # policy disattivata alla creazione
+
+                document.requires_approved_pdf = True
+                document.save(update_fields=['requires_approved_pdf'])
+
+                with self.assertRaises(ValidationError):
+                    submit_version_for_approval(version, self.author, [self.approver])
+        finally:
+            shutil.rmtree(temp_media, ignore_errors=True)
