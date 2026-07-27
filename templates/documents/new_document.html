@@ -119,6 +119,23 @@
     </div>
   </div>
 
+  <!-- Sezione: PDF approvato -->
+  <div class="form-section">
+    <div class="form-section-title">PDF approvato</div>
+    <div class="form-group mb-0">
+      <label class="flex items-center gap-2 cursor-pointer">
+        {{ form.requires_approved_pdf }}
+        <span class="form-label mb-0">{{ form.requires_approved_pdf.label }}</span>
+      </label>
+      {% if form.requires_approved_pdf.help_text %}
+      <p class="form-help">{{ form.requires_approved_pdf.help_text }}</p>
+      {% endif %}
+      {% for error in form.requires_approved_pdf.errors %}
+      <p class="form-error">{{ error }}</p>
+      {% endfor %}
+    </div>
+  </div>
+
   {% include "auditlog/sanatoria_fields.html" %}
 
   <div class="form-actions">

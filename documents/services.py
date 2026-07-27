@@ -102,6 +102,10 @@ def create_new_revision(
         document_version=version,
     )
 
+    if file is not None and document.requires_approved_pdf:
+        from documents.pdf_pipeline import sync_representation_pdf_for_new_source
+        sync_representation_pdf_for_new_source(version)
+
     # Collega l'ECN alla nuova revisione (esecuzione)
     if ecn is not None:
         from django.utils import timezone as tz
@@ -151,6 +155,9 @@ def submit_version_for_approval(version, requested_by, approvers, due_date=None,
         raise ValidationError(
             "Esiste già una richiesta di approvazione pendente per questa revisione."
         )
+
+    from documents.pdf_gate import assert_ready_for_submission
+    assert_ready_for_submission(version)
 
     with transaction.atomic():
         now = timezone.now()
@@ -298,6 +305,10 @@ def update_draft_version(version, user, revision_label, revision_number, change_
             update_fields += ['status', 'submitted_at', 'rejected_at']
 
         version.save(update_fields=update_fields)
+
+        if new_file is not None and version.document.requires_approved_pdf:
+            from documents.pdf_pipeline import sync_representation_pdf_for_new_source
+            sync_representation_pdf_for_new_source(version)
 
         metadata = {}
         if new_file is not None:

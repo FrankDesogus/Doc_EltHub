@@ -82,6 +82,20 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
             'Il normale ciclo di approvazione rimane obbligatorio.'
         ),
     )
+    requires_approved_pdf = forms.BooleanField(
+        required=False,
+        initial=False,
+        label='Richiede copia PDF approvata con registro delle approvazioni',
+        help_text=(
+            'Se attivo: prima di ogni invio in approvazione sarà richiesto un PDF che '
+            'rappresenti il file sorgente (prodotto automaticamente quando possibile, '
+            'altrimenti caricato dall\'autore); al termine dell\'approvazione verrà '
+            'generata una copia PDF con il registro delle approvazioni ed eventuali '
+            'firme visive. Le firme non costituiscono firma digitale. '
+            'Modificabile in seguito dai metadati del documento — vale solo per le '
+            'revisioni non ancora inviate in approvazione.'
+        ),
+    )
     file = forms.FileField(required=False, label='File operativo')
 
     def __init__(self, *args, user=None, fixed_project_folder=None, current_user=None, **kwargs):
@@ -197,10 +211,19 @@ class DocumentMetadataEditForm(forms.ModelForm):
 
     class Meta:
         model = Document
-        fields = ['title', 'description', 'revision_scheme']
+        fields = ['title', 'description', 'revision_scheme', 'requires_approved_pdf']
         labels = {
             'title': 'Titolo',
             'description': 'Descrizione',
+            'requires_approved_pdf': 'Richiede copia PDF approvata con registro delle approvazioni',
+        }
+        help_texts = {
+            'requires_approved_pdf': (
+                'Vale solo per le revisioni non ancora inviate in approvazione: le '
+                'revisioni storiche e i workflow già in corso non cambiano. Se esiste '
+                'già una bozza senza PDF e questa opzione viene attivata, sarà '
+                'necessario fornire un PDF prima di poterla inviare in approvazione.'
+            ),
         }
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),

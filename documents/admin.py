@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import Document, DocumentFile, DocumentVersion
+from .models import (
+    ApprovedPDFArtifact,
+    Document,
+    DocumentFile,
+    DocumentVersion,
+    RepresentationPDF,
+)
 
 
 class DocumentVersionInline(admin.TabularInline):
@@ -54,3 +60,20 @@ class DocumentFileAdmin(admin.ModelAdmin):
     )
     search_fields = ('original_filename', 'sha256_hash')
     readonly_fields = ('uploaded_at',)
+
+
+@admin.register(RepresentationPDF)
+class RepresentationPDFAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'status', 'strategy', 'converter',
+        'requires_confirmation', 'confirmed_by', 'confirmed_at', 'created_at',
+    )
+    list_filter = ('status', 'strategy', 'requires_confirmation')
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(ApprovedPDFArtifact)
+class ApprovedPDFArtifactAdmin(admin.ModelAdmin):
+    list_display = ('id', 'status', 'generated_at', 'created_at')
+    list_filter = ('status',)
+    readonly_fields = ('created_at', 'updated_at')

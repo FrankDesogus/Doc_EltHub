@@ -52,6 +52,9 @@
       {% else %}
       <span class="text-xs text-sky-700 bg-sky-50 px-2 py-0.5 rounded">Modalità revisione: approvazione diretta senza ECN</span>
       {% endif %}
+      {% if document.requires_approved_pdf %}
+      <span class="text-xs text-teal-700 bg-teal-50 px-2 py-0.5 rounded">Richiede copia PDF approvata</span>
+      {% endif %}
     </div>
     {% if document.description %}
     <p class="text-sm text-gray-600 mt-2">{{ document.description }}</p>

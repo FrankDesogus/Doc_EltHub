@@ -63,6 +63,22 @@ class DocumentVersion(models.Model):
         related_name='versions',
         verbose_name='File operativo',
     )
+    representation_pdf = models.ForeignKey(
+        'RepresentationPDF',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='versions',
+        verbose_name='PDF di rappresentazione',
+    )
+    approved_pdf = models.ForeignKey(
+        'ApprovedPDFArtifact',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='versions',
+        verbose_name='PDF approvato',
+    )
     created_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
@@ -139,6 +155,19 @@ class Document(models.Model):
             'prima di creare una nuova revisione.'
         ),
     )
+    requires_approved_pdf = models.BooleanField(
+        default=False,
+        verbose_name='Richiede copia PDF approvata con registro delle approvazioni',
+        help_text=(
+            'Se attivo: prima dell\'invio in approvazione sarà richiesto un PDF che '
+            'rappresenti il file sorgente (generato automaticamente quando possibile, '
+            'altrimenti caricato dall\'autore); al termine dell\'approvazione verrà '
+            'generata una copia PDF con il registro delle approvazioni e le eventuali '
+            'firme visive. Le firme non costituiscono firma digitale. '
+            'Il cambiamento vale solo per le prossime revisioni non ancora inviate in '
+            'approvazione: le revisioni storiche e i workflow già in corso non cambiano.'
+        ),
+    )
     code = models.CharField(max_length=50, unique=True, verbose_name='Codice')
     title = models.CharField(max_length=255, verbose_name='Titolo')
     description = models.TextField(blank=True, verbose_name='Descrizione')
@@ -211,3 +240,118 @@ class Document(models.Model):
 
     def __str__(self):
         return f"{self.code} – {self.title}"
+
+
+class RepresentationPDF(models.Model):
+    """
+    PDF di rappresentazione (TASK-024): il PDF congelato, sottoposto agli
+    approvatori, generato dal file sorgente (automaticamente quando
+    possibile) o caricato manualmente dall'autore. Non è una nuova
+    revisione e non sostituisce il file sorgente.
+    """
+
+    class Status(models.TextChoices):
+        NOT_READY = 'not_ready', 'Non ancora pronto'
+        CONVERTING = 'converting', 'Conversione in corso'
+        READY = 'ready', 'Generato automaticamente'
+        CONFIRMED = 'confirmed', 'Confermato dall\'autore'
+        MANUAL_UPLOAD_REQUIRED = 'manual_upload_required', 'Caricamento manuale richiesto'
+        MANUAL_UPLOADED = 'manual_uploaded', 'Caricato manualmente'
+        CONVERSION_FAILED = 'conversion_failed', 'Conversione fallita'
+        STALE = 'stale', 'Non aggiornato (sorgente modificato)'
+
+    file = models.FileField(
+        upload_to='documents/representation_pdf/%Y/%m/',
+        null=True,
+        blank=True,
+        verbose_name='File PDF',
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.NOT_READY,
+        verbose_name='Stato',
+    )
+    strategy = models.CharField(max_length=30, blank=True, verbose_name='Strategia PDF')
+    converter = models.CharField(max_length=30, blank=True, verbose_name='Convertitore usato')
+    requires_confirmation = models.BooleanField(default=True, verbose_name='Richiede conferma autore')
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='confirmed_representation_pdfs',
+        verbose_name='Confermato da',
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True, verbose_name='Confermato il')
+    source_file_hash_at_generation = models.CharField(
+        max_length=64,
+        blank=True,
+        verbose_name='Hash sorgente al momento della generazione',
+        help_text='sha256 del DocumentFile sorgente al momento della generazione/caricamento: usato per rilevare STALE.',
+    )
+    error_message = models.TextField(blank=True, verbose_name='Messaggio di errore')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_representation_pdfs',
+        verbose_name='Creato da',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'PDF di rappresentazione'
+        verbose_name_plural = 'PDF di rappresentazione'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"PDF di rappresentazione #{self.pk} [{self.get_status_display()}]"
+
+
+class ApprovedPDFArtifact(models.Model):
+    """
+    PDF approvato (TASK-024): artefatto generato dal sistema solo quando una
+    ApprovalRequest raggiunge l'esito APPROVED — unisce il PDF di
+    rappresentazione congelato con il registro visivo delle approvazioni.
+    Non è una nuova revisione, non sostituisce né il sorgente né il PDF di
+    rappresentazione.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'In attesa'
+        GENERATED = 'generated', 'Generato'
+        FAILED = 'failed', 'Fallito'
+
+    file = models.FileField(
+        upload_to='documents/approved_pdf/%Y/%m/',
+        null=True,
+        blank=True,
+        verbose_name='File PDF approvato',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        verbose_name='Stato',
+    )
+    source_representation_pdf_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='ID PDF di rappresentazione di origine',
+        help_text='Usato per idempotenza: rigenerare non crea duplicati se la rappresentazione di origine non è cambiata.',
+    )
+    generated_at = models.DateTimeField(null=True, blank=True, verbose_name='Generato il')
+    error_message = models.TextField(blank=True, verbose_name='Messaggio di errore')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'PDF approvato'
+        verbose_name_plural = 'PDF approvati'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"PDF approvato #{self.pk} [{self.get_status_display()}]"

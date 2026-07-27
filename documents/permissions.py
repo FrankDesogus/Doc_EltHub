@@ -434,3 +434,39 @@ def can_download_version_file(user, version):
         return False
 
     return False
+
+
+def can_download_representation_pdf(user, version):
+    """
+    Chi può vedere la revisione (can_view_version) può scaricare il suo PDF
+    di rappresentazione, se esiste. Stessa visibilità del file sorgente:
+    l'autore in bozza, l'autore e gli approvatori assegnati durante
+    l'approvazione, poi le stesse regole di can_view_version a seguire.
+    """
+    if version.representation_pdf_id is None or not version.representation_pdf.file:
+        return False
+    return can_view_version(user, version)
+
+
+def can_download_approved_pdf(user, version):
+    """
+    Chi può vedere la revisione può scaricare il PDF approvato, se esiste.
+    Stessa visibilità di can_view_version (copre anche SUPERSEDED storiche).
+    """
+    if version.approved_pdf_id is None or not version.approved_pdf.file:
+        return False
+    return can_view_version(user, version)
+
+
+def can_regenerate_approved_pdf(user, version):
+    """
+    Rigenerazione di un artefatto PDF approvato fallito: consentita a
+    superuser, Manager, o al responsabile (owner) del documento.
+    """
+    if not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if _in_group(user, GROUP_MANAGERS):
+        return True
+    return version.document.owner_id == user.pk
