@@ -56,6 +56,18 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-019 | Stub pagina "Archivio" + voce sidebar (collaudo flusso Station) | — | 2026-07-09 |
 | TASK-020 | Tipo Documento come menu a cascata (dipendente da Categoria) + suffisso di riferimento | — | 2026-07-09 |
 | TASK-021 | Archivio: storico completo documenti (permesso view_history) + dettaglio compatto altrove | — | 2026-07-10 |
+| TASK-023 | PDF di rappresentazione: policy di conversione centralizzata (`documents/pdf_strategy.py`) | — | 2026-07-27 |
+| TASK-024 | Modelli `RepresentationPDF` / `ApprovedPDFArtifact` + FK su `DocumentVersion` | — | 2026-07-27 |
+| TASK-025 | Convertitori pure-Python (reportlab/Pillow) + wiring bozza + upload manuale + conferma autore | — | 2026-07-27 |
+| TASK-026 | Gate di invio in approvazione (PDF obbligatorio solo all'invio) + stato in `version_detail` | — | 2026-07-27 |
+| TASK-027 | Download PDF di rappresentazione per approvatori (permessi + `approval_detail.html`) | — | 2026-07-27 |
+| TASK-028 | Firma visiva utente (`accounts.UserSignature`), nessuna URL pubblica | — | 2026-07-27 |
+| TASK-029 | Snapshot storico su `ApprovalDecision` (nome/ordine/firma, immutabile) | — | 2026-07-27 |
+| TASK-030 | Generazione PDF approvato (registro + firme, reportlab+pypdf), idempotente | — | 2026-07-27 |
+| TASK-031 | UI finale PDF approvato primario, permessi, rigenerazione artefatti falliti | — | 2026-07-27 |
+| TASK-033 | `Document.requires_approved_pdf`: l'intero flusso PDF diventa opzionale per documento | — | 2026-07-27 |
+| TASK-034 | Gate dell'intero flusso PDF dietro il flag opzionale (self-freezing senza campo dedicato) | — | 2026-07-27 |
+| TASK-035 | Matrice di test per la policy PDF opzionale (creazione, modifica, storico, workflow in corso) | — | 2026-07-27 |
 
 ---
 
@@ -2333,6 +2345,103 @@ almeno una versione mai APPROVATA. Un documento con sole revisioni
 DRAFT/REJECTED/IN_APPROVAL resta visibile in Archivio solo al suo
 autore o al superuser, mai a Manager/Auditor/Quality Manager — nessuna
 deroga, come richiesto esplicitamente.
+
+---
+
+### TASK-023→035 — PDF di rappresentazione / PDF approvato / firma visiva (opzionale per documento) — Claude Code
+
+#### Obiettivo
+
+Distinguere file sorgente / PDF di rappresentazione (congelato, sottoposto
+agli approvatori) / PDF approvato (generato a fine workflow, con registro
+visivo delle approvazioni ed eventuali firme visive — mai firma digitale).
+A metà implementazione, richiesta di rendere l'intero flusso **opzionale
+per documento** (non obbligatorio per tutti i documenti gestiti dal
+sistema). Decisione tecnica completa (alternative considerate, freeze
+implicito senza campo dedicato, non-retroattività) in
+`C:\Users\riccardo.dibiagio\.claude\plans\logical-swinging-blanket.md`.
+
+#### Modello dati
+
+- `documents.RepresentationPDF` / `documents.ApprovedPDFArtifact` (nuovi),
+  FK nullable `DocumentVersion.representation_pdf` / `.approved_pdf`.
+- `Document.requires_approved_pdf` (BooleanField, default `False`) —
+  interruttore per documento, modificabile in creazione e successivamente
+  dai metadati (a differenza di `requires_ecn_for_revision`, fisso dopo la
+  creazione).
+- `ApprovalDecision`: campi snapshot (`snapshot_approver_display_name`,
+  `snapshot_approver_order`, `snapshot_signature_mode`,
+  `snapshot_signature_image`) popolati al momento della decisione.
+- `accounts.UserSignature` (nuovo modello, app prima vuota): immagine PNG
+  opzionale, nessuna URL pubblica.
+
+#### Policy di conversione (`documents/pdf_strategy.py`)
+
+Solo librerie Python pure (reportlab + Pillow): NATIVE_PDF (sorgente già
+PDF) / AUTO_RELIABLE (testo semplice, immagini) / MANUAL_REQUIRED (Office,
+formati a rischio, estensioni sconosciute). Nessun collegamento a
+LibreOffice/programmi esterni in questa iterazione (decisione confermata
+con l'operatore) — l'architettura resta estendibile per aggiungerlo in
+futuro senza redesign.
+
+#### Flusso opzionale — dove si legge il flag
+
+1. Bozza (`create_new_revision`/`update_draft_version`): la conversione
+   automatica parte solo se `document.requires_approved_pdf` è vero nel
+   momento in cui il file viene assegnato/sostituito.
+2. Invio in approvazione (`documents/pdf_gate.py`): gate saltato
+   interamente se il flag è spento — comportamento identico a prima di
+   questa funzionalità.
+3. Finalizzazione approvazione (`approvals/services.py:approve_version`):
+   **non** rilegge il flag — genera il PDF approvato solo se
+   `version.representation_pdf_id is not None` (fatto già fissato
+   all'invio). Questo è l'unico meccanismo di "congelamento": nessun campo
+   aggiuntivo di snapshot per la policy stessa, perché l'immutabilità della
+   `DocumentVersion` dopo l'invio più la presenza/assenza del FK bastano.
+
+#### File coinvolti (principali)
+
+Nuovi: `documents/pdf_strategy.py`, `documents/pdf_converters.py`,
+`documents/pdf_pipeline.py`, `documents/pdf_gate.py`,
+`documents/pdf_generation.py`, `accounts/models.py`, `accounts/forms.py`,
+`accounts/views.py`, `templates/accounts/signature_settings.html`.
+Modificati: `documents/models.py`, `documents/services.py`,
+`documents/views.py`, `documents/permissions.py`, `documents/forms.py`,
+`approvals/models.py`, `approvals/services.py`, `config/urls.py`,
+`templates/documents/version_detail.html`,
+`templates/documents/new_document.html`,
+`templates/documents/document_detail.html`,
+`templates/approvals/approval_detail.html`, `requirements.txt`
+(`reportlab`, `Pillow`, `pypdf`).
+
+#### Migrazioni
+
+`documents/0007_...` (nuovi modelli + FK), `documents/0008_document_requires_approved_pdf`,
+`approvals/0006_approvaldecision_snapshot_...`, `accounts/0001_initial`.
+Tutte additive/nullable o con default compatibile — nessun backfill,
+nessuna revisione storica toccata.
+
+#### Test
+
+Nuove classi in `documents/tests.py` e `approvals/tests.py`: policy di
+conversione, modelli, convertitori, wiring bozza, upload/conferma manuale,
+gate di invio (incluso il caso esplicito "nessun file → gate non si
+applica, fuori scope"), download rappresentazione/approvato, snapshot
+firma (immutabilità storica), generazione PDF approvato (idempotenza,
+retry dopo fallimento indotto, ANY/ALL/SEQUENTIAL), UI/permessi
+rigenerazione, e l'intera matrice della policy opzionale (creazione,
+modifica metadati + audit, non-retroattività storica, workflow in corso
+con flag cambiato a metà — incluso un bug reale di Django (`ModelForm`
+che popola l'istanza già in `is_valid()`) scoperto e corretto durante lo
+sviluppo dei test). `accounts/tests.py` nuovo (firma visiva).
+
+#### Guardrail rispettati
+
+Nessun blocco all'upload del file sorgente in bozza. Nessuna dipendenza da
+programmi esterni. Nessuna firma digitale dichiarata. Nessuna generazione
+retroattiva per revisioni storiche. Flusso ECN completo/semplice e
+revisione-senza-ECN non toccati (il gate PDF è ortogonale e disattivato di
+default). Nessun merge, nessun push.
 
 ---
 

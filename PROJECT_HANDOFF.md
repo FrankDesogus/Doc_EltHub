@@ -463,13 +463,46 @@ Variabili d'ambiente gestite: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CSRF_TRUS
 `DB_ENGINE` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT`,
 `DOCUMENTALE_DEMO_MODE`, email settings.
 
+## PDF DI RAPPRESENTAZIONE / PDF APPROVATO / FIRMA VISIVA — in branch, non ancora mergiato (2026-07-27)
+
+Branch: `task/documentale-pdf-workflow` (da `main`). TASK-023→035, dettagli
+completi in `docs/ai/TASKS.md`. **Non mergiato su `main` in questa sessione.**
+
+Riepilogo:
+
+- Distingue file sorgente / PDF di rappresentazione (congelato, sottoposto
+  agli approvatori) / PDF approvato (registro visivo + eventuali firme
+  visive, mai firma digitale).
+- **Opzionale per documento**: `Document.requires_approved_pdf`
+  (default `False`) — tutti i documenti esistenti restano invariati finché
+  un utente autorizzato non attiva esplicitamente il flag dai metadati.
+  Modificabile in creazione e in seguito (a differenza di
+  `requires_ecn_for_revision`, che resta fisso dopo la creazione).
+- Policy di conversione centralizzata (`documents/pdf_strategy.py`), solo
+  librerie Python pure (reportlab + Pillow): niente LibreOffice/programmi
+  esterni in questa iterazione (decisione confermata con l'operatore).
+- Firma visiva utente opzionale (`accounts.UserSignature`, PNG, nessuna URL
+  pubblica) — congelata (copia fisica) su `ApprovalDecision` al momento
+  della decisione: non cambia se l'utente modifica poi nome o firma.
+- Nuove dipendenze: `reportlab`, `Pillow` (reintrodotta, prevista già in
+  `docs/ai/DEPENDENCIES_AUDIT.md` per un futuro `ImageField`), `pypdf`
+  (era installata in venv ma non dichiarata in `requirements.txt` — gap
+  pre-esistente, ora corretto).
+- Nessuna modifica al flusso ECN completo/semplice o alla revisione senza
+  ECN: il gate PDF è ortogonale e disattivato di default.
+
+Test aggiunti in `documents/tests.py`, `approvals/tests.py`,
+`accounts/tests.py` (nuovo). Suite completa da rieseguire prima di
+qualunque merge.
+
 ## Prossimo passo
 
 Scegliere tra:
-1. **Deploy effettivo** — eseguire la procedura `DEPLOY.md` sul server aziendale.
-2. **Completare migrazione permessi** — eseguire `backfill_folder_permission_grants` per convertire tutti i `ProjectFolderMembership` legacy in `FolderPermissionGrant` modulari, poi rimuovere il fallback legacy.
-3. **Task backlog** — wizard sanatoria multi-step, admin HistoricalRecord con filtri, export audit trail PDF.
-4. **Avvio rapido demo** — `py manage.py demo_full --reset --no-email` per avere il DB demo completo.
+1. **Review e merge del branch PDF workflow** — `task/documentale-pdf-workflow`, in attesa di autorizzazione esplicita dell'operatore.
+2. **Deploy effettivo** — eseguire la procedura `DEPLOY.md` sul server aziendale.
+3. **Completare migrazione permessi** — eseguire `backfill_folder_permission_grants` per convertire tutti i `ProjectFolderMembership` legacy in `FolderPermissionGrant` modulari, poi rimuovere il fallback legacy.
+4. **Task backlog** — wizard sanatoria multi-step, admin HistoricalRecord con filtri, export audit trail PDF.
+5. **Avvio rapido demo** — `py manage.py demo_full --reset --no-email` per avere il DB demo completo.
 
 Comando sviluppo:
 
