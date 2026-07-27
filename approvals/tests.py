@@ -1,26 +1,30 @@
 import datetime
+import shutil
+import tempfile
 
 from django.contrib.auth.models import User
 from django.core import mail
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from approvals.models import ApprovalRequest
 from approvals.services import approve_version, reject_version
 from documents.models import Document, DocumentVersion
-from documents.services import create_new_revision, submit_version_for_approval
+from documents.services import create_document_file, create_new_revision, submit_version_for_approval
 
 LOCMEM = 'django.core.mail.backends.locmem.EmailBackend'
 
 
-def make_document(code='DOC-001', owner=None):
+def make_document(code='DOC-001', owner=None, requires_approved_pdf=False):
     return Document.objects.create(
         code=code,
         title='Documento di test',
         category=Document.Category.QUALITY,
         owner=owner,
         created_by=owner,
+        requires_approved_pdf=requires_approved_pdf,
     )
 
 
@@ -95,6 +99,230 @@ class ApproveVersionTests(TestCase):
         version = create_new_revision(self.document, self.author, 'D', 4)
         req = submit_version_for_approval(version, self.author, [self.approver])
         self.assertIsNone(req.due_date)
+
+
+class ApprovalDecisionSnapshotTests(TestCase):
+    """TASK-029 — snapshot congelato su ApprovalDecision al momento della decisione."""
+
+    def setUp(self):
+        self.author = User.objects.create_user('snap-author', password='pw')
+        self.approver = User.objects.create_user(
+            'snap-approver', password='pw', first_name='Maria', last_name='Bianchi',
+        )
+        self.document = make_document(code='SNAP-001', owner=self.author)
+
+    def _make_in_approval(self, label='A', number=1, approvers=None, policy='all'):
+        version = create_new_revision(self.document, self.author, label, number, _bypass_ecn_check=True)
+        req = submit_version_for_approval(version, self.author, approvers or [self.approver], approval_policy=policy)
+        return version, req
+
+    def test_snapshot_display_name_and_order_captured_on_approve(self):
+        _, req = self._make_in_approval()
+        approve_version(req, self.approver)
+        decision = req.decisions.get(approver=self.approver)
+        self.assertEqual(decision.snapshot_approver_display_name, 'Maria Bianchi')
+        self.assertEqual(decision.snapshot_approver_order, 1)
+
+    def test_snapshot_text_only_when_no_signature_profile(self):
+        from approvals.models import ApprovalDecision
+        _, req = self._make_in_approval()
+        approve_version(req, self.approver)
+        decision = req.decisions.get(approver=self.approver)
+        self.assertEqual(decision.snapshot_signature_mode, ApprovalDecision.SignatureMode.TEXT_ONLY)
+        self.assertFalse(decision.snapshot_signature_image)
+
+    def test_snapshot_includes_image_when_signature_profile_has_one(self):
+        import io
+        from accounts.models import UserSignature
+        from approvals.models import ApprovalDecision
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new('RGBA', (10, 10), (0, 0, 255, 255)).save(buf, format='PNG')
+        sig = UserSignature.objects.create(user=self.approver)
+        sig.image.save('firma.png', SimpleUploadedFile('firma.png', buf.getvalue()), save=True)
+
+        _, req = self._make_in_approval()
+        approve_version(req, self.approver)
+        decision = req.decisions.get(approver=self.approver)
+        self.assertEqual(decision.snapshot_signature_mode, ApprovalDecision.SignatureMode.TEXT_AND_IMAGE)
+        self.assertTrue(decision.snapshot_signature_image)
+
+    def test_snapshot_unaffected_by_later_profile_change(self):
+        """Se l'utente cambia nome o firma dopo la decisione, lo storico non cambia."""
+        import io
+        from accounts.models import UserSignature
+        from approvals.models import ApprovalDecision
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new('RGBA', (10, 10), (0, 255, 0, 255)).save(buf, format='PNG')
+        sig = UserSignature.objects.create(user=self.approver)
+        sig.image.save('vecchia.png', SimpleUploadedFile('vecchia.png', buf.getvalue()), save=True)
+
+        _, req = self._make_in_approval()
+        approve_version(req, self.approver)
+        decision = req.decisions.get(approver=self.approver)
+        old_display_name = decision.snapshot_approver_display_name
+        old_signature_name = decision.snapshot_signature_image.name
+
+        # L'utente cambia nome e rimuove la firma dopo la decisione.
+        self.approver.first_name = 'Cambiato'
+        self.approver.last_name = 'Dopo'
+        self.approver.save()
+        sig.image.delete(save=False)
+        sig.image = None
+        sig.save(update_fields=['image'])
+
+        decision.refresh_from_db()
+        self.assertEqual(decision.snapshot_approver_display_name, old_display_name)
+        self.assertEqual(decision.snapshot_signature_image.name, old_signature_name)
+        self.assertEqual(decision.snapshot_signature_mode, ApprovalDecision.SignatureMode.TEXT_AND_IMAGE)
+
+    def test_snapshot_order_none_for_unassigned_superuser_override(self):
+        superuser = User.objects.create_superuser('snap-admin', password='pw')
+        _, req = self._make_in_approval()
+        approve_version(req, superuser)
+        decision = req.decisions.get(approver=superuser)
+        self.assertIsNone(decision.snapshot_approver_order)
+
+    def test_snapshot_captured_on_reject_too(self):
+        _, req = self._make_in_approval()
+        reject_version(req, self.approver, rejection_reason='Non conforme')
+        decision = req.decisions.get(approver=self.approver)
+        self.assertEqual(decision.snapshot_approver_display_name, 'Maria Bianchi')
+        self.assertEqual(decision.snapshot_approver_order, 1)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class ApprovedPDFAutoGenerationTests(TestCase):
+    """TASK-030 — generazione automatica del PDF approvato via approve_version/reject_version."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.author = User.objects.create_user('pdfgen-author', password='pw')
+        self.approver1 = User.objects.create_user('pdfgen-approver1', password='pw', first_name='Anna', last_name='Verdi')
+        self.approver2 = User.objects.create_user('pdfgen-approver2', password='pw', first_name='Marco', last_name='Neri')
+        self.document = make_document(code='PDFGEN-001', owner=self.author, requires_approved_pdf=True)
+
+    @staticmethod
+    def _real_pdf_bytes(text='Contenuto di prova'):
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+
+        buf = io.BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        pdf.drawString(50, 800, text)
+        pdf.showPage()
+        pdf.save()
+        return buf.getvalue()
+
+    def _make_pending(self, approvers, policy='all', label='A', number=1):
+        upload = SimpleUploadedFile(f'{label}.pdf', self._real_pdf_bytes(), content_type='application/pdf')
+        source = create_document_file(upload, self.author)
+        version = create_new_revision(self.document, self.author, label, number, file=source, _bypass_ecn_check=True)
+        req = submit_version_for_approval(version, self.author, approvers, approval_policy=policy)
+        return version, req
+
+    def test_approved_pdf_generated_on_final_approval_any_policy(self):
+        from documents.models import ApprovedPDFArtifact
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1, self.approver2], policy='any')
+            approve_version(req, self.approver1)
+        version.refresh_from_db()
+        self.assertIsNotNone(version.approved_pdf)
+        self.assertEqual(version.approved_pdf.status, ApprovedPDFArtifact.Status.GENERATED)
+        self.assertTrue(version.approved_pdf.file)
+
+    def test_approved_pdf_content_includes_minimum_fields_any_policy(self):
+        """Con policy ANY, solo la decisione effettivamente registrata compare nel registro."""
+        from pypdf import PdfReader
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1, self.approver2], policy='any')
+            approve_version(req, self.approver1)
+            version.refresh_from_db()
+            text = "\n".join(page.extract_text() for page in PdfReader(version.approved_pdf.file.path).pages)
+        self.assertIn('APPROVATO', text)
+        self.assertIn(self.document.code, text)
+        self.assertIn(version.revision_label, text)
+        self.assertIn('Anna Verdi', text)
+        self.assertNotIn('Marco Neri', text)  # non ha mai deciso: non deve comparire
+        self.assertIn('firma digitale', text.lower())
+
+    def test_approved_pdf_content_lists_all_approvers_for_all_policy(self):
+        from pypdf import PdfReader
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1, self.approver2], policy='all')
+            approve_version(req, self.approver1)
+            approve_version(req, self.approver2)
+            version.refresh_from_db()
+            text = "\n".join(page.extract_text() for page in PdfReader(version.approved_pdf.file.path).pages)
+        self.assertIn('Anna Verdi', text)
+        self.assertIn('Marco Neri', text)
+
+    def test_approved_pdf_content_respects_sequential_order(self):
+        from pypdf import PdfReader
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1, self.approver2], policy='sequential')
+            approve_version(req, self.approver1)
+            approve_version(req, self.approver2)
+            version.refresh_from_db()
+            decisions = list(req.decisions.filter(decision='APPROVED').order_by('snapshot_approver_order'))
+        self.assertEqual([d.approver_id for d in decisions], [self.approver1.pk, self.approver2.pk])
+
+    def test_no_approved_pdf_generated_on_rejection(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1], policy='all')
+            reject_version(req, self.approver1, rejection_reason='Non conforme')
+        version.refresh_from_db()
+        self.assertIsNone(version.approved_pdf)
+
+    def test_no_approved_pdf_generated_on_partial_approval(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1, self.approver2], policy='all')
+            approve_version(req, self.approver1)
+        version.refresh_from_db()
+        self.assertIsNone(version.approved_pdf)
+
+    def test_regeneration_is_idempotent_no_duplicate_artifact(self):
+        from documents.pdf_generation import generate_approved_pdf
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1], policy='all')
+            approve_version(req, self.approver1)
+            version.refresh_from_db()
+            first_artifact_id = version.approved_pdf_id
+            second_artifact = generate_approved_pdf(version)
+        self.assertEqual(second_artifact.pk, first_artifact_id)
+
+    def test_generation_failure_is_recorded_and_retryable(self):
+        from documents.models import ApprovedPDFArtifact
+        from documents.pdf_generation import generate_approved_pdf
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            version, req = self._make_pending([self.approver1], policy='all')
+            approve_version(req, self.approver1)
+            version.refresh_from_db()
+
+            # Rompe deliberatamente il file di rappresentazione per indurre un fallimento.
+            rep = version.representation_pdf
+            rep.file.delete(save=False)
+            rep.save(update_fields=['file'])
+            version.refresh_from_db()
+
+            artifact = generate_approved_pdf(version, force=True)
+            self.assertEqual(artifact.status, ApprovedPDFArtifact.Status.FAILED)
+            self.assertTrue(artifact.error_message)
 
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
@@ -263,6 +491,57 @@ class ApprovalViewTests(TestCase):
         self.assertRedirects(response, reverse('approval_queue'))
         req.refresh_from_db()
         self.assertEqual(req.status, ApprovalRequest.Status.REJECTED)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class RepresentationPDFApproverViewTests(TestCase):
+    """TASK-027 — l'approvatore vede/scarica il PDF di rappresentazione, distinto dal sorgente."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import tempfile
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from documents.services import create_document_file
+
+        mail.outbox = []
+        self.author = User.objects.create_user('reppdf-author', email='a@t.com', password='pw')
+        self.approver = User.objects.create_user('reppdf-approver', email='ap@t.com', password='pw')
+        self.other = User.objects.create_user('reppdf-other', email='o@t.com', password='pw')
+        self.document = make_document(code='REPPDF-001', owner=self.author, requires_approved_pdf=True)
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            upload = SimpleUploadedFile('sorgente.pdf', b'%PDF-1.4 vero', content_type='application/pdf')
+            source = create_document_file(upload, self.author)
+            self.version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.req = submit_version_for_approval(self.version, self.author, [self.approver])
+
+    def test_approval_detail_shows_representation_pdf_distinct_from_source(self):
+        self.client.login(username='reppdf-approver', password='pw')
+        response = self.client.get(reverse('approval_detail', args=[self.req.pk]))
+        self.assertContains(response, 'PDF di rappresentazione')
+        self.assertContains(response, 'File sorgente')
+
+    def test_assigned_approver_can_download_representation_pdf(self):
+        self.client.login(username='reppdf-approver', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.get(reverse('version_representation_pdf_download', args=[self.version.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+
+    def test_unassigned_user_cannot_download_representation_pdf(self):
+        self.client.login(username='reppdf-other', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.get(reverse('version_representation_pdf_download', args=[self.version.pk]))
+        self.assertEqual(response.status_code, 403)
 
 
 # ---------------------------------------------------------------------------
@@ -700,3 +979,108 @@ class ApprovalAttachmentTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, reverse('approval_attachment_download', args=[att.pk]))
         self.assertContains(response, 'modello.pdf')
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class PDFPolicyInFlightWorkflowTests(TestCase):
+    """
+    TASK-035 — workflow in corso: cambiare Document.requires_approved_pdf
+    mentre una richiesta è già in approvazione non deve cambiare le regole
+    applicate a quella specifica richiesta (self-freezing via
+    representation_pdf_id, non tramite rilettura del flag al momento
+    dell'approvazione — vedi approvals/services.py).
+    """
+
+    @staticmethod
+    def _real_pdf_bytes(text='Contenuto'):
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        buf = io.BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        pdf.drawString(50, 800, text)
+        pdf.showPage()
+        pdf.save()
+        return buf.getvalue()
+
+    def setUp(self):
+        self.author = User.objects.create_user('inflight-author', password='pw')
+        self.approver1 = User.objects.create_user('inflight-approver1', password='pw')
+        self.approver2 = User.objects.create_user('inflight-approver2', password='pw')
+
+    def test_flag_disabled_mid_approval_does_not_stop_generation_started_when_enabled(self):
+        import shutil
+        import tempfile
+        temp_media = tempfile.mkdtemp()
+        try:
+            with self.settings(MEDIA_ROOT=temp_media):
+                document = make_document(code='INFLIGHT-001', owner=self.author, requires_approved_pdf=True)
+                upload = SimpleUploadedFile('a.pdf', self._real_pdf_bytes(), content_type='application/pdf')
+                source = create_document_file(upload, self.author)
+                version = create_new_revision(document, self.author, 'A', 1, file=source)
+                req = submit_version_for_approval(version, self.author, [self.approver1], approval_policy='all')
+
+                # La policy viene disattivata mentre la richiesta è già IN_APPROVAL.
+                document.requires_approved_pdf = False
+                document.save(update_fields=['requires_approved_pdf'])
+
+                approve_version(req, self.approver1)
+                version.refresh_from_db()
+        finally:
+            shutil.rmtree(temp_media, ignore_errors=True)
+
+        self.assertIsNotNone(version.approved_pdf)
+        self.assertEqual(version.approved_pdf.status, 'generated')
+
+    def test_flag_enabled_mid_approval_does_not_trigger_generation_for_request_started_without_it(self):
+        document = make_document(code='INFLIGHT-002', owner=self.author, requires_approved_pdf=False)
+        version = create_new_revision(document, self.author, 'A', 1)
+        req = submit_version_for_approval(version, self.author, [self.approver1], approval_policy='all')
+
+        # La policy viene attivata mentre la richiesta è già IN_APPROVAL, senza
+        # alcun PDF di rappresentazione collegato a questa specifica revisione.
+        document.requires_approved_pdf = True
+        document.save(update_fields=['requires_approved_pdf'])
+
+        approve_version(req, self.approver1)
+        version.refresh_from_db()
+        self.assertIsNone(version.approved_pdf)
+
+    def test_flag_toggle_mid_approval_consistent_after_rejection(self):
+        document = make_document(code='INFLIGHT-003', owner=self.author, requires_approved_pdf=True)
+        version = create_new_revision(document, self.author, 'A', 1, _bypass_ecn_check=True)
+        # Nessun file sorgente: il gate non si applica (fuori scope), invio consentito.
+        req = submit_version_for_approval(version, self.author, [self.approver1])
+
+        document.requires_approved_pdf = False
+        document.save(update_fields=['requires_approved_pdf'])
+
+        reject_version(req, self.approver1, rejection_reason='Non conforme')
+        version.refresh_from_db()
+        self.assertIsNone(version.approved_pdf)
+        self.assertEqual(version.status, DocumentVersion.Status.REJECTED)
+
+    def test_self_freezing_holds_for_any_policy(self):
+        import shutil
+        import tempfile
+        temp_media = tempfile.mkdtemp()
+        try:
+            with self.settings(MEDIA_ROOT=temp_media):
+                document = make_document(code='INFLIGHT-004', owner=self.author, requires_approved_pdf=True)
+                upload = SimpleUploadedFile('a.pdf', self._real_pdf_bytes(), content_type='application/pdf')
+                source = create_document_file(upload, self.author)
+                version = create_new_revision(document, self.author, 'A', 1, file=source)
+                req = submit_version_for_approval(
+                    version, self.author, [self.approver1, self.approver2], approval_policy='any',
+                )
+
+                document.requires_approved_pdf = False
+                document.save(update_fields=['requires_approved_pdf'])
+
+                approve_version(req, self.approver1)
+                version.refresh_from_db()
+        finally:
+            shutil.rmtree(temp_media, ignore_errors=True)
+
+        self.assertIsNotNone(version.approved_pdf)
+        self.assertEqual(version.approved_pdf.status, 'generated')

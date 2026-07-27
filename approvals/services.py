@@ -1,9 +1,47 @@
+import os
+
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 
 from approvals.models import ApprovalDecision, ApprovalRequest, ApprovalRequestApprover
 from auditlog.services import create_audit_log
+
+
+def _build_decision_snapshot(decision, user, approval_request):
+    """
+    Congela nome, ordine di fase e firma visiva dell'utente al momento
+    della decisione (TASK-029): un cambio successivo di nome/ruolo/firma
+    non deve alterare lo storico già registrato.
+    """
+    from accounts.models import UserSignature
+
+    decision.snapshot_approver_display_name = user.get_full_name() or user.username
+
+    slot = approval_request.approvers.filter(approver=user).first()
+    decision.snapshot_approver_order = slot.order if slot else None
+
+    try:
+        profile = user.signature_profile
+    except UserSignature.DoesNotExist:
+        profile = None
+
+    if profile is not None and profile.image:
+        decision.snapshot_signature_mode = ApprovalDecision.SignatureMode.TEXT_AND_IMAGE
+        with profile.image.open('rb') as fh:
+            decision.snapshot_signature_image.save(
+                os.path.basename(profile.image.name), ContentFile(fh.read()), save=False,
+            )
+    else:
+        decision.snapshot_signature_mode = ApprovalDecision.SignatureMode.TEXT_ONLY
+
+    decision.save(update_fields=[
+        'snapshot_approver_display_name',
+        'snapshot_approver_order',
+        'snapshot_signature_mode',
+        'snapshot_signature_image',
+    ])
 
 
 def create_approval_request_attachment(approval_request, uploaded_file, uploaded_by, attachment_type='signature_template'):
@@ -93,12 +131,13 @@ def approve_version(approval_request, approved_by, comment="", send_notification
     with transaction.atomic():
         now = timezone.now()
 
-        ApprovalDecision.objects.create(
+        decision = ApprovalDecision.objects.create(
             approval_request=approval_request,
             approver=approved_by,
             decision=ApprovalDecision.Decision.APPROVED,
             notes=comment,
         )
+        _build_decision_snapshot(decision, approved_by, approval_request)
 
         # Aggiorna stato per-approvatore (solo se è assegnato)
         if is_assigned:
@@ -122,6 +161,24 @@ def approve_version(approval_request, approved_by, comment="", send_notification
                 document=version.document,
                 document_version=version,
             )
+
+    # Generazione del PDF approvato: solo se questa specifica revisione è
+    # effettivamente passata dal gate PDF all'invio (version.representation_pdf
+    # esiste solo in quel caso — TASK-033). Non si rilegge qui il flag
+    # corrente del documento: la richiesta si conclude secondo le regole che
+    # gli approvatori hanno effettivamente seguito, non secondo un'eventuale
+    # policy cambiata nel frattempo. Se il flusso PDF non era richiesto,
+    # nessun tentativo viene fatto: nessun artefatto, nessun errore.
+    if is_final and version.representation_pdf_id is not None:
+        # Fuori dalla transazione che ha già finalizzato l'approvazione: un
+        # errore qui non deve annullare un'approvazione già registrata
+        # correttamente — resta solo un ApprovedPDFArtifact in stato FAILED,
+        # rigenerabile.
+        from documents.pdf_generation import generate_approved_pdf
+        try:
+            generate_approved_pdf(version, actor=approved_by)
+        except Exception:
+            pass
 
     if not send_notifications:
         return approval_request
@@ -252,12 +309,13 @@ def reject_version(approval_request, rejected_by, rejection_reason, comment="", 
     with transaction.atomic():
         now = timezone.now()
 
-        ApprovalDecision.objects.create(
+        decision = ApprovalDecision.objects.create(
             approval_request=approval_request,
             approver=rejected_by,
             decision=ApprovalDecision.Decision.REJECTED,
             notes=comment,
         )
+        _build_decision_snapshot(decision, rejected_by, approval_request)
 
         if is_assigned:
             ApprovalRequestApprover.objects.filter(

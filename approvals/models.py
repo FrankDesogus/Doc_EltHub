@@ -140,6 +140,10 @@ class ApprovalDecision(models.Model):
         APPROVED = 'APPROVED', 'Approvato'
         REJECTED = 'REJECTED', 'Rifiutato'
 
+    class SignatureMode(models.TextChoices):
+        TEXT_ONLY = 'text_only', 'Solo testo'
+        TEXT_AND_IMAGE = 'text_and_image', 'Testo e immagine'
+
     approval_request = models.ForeignKey(
         ApprovalRequest,
         on_delete=models.CASCADE,
@@ -155,6 +159,31 @@ class ApprovalDecision(models.Model):
     decision = models.CharField(max_length=20, choices=Decision.choices, verbose_name='Decisione')
     decided_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True, verbose_name='Note')
+
+    # ------------------------------------------------------------------
+    # Snapshot (TASK-029): dati congelati al momento della decisione, così
+    # che un cambio successivo di nome/ruolo/firma dell'utente non alteri
+    # lo storico già registrato. Usati per costruire il registro di
+    # approvazione del PDF approvato (TASK-030).
+    # ------------------------------------------------------------------
+    snapshot_approver_display_name = models.CharField(
+        max_length=200, blank=True, default='', verbose_name='Nome approvatore (storico)',
+    )
+    snapshot_approver_order = models.PositiveSmallIntegerField(
+        null=True, blank=True, verbose_name='Ordine fase (storico)',
+    )
+    snapshot_signature_mode = models.CharField(
+        max_length=20,
+        choices=SignatureMode.choices,
+        default=SignatureMode.TEXT_ONLY,
+        verbose_name='Modalità firma (storico)',
+    )
+    snapshot_signature_image = models.ImageField(
+        upload_to='approval_signature_snapshots/%Y/%m/',
+        null=True,
+        blank=True,
+        verbose_name='Immagine firma (storico)',
+    )
 
     class Meta:
         verbose_name = 'Decisione di approvazione'

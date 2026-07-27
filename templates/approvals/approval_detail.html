@@ -51,11 +51,18 @@
     {% if version.change_summary %}
     <dt>Sommario</dt>     <dd>{{ version.change_summary }}</dd>
     {% endif %}
+    {% if version.representation_pdf.file %}
+    <dt>PDF di rappresentazione</dt>
+    <dd class="flex items-center gap-2">
+      <span>PDF sottoposto al workflow di approvazione</span>
+      <a href="{% url 'version_representation_pdf_download' version.pk %}" class="btn-primary btn-sm">Scarica PDF</a>
+    </dd>
+    {% endif %}
     {% if version.file %}
-    <dt>File operativo</dt>
+    <dt>File sorgente</dt>
     <dd class="flex items-center gap-2">
       <span>{{ version.file.original_filename }}</span>
-      <a href="{% url 'version_download' version.pk %}" class="btn-secondary btn-sm">Scarica</a>
+      <a href="{% url 'version_download' version.pk %}" class="btn-secondary btn-sm">Scarica sorgente</a>
     </dd>
     {% endif %}
     {% with attachments=approval_request.attachments.all %}
