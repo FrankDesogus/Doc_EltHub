@@ -151,6 +151,7 @@
     <!-- Footer utente -->
     <div class="px-4 py-3 border-t border-white/10 text-xs text-slate-400 bg-black/10">
       <div class="font-medium text-white truncate">{{ user.get_full_name|default:user.username }}</div>
+      <a href="{% url 'signature_settings' %}" class="mt-1 block text-elt-cyan-300 hover:text-white transition-colors">✍️ Firma visiva</a>
       <form method="post" action="{% url 'logout' %}" class="inline m-0">
         {% csrf_token %}
         <button type="submit" class="mt-1 text-elt-cyan-300 hover:text-white transition-colors bg-transparent border-0 cursor-pointer p-0 text-xs">Esci →</button>

@@ -98,6 +98,16 @@ class SignatureSettingsViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(UserSignature.objects.filter(user=self.user).exists())
 
+    def test_navigation_link_visible_to_authenticated_user(self):
+        """
+        Regressione: modello/URL/vista/template esistevano ma nessun
+        template conteneva un link verso signature_settings, rendendo la
+        pagina irraggiungibile senza conoscerne l'URL esatto.
+        """
+        self.client.login(username='sigview-1', password='pw')
+        response = self.client.get(reverse('dashboard'))
+        self.assertContains(response, reverse('signature_settings'))
+
     def test_upload_valid_signature(self):
         self.client.login(username='sigview-1', password='pw')
         upload = SimpleUploadedFile('firma.png', _make_png_bytes(), content_type='image/png')
