@@ -113,9 +113,11 @@ credenziali sopra. **Mai avviare su `0.0.0.0` o esporre in rete.**
    (draft, in istruttoria CCB, in revisione, approvata, rifiutata,
    chiusa). Aprire `DEMO-ECN-EXEC` per mostrare l'ECN che ha originato
    una revisione (link visibile in `version_detail`).
-7. **Revisione senza ECN**: aprire `DEMO-NOSCOPE-001` — mostra il
-   badge "approvazione diretta senza ECN" e le 2 revisioni approvate
-   senza passare da un'ECN.
+7. **ECN semplice (TASK-022)**: aprire `DEMO-ECN-SIMPLE-001` — la
+   Rev. 01 è stata creata tramite un ECN semplice autoapprovato
+   (`ECN-S-<anno>-0001`, visibile nella card "Ultimo ECN / Variante" e
+   nello storico completo in Archivio), senza istruttoria né CCB. Vedi
+   `docs/ai/SIMPLE_ECN_FLOW.md` per il dettaglio del flusso.
 8. **Audit/storico**: dal dettaglio di un documento o versione, sezione
    "Storico eventi" — mostra le voci di audit trail generate da ogni
    azione.
@@ -166,13 +168,19 @@ revisione per `PRJ-DEMO-001`, visibile in "Storico progetto" —
 
 ---
 
-## 9. Revisione senza ECN — chiarimento
+## 9. ECN semplice vs "revisione senza ECN" (legacy) — chiarimento
 
-Il gate ECN è controllato per singolo documento dal campo
-`requires_ecn_for_revision` (default `True`). Se `False` (come per
-`DEMO-NOSCOPE-001`), le nuove revisioni si creano direttamente, senza
-passare da un'ECN approvata — il ciclo di approvazione normale
-(draft → in approvazione → approvato) resta comunque obbligatorio.
+Dopo TASK-022, ogni nuovo documento richiede sempre un ECN per le
+revisioni successive alla prima approvazione (`requires_ecn_for_revision`
+default `True`, non più derogabile da UI). Per i casi a basso impatto
+esiste l'**ECN semplice** (`ecn:ecn_create_simple`): autoapprovato,
+nessuna CCB, stesso audit trail di un ECN standard — vedi
+`docs/ai/SIMPLE_ECN_FLOW.md` per il dettaglio completo.
+
+La vecchia modalità "revisione senza ECN" (`requires_ecn_for_revision=False`)
+resta supportata solo per **compatibilità con documenti già esistenti**
+con quel flag, non è più proposta come percorso nella creazione di un
+nuovo documento.
 
 ---
 

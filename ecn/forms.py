@@ -46,6 +46,23 @@ class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
     )
 
 
+class SimpleEcnForm(forms.Form):
+    """Form minimo per l'ECN a flusso semplice (TASK-022): pochi campi
+    essenziali, nessuna configurazione CCB (autoapprovato alla creazione)."""
+
+    title = forms.CharField(
+        max_length=255,
+        label='Titolo',
+        help_text='Titolo breve della revisione rapida.',
+    )
+    description = forms.CharField(
+        widget=forms.Textarea(attrs={'rows': 3}),
+        required=False,
+        label='Motivo / descrizione',
+        help_text='Breve descrizione del motivo della modifica (opzionale).',
+    )
+
+
 def _ccb_candidate_queryset(current_user=None):
     """
     Restituisce il queryset degli utenti selezionabili come componenti CCB.

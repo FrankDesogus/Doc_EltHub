@@ -1441,3 +1441,94 @@ System check identified no issues (0 silenced).
    sezione "Storico eventi" separata, non toccata in questo task).
 3. Suffisso del tipo nel codice documento (rimandato da TASK-020):
    ancora da valutare.
+
+---
+
+### Run — 2026-07-10 — TASK-022 Flusso ECN semplice per revisioni rapide
+
+**Agente:** Claude Code (implementazione diretta, non via Cursor Agent)
+**Task:** TASK-022 — Flusso ECN semplice per revisioni rapide
+(sostituisce "revisione senza ECN" come percorso demo principale)
+**Branch:** task/documentale-simple-ecn-flow (creato da `main` dopo
+fast-forward delle 4 branch precedenti: station-windows-portability,
+documentale-workcopy-archivio-stub, documentale-workcopy-tipo-documento,
+documentale-workcopy-archivio-storico — tutte confermate pulite,
+lineari, senza conflitti, con suite completa verde prima del merge).
+
+**Operazioni eseguite:**
+
+1. **FASE 0**: verificato stato git, ricostruita la pila lineare delle
+   4 branch precedenti non ancora su `main`. Trovate 3 regressioni
+   Station pre-esistenti (0% overlap coi task pendenti, confermato via
+   `git diff --stat`): `python3` non su PATH Windows
+   (`ai-cycle-dogfood/scripts/test.sh`,
+   `log-analyzer/scripts/test.sh`) e backslash Windows che rompeva un
+   test su path (`cursor-prompt-builder/prompt_builder.py`). Corrette
+   su richiesta esplicita dell'operatore (fermato e chiesto conferma
+   prima di procedere, come previsto da FASE 0.4). Suite completa
+   `documentale-workcopy` verde prima del merge → fast-forward di
+   `main` alle 4 branch, poi creato `task/documentale-simple-ecn-flow`.
+2. **FASE 2**: audit riga-per-riga del flusso ECN/CCB esistente
+   (`ecn/services.py`, `documents/services.py`,
+   `documents/models.py`), documentato in dettaglio in `TASKS.md`.
+   Individuato il punto chiave: il gate di `create_new_revision` è
+   agnostico rispetto a *come* un ECN sia diventato `APPROVED` — questo
+   ha reso possibile un'implementazione interamente additiva.
+3. **FASE 3-4**: aggiunto `ChangeNotice.flow_type`
+   (`STANDARD`/`SIMPLE`) + migrazione; `create_simple_ecn` +
+   `_generate_simple_ecn_code` (`ECN-S-<anno>-NNNN`); vista
+   `ecn_create_simple` (riusa `can_create_ecn`, nessun permesso nuovo);
+   `document_detail.html` con due pulsanti distinti (ECN semplice /
+   ECN standard); `new_revision.html` con badge tipo ECN nella tabella.
+4. **FASE 5**: `requires_ecn_for_revision`/`ecn_exemption` lasciati nel
+   modello/form per compatibilità dati; rimossa solo la checkbox dalla
+   UI di creazione documento.
+5. **FASE 6**: scenario `demo_full.py` convertito da bypass a esercizio
+   reale di `create_simple_ecn` (`DEMO-ECN-SIMPLE-001`); verificato con
+   run reale (`--reset --no-email --settings=config.demo_settings`).
+6. **FASE 7**: 14 nuovi test in `ecn/tests.py`, 3 in `documents/tests.py`
+   (incl. verifica esplicita che il percorso legacy resti invariato per
+   i documenti esistenti).
+7. **FASE 8**: creato `docs/ai/SIMPLE_ECN_FLOW.md`; aggiornato
+   `docs/ai/DEMO_OPERATOR_GUIDE.md` (punto 7 + sezione 9).
+8. **FASE 9**: suite mirata e suite completa eseguite (vedi sotto),
+   `pip check`, regressioni Station rieseguite, verificati
+   `.test-media/`/`media/`/`.demo/`/`.demo-media/`, nessun server
+   residuo.
+
+**Esito test:**
+
+```
+manage.py test documents ecn --keepdb --failfast: Ran 718 tests — OK
+scripts/test.sh (tutte le app): Ran 1261 tests in 4585.449s — OK
+manage.py check: nessun problema (0 silenced)
+pip check: nessuna dipendenza rotta
+Regressioni Station (cursor-prompt-builder, log-analyzer,
+ai-cycle-dogfood): tutte verdi
+```
+
+**Problemi riscontrati:**
+
+- 3 regressioni Station pre-esistenti (non causate da questo task),
+  vedi FASE 0 sopra — corrette su richiesta esplicita dell'operatore.
+- 1 fix durante la scrittura dei test: `test_post_creates_approved_ecn_and_redirects`
+  falliva perché `assertRedirects` segue il redirect e richiede che
+  l'utente possa anche **vedere** il documento (`can_view_document`),
+  non solo crearne l'ECN (`can_create_ecn` basta l'appartenenza globale
+  al gruppo Authors) — risolto aggiungendo l'appartenenza alla cartella
+  nel `setUp()` del test.
+- Suite completa ha richiesto ~76 minuti (1261 test, incl. 63 minuti
+  solo per la parte `documents ecn`); nessun timeout, nessun processo
+  bloccato.
+
+**Prossimo passo per l'operatore umano:**
+
+1. Review Claude Code + commit gated (`commit-if-approved.sh`) — solo
+   locale, nessun push, nessun merge di questa branch su `main` senza
+   conferma esplicita.
+2. Valutare il backlog residuo (vedi `docs/ai/SIMPLE_ECN_FLOW.md`):
+   rimozione definitiva di `requires_ecn_for_revision`/`ecn_exemption`,
+   badge "Tipo" in `ecn_list.html`/`ecn_detail.html`, permessi dedicati
+   per ECN semplice.
+3. Merge finale di `task/documentale-simple-ecn-flow` su `main`: **non
+   eseguito**, in attesa di conferma esplicita dell'operatore.

@@ -297,6 +297,62 @@ def ecn_create(request):
     })
 
 
+@login_required
+def ecn_create_simple(request):
+    """
+    Crea ed autoapprova immediatamente un ECN a flusso semplice (TASK-022):
+    nessuna CCB, pochi campi essenziali. Stesso permesso di ecn_create
+    (can_create_ecn): nessun permesso nuovo introdotto.
+
+    Richiede il parametro GET/POST ?document=<id>, come ecn_create.
+    """
+    from documents.models import Document
+    from ecn.forms import SimpleEcnForm
+
+    document_id = request.GET.get('document') or request.POST.get('document')
+    if not document_id:
+        raise Http404
+
+    try:
+        document_id = int(document_id)
+    except (ValueError, TypeError):
+        raise Http404
+
+    document = get_object_or_404(Document, pk=document_id)
+
+    if not can_create_ecn(request.user, document):
+        raise PermissionDenied
+
+    if request.method == 'POST':
+        form = SimpleEcnForm(request.POST)
+        if form.is_valid():
+            d = form.cleaned_data
+            try:
+                from ecn.services import create_simple_ecn
+                ecn = create_simple_ecn(
+                    document=document,
+                    proposed_by=request.user,
+                    title=d['title'],
+                    description=d.get('description', ''),
+                )
+                messages.success(
+                    request,
+                    f'ECN semplice {ecn.code} creato e autoapprovato. '
+                    f'Ora puoi creare la revisione collegata.',
+                )
+                return redirect('document_detail', document_id=document.pk)
+            except ValidationError as exc:
+                for msg in exc.messages:
+                    messages.error(request, msg)
+    else:
+        form = SimpleEcnForm()
+
+    return render(request, 'ecn/ecn_create_simple.html', {
+        'form': form,
+        'document': document,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Configura CCB: seleziona approvatori e policy (solo Manager / staff)
 # ---------------------------------------------------------------------------

@@ -3442,3 +3442,201 @@ class ECNCoordinatorViewTests(TestCase):
         """Il coordinatore non può chiudere l'ECN."""
         from ecn.permissions import can_close_ecn
         self.assertFalse(can_close_ecn(self.coordinator, self.ecn))
+
+
+# ---------------------------------------------------------------------------
+# TASK-022 — Flusso ECN semplice (autoapprovato, nessuna CCB)
+# ---------------------------------------------------------------------------
+
+class SimpleEcnServiceTests(TestCase):
+    """create_simple_ecn: codice automatico, autoapprovazione, nessuna CCB."""
+
+    def setUp(self):
+        self.author = _make_user('simple_author')
+        self.folder = _make_folder(self.author, code='SIMPLE-FOLD')
+        self.document = _make_document(self.author, self.folder, code='SIMPLE-DOC-001')
+        self.version = _make_version(self.document, self.author)
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+
+    def test_creates_ecn_with_simple_flow_type(self):
+        from ecn.services import create_simple_ecn
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
+
+    def test_code_matches_simple_convention(self):
+        from datetime import date
+        from ecn.services import create_simple_ecn
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        year = date.today().year
+        self.assertEqual(ecn.code, f'ECN-S-{year}-0001')
+
+    def test_code_increments_across_calls(self):
+        from ecn.services import create_simple_ecn
+        doc2 = _make_document(self.author, self.folder, code='SIMPLE-DOC-002')
+        doc2.current_version = _make_version(doc2, self.author)
+        doc2.save(update_fields=['current_version'])
+
+        ecn1 = create_simple_ecn(document=self.document, proposed_by=self.author,
+                                 title='Prima', send_notifications=False)
+        ecn2 = create_simple_ecn(document=doc2, proposed_by=self.author,
+                                 title='Seconda', send_notifications=False)
+        self.assertNotEqual(ecn1.code, ecn2.code)
+
+    def test_auto_approved_no_ccb(self):
+        from ecn.services import create_simple_ecn
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
+        self.assertIsNotNone(ecn.ccb_reviewed_at)
+        self.assertEqual(ChangeNoticeApprover.objects.filter(change_notice=ecn).count(), 0)
+        self.assertEqual(ChangeNoticeDecision.objects.filter(change_notice=ecn).count(), 0)
+
+    def test_has_essential_fields(self):
+        from ecn.services import create_simple_ecn
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', description='Motivo demo',
+            send_notifications=False,
+        )
+        self.assertEqual(ecn.title, 'Revisione rapida')
+        self.assertEqual(ecn.description, 'Motivo demo')
+        self.assertEqual(ecn.document_id, self.document.pk)
+        self.assertEqual(ecn.proposed_by_id, self.author.pk)
+        self.assertIsNotNone(ecn.proposed_at)
+        self.assertIsNotNone(ecn.ccb_reviewed_at)
+
+    def test_requires_current_version(self):
+        from ecn.services import create_simple_ecn
+        bare_doc = Document.objects.create(
+            code='SIMPLE-NOVER', title='Senza versione',
+            category=Document.Category.QUALITY,
+            owner=self.author, created_by=self.author,
+        )
+        with self.assertRaises(ValidationError):
+            create_simple_ecn(document=bare_doc, proposed_by=self.author,
+                              title='x', send_notifications=False)
+
+    def test_writes_audit_trail(self):
+        from ecn.services import create_simple_ecn
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        actions = list(
+            AuditLog.objects.filter(changes__document_id=self.document.pk)
+            .values_list('action', flat=True)
+        )
+        self.assertIn('ECN_CREATED', actions)
+        self.assertIn('ECN_APPROVED', actions)
+
+    def test_enables_document_revision(self):
+        """Un ECN semplice approvato soddisfa il gate create_new_revision
+        esattamente come un ECN standard — nessuna modifica al service."""
+        from documents.services import create_new_revision
+        from ecn.services import create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn,
+            change_summary='Via ECN semplice',
+        )
+        self.assertEqual(version.revision_label, '01')
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.executed_version_id, version.pk)
+        self.assertIsNotNone(ecn.executed_at)
+
+
+class SimpleEcnViewTests(TestCase):
+    """View ecn_create_simple: permessi (riusa can_create_ecn, nessun permesso nuovo)."""
+
+    def setUp(self):
+        self.author = _make_user('simplev_author')
+        self.author.groups.add(Group.objects.get_or_create(name=GROUP_AUTHORS)[0])
+        self.stranger = _make_user('simplev_stranger')
+        self.superuser = User.objects.create_superuser(
+            'simplev_super', 'super@example.com', 'pw',
+        )
+        self.folder = _make_folder(self.author, code='SIMPLEV-FOLD')
+        # Membership esplicita: can_create_ecn concede già ai Document Authors
+        # globali, ma can_view_document (per verificare il redirect post-POST)
+        # richiede membership/visibilità cartella per gli utenti non privilegiati.
+        ProjectFolderMembership.objects.create(
+            folder=self.folder, user=self.author, role='author',
+        )
+        self.document = _make_document(self.author, self.folder, code='SIMPLEV-DOC-001')
+        self.version = _make_version(self.document, self.author)
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+
+    def test_requires_login(self):
+        r = self.client.get(f'/ecn/new-simple/?document={self.document.pk}')
+        self.assertEqual(r.status_code, 302)
+        self.assertIn('/accounts/login/', r['Location'])
+
+    def test_author_can_access_form(self):
+        self.client.login(username='simplev_author', password='pw')
+        r = self.client.get(f'/ecn/new-simple/?document={self.document.pk}')
+        self.assertEqual(r.status_code, 200)
+
+    def test_stranger_gets_403(self):
+        self.client.login(username='simplev_stranger', password='pw')
+        r = self.client.get(f'/ecn/new-simple/?document={self.document.pk}')
+        self.assertEqual(r.status_code, 403)
+
+    def test_post_creates_approved_ecn_and_redirects(self):
+        self.client.login(username='simplev_author', password='pw')
+        r = self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Revisione rapida demo',
+            'description': 'Motivo demo',
+        })
+        self.assertRedirects(r, f'/documents/{self.document.pk}/')
+        ecn = ChangeNotice.objects.get(document=self.document)
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
+        self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
+
+    def test_superuser_can_use_flow(self):
+        self.client.login(username='simplev_super', password='pw')
+        r = self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Revisione rapida demo superuser',
+        })
+        self.assertRedirects(r, f'/documents/{self.document.pk}/')
+
+    def test_missing_document_param_404(self):
+        self.client.login(username='simplev_author', password='pw')
+        r = self.client.get('/ecn/new-simple/')
+        self.assertEqual(r.status_code, 404)
+
+
+class SimpleEcnStandardFlowUnaffectedTests(TestCase):
+    """Il flusso ECN standard resta invariato dopo TASK-022."""
+
+    def setUp(self):
+        self.author = _make_user('stdflow_author')
+        self.folder = _make_folder(self.author, code='STDFLOW-FOLD')
+        self.document = _make_document(self.author, self.folder, code='STDFLOW-DOC-001')
+        self.version = _make_version(self.document, self.author)
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+
+    def test_standard_create_change_notice_defaults_to_standard_flow_type(self):
+        ecn = create_change_notice(
+            document=self.document, proposed_by=self.author,
+            title='ECN standard', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.STANDARD)
+        self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)

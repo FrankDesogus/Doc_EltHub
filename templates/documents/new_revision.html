@@ -77,6 +77,7 @@
       <thead><tr>
         <th>Codice</th>
         <th>Titolo</th>
+        <th>Tipo</th>
         <th>Classe</th>
         <th>Approvato il</th>
         <th class="w-32"></th>
@@ -86,6 +87,11 @@
         <tr>
           <td><a href="{% url 'ecn:ecn_detail' ecn_item.pk %}" class="font-mono font-semibold text-brand-700 hover:underline">{{ ecn_item.code }}</a></td>
           <td>{{ ecn_item.title }}</td>
+          <td>
+            {% if ecn_item.flow_type == 'simple' %}<span class="badge badge-doctype">Semplice</span>
+            {% else %}<span class="meta">Standard</span>
+            {% endif %}
+          </td>
           <td class="meta">{{ ecn_item.get_ccb_class_display|default:"—" }}</td>
           <td class="meta whitespace-nowrap">{{ ecn_item.ccb_reviewed_at|date:"d/m/Y"|default:"—" }}</td>
           <td>

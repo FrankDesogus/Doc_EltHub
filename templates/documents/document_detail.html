@@ -81,7 +81,8 @@
       {% endif %}
     {% endif %}
     {% if show_create_ecn %}
-    <a href="{% url 'ecn:ecn_create' %}?document={{ document.pk }}" class="btn-secondary">+ Richiedi ECN</a>
+    <a href="{% url 'ecn:ecn_create_simple' %}?document={{ document.pk }}" class="btn-secondary">+ Crea ECN semplice</a>
+    <a href="{% url 'ecn:ecn_create' %}?document={{ document.pk }}" class="btn-secondary">+ Richiedi ECN standard</a>
     {% endif %}
     {% if show_edit_metadata %}
     <a href="{% url 'document_edit_metadata' document.pk %}" class="btn-secondary">Modifica metadati</a>

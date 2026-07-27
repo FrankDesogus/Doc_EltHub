@@ -99,6 +99,68 @@ def create_change_notice(
     return ecn
 
 
+def create_simple_ecn(document, proposed_by, title, description='', created_by=None,
+                      send_notifications=True):
+    """
+    Crea ed autoapprova immediatamente un ECN a flusso semplice (TASK-022):
+    nessuna CCB, nessuna istruttoria, nessuna convocazione. Pensato per
+    revisioni rapide e a basso impatto, come alternativa alla vecchia
+    modalità "revisione senza ECN" (documents/models.py:requires_ecn_for_revision).
+
+    L'ECN risultante è già in stato APPROVED e soddisfa quindi il gate di
+    create_new_revision esattamente come un ECN standard approvato dalla
+    CCB: nessuna modifica a create_new_revision è necessaria.
+
+    Lascia comunque una traccia audit equivalente a un ECN standard
+    completato (ECN_CREATED + ECN_APPROVED), visibile in Archivio e nello
+    storico documento.
+    """
+    from ecn.models import ChangeNotice
+
+    if document.current_version is None:
+        raise ValidationError(
+            "Il documento non ha una versione corrente. "
+            "L'ECN semplice può essere creato solo su documenti con almeno una revisione."
+        )
+
+    if created_by is None:
+        created_by = proposed_by
+
+    now = timezone.now()
+
+    with transaction.atomic():
+        ecn = ChangeNotice.objects.create(
+            code=_generate_simple_ecn_code(),
+            title=title,
+            description=description,
+            motivation=ChangeNotice.Motivation.OTHER,
+            document=document,
+            document_version=document.current_version,
+            proposed_by=proposed_by,
+            created_by=created_by,
+            flow_type=ChangeNotice.FlowType.SIMPLE,
+            status=ChangeNotice.Status.APPROVED,
+            ccb_reviewed_by=proposed_by,
+            ccb_reviewed_at=now,
+            ccb_notes='Autoapprovato — flusso ECN semplice, nessuna istruttoria CCB.',
+        )
+
+        _write_audit(
+            actor=created_by, action='ECN_CREATED', ecn=ecn,
+            old_status=None, new_status=ChangeNotice.Status.DRAFT,
+        )
+        _write_audit(
+            actor=created_by, action='ECN_APPROVED', ecn=ecn,
+            old_status=ChangeNotice.Status.DRAFT, new_status=ChangeNotice.Status.APPROVED,
+        )
+
+    if send_notifications:
+        _notify_silently('notify_ecn_created', ecn)
+        _notify_silently('notify_ecn_approved', ecn)
+
+    return ecn
+
+
 def update_change_notice(change_notice, actor, title, motivation,
                          description='', motivation_detail='', commessa='', project=None):
     """
@@ -941,6 +1003,24 @@ def _generate_ecn_code():
     while ChangeNotice.objects.filter(code=code).exists():
         next_n += 1
         code = f'ECN-{next_n:04d}'
+    return code
+
+
+def _generate_simple_ecn_code():
+    """
+    Genera il prossimo codice per ECN a flusso semplice (TASK-022):
+    ECN-S-<anno>-NNNN, non ancora utilizzato. Stesso principio di
+    _generate_ecn_code (conteggio + ciclo anti-collisione), prefisso
+    diverso per distinguerlo a colpo d'occhio da un ECN standard.
+    """
+    from ecn.models import ChangeNotice
+    year = timezone.now().year
+    prefix = f'ECN-S-{year}-'
+    next_n = ChangeNotice.objects.filter(code__startswith=prefix).count() + 1
+    code = f'{prefix}{next_n:04d}'
+    while ChangeNotice.objects.filter(code=code).exists():
+        next_n += 1
+        code = f'{prefix}{next_n:04d}'
     return code
 
 

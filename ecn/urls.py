@@ -9,6 +9,7 @@ urlpatterns = [
     path('dashboard/', views.ecn_dashboard, name='ecn_dashboard'),
     path('my-ecn/', views.ecn_my, name='ecn_my'),
     path('new/', views.ecn_create, name='ecn_create'),
+    path('new-simple/', views.ecn_create_simple, name='ecn_create_simple'),
     path('<int:ecn_id>/', views.ecn_detail, name='ecn_detail'),
     path('<int:ecn_id>/edit/', views.ecn_edit, name='ecn_edit'),
     path('<int:ecn_id>/configure-ccb/', views.ecn_configure_ccb, name='ecn_configure_ccb'),

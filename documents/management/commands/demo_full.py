@@ -10,7 +10,7 @@ Chiama demo_company come base, poi aggiunge:
   - ECN in tutti gli stati: draft, ccb_preparation, under_review,
     approved, rejected, closed
   - ECN che ha originato una revisione (mostra ECN di origine in version_detail)
-  - Documento esente da ECN (approvazione diretta)
+  - Documento revisionato tramite ECN semplice (autoapprovato, nessuna CCB)
   - Approvazione con policy 'any' e policy 'sequential'
   - Record storici sanatoria (HistoricalRecord)
 
@@ -65,7 +65,7 @@ class Command(BaseCommand):
         self._scenario_rejected_revision(supervisor, mario, lucia, folder)
         self._scenario_ecn_all_states(supervisor, anna, folder)
         self._scenario_ecn_executed_revision(supervisor, mario, lucia, anna, folder)
-        self._scenario_ecn_exempt(supervisor, mario, lucia, folder)
+        self._scenario_simple_ecn(supervisor, mario, lucia, folder)
         self._scenario_approval_policies(supervisor, mario, lucia, anna, folder)
         self._scenario_sanatoria(supervisor, mario)
         self._scenario_project_snapshot(supervisor)
@@ -388,45 +388,70 @@ class Command(BaseCommand):
         )
 
     # ──────────────────────────────────────────────────────────────────────
-    # Scenario 5 — Documento esente da ECN (approvazione diretta)
+    # Scenario 5 — Documento revisionato tramite ECN semplice (TASK-022)
+    #
+    # Prima di TASK-022 questo scenario mostrava "revisione senza ECN"
+    # (requires_ecn_for_revision=False). Il nuovo flusso prodotto demo usa
+    # invece un ECN semplice autoapprovato per la seconda revisione: il
+    # documento richiede sempre un ECN (default), solo che qui è "semplice"
+    # (nessuna CCB) invece che "standard".
     # ──────────────────────────────────────────────────────────────────────
 
-    def _scenario_ecn_exempt(self, supervisor, author, approver, folder):
+    def _scenario_simple_ecn(self, supervisor, author, approver, folder):
         from documents.models import Document
         from documents.services import create_new_revision, submit_version_for_approval
         from approvals.services import approve_version
+        from ecn.services import create_simple_ecn
 
-        CODE = 'DEMO-NOSCOPE-001'
+        CODE = 'DEMO-ECN-SIMPLE-001'
         if Document.objects.filter(code=CODE).exists():
             self._step(f'{CODE}: già esistente, saltato.')
             return
 
         doc = Document.objects.create(
             code=CODE,
-            title='Modulo registrazione presenze — Demo senza ECN obbligatorio',
+            title='Modulo registrazione presenze — Demo ECN semplice',
             category=Document.Category.QUALITY,
             document_type='MDLL',
             project_folder=folder,
             owner=author,
             created_by=author,
-            requires_ecn_for_revision=False,
         )
 
-        for label, num, summary in [
-            ('00', 0, 'Prima emissione modulo.'),
-            ('01', 1, 'Aggiunto campo firma supervisore (approvazione diretta, senza ECN).'),
-        ]:
-            ver = create_new_revision(doc, author, label, num,
-                                      change_summary=summary,
-                                      _bypass_ecn_check=True)
-            req = submit_version_for_approval(ver, author, [approver],
-                                             send_notifications=False)
-            approve_version(req, approver,
-                            comment=f'Rev. {label} approvata direttamente.',
-                            send_notifications=False)
-            doc.refresh_from_db()
+        ver00 = create_new_revision(doc, author, '00', 0,
+                                    change_summary='Prima emissione modulo.',
+                                    _bypass_ecn_check=True)
+        req00 = submit_version_for_approval(ver00, author, [approver],
+                                            send_notifications=False)
+        approve_version(req00, approver,
+                        comment='Prima emissione approvata.',
+                        send_notifications=False)
+        doc.refresh_from_db()
 
-        self._step(f'{CODE}: documento esente ECN, 2 revisioni approvate senza ECN.')
+        simple_ecn = create_simple_ecn(
+            document=doc,
+            proposed_by=author,
+            title='Aggiunta campo firma supervisore',
+            description='Revisione rapida: aggiunto campo firma supervisore al modulo.',
+            send_notifications=False,
+        )
+
+        ver01 = create_new_revision(
+            doc, author, '01', 1,
+            ecn=simple_ecn,
+            change_summary='Aggiunto campo firma supervisore (via ECN semplice).',
+        )
+        req01 = submit_version_for_approval(ver01, author, [approver],
+                                            send_notifications=False)
+        approve_version(req01, approver,
+                        comment='Rev. 01 approvata.',
+                        send_notifications=False)
+        doc.refresh_from_db()
+
+        self._step(
+            f'{CODE}: Rev. 00 + {simple_ecn.code} (ECN semplice, autoapprovato) '
+            f'+ Rev. 01 eseguita tramite ECN semplice.'
+        )
 
     # ──────────────────────────────────────────────────────────────────────
     # Scenario 6 — Approval policy 'any' e 'sequential'

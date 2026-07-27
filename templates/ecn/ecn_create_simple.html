@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Nuovo ECN semplice — Documentale{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<nav class="breadcrumb">
+  <a href="{% url 'document_detail' document.pk %}">{{ document.code }}</a>
+  <span class="breadcrumb-sep">›</span>
+  <span>ECN semplice</span>
+</nav>
+
+<div class="page-header">
+  <h1>ECN semplice / revisione rapida</h1>
+  <p class="page-header-sub">
+    Flusso rapido senza CCB: viene creato e approvato immediatamente,
+    così puoi subito creare la revisione collegata.
+  </p>
+</div>
+
+<!-- Documento coinvolto (read-only) -->
+<div class="form-section">
+  <div class="form-section-title">Documento coinvolto</div>
+  <div class="detail-grid">
+    <div class="detail-item">
+      <span class="detail-label">Codice</span>
+      <span class="detail-value font-mono font-semibold text-brand-800">{{ document.code }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Titolo</span>
+      <span class="detail-value">{{ document.title }}</span>
+    </div>
+  </div>
+</div>
+
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="document" value="{{ document.pk }}">
+
+  <div class="form-section">
+    <div class="form-section-title">Dati essenziali</div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.title.id_for_label }}">
+        {{ form.title.label }} <span class="text-red-500">*</span>
+      </label>
+      {{ form.title }}
+      {% if form.title.help_text %}<p class="form-help">{{ form.title.help_text }}</p>{% endif %}
+      {% if form.title.errors %}<p class="form-error">{{ form.title.errors.as_text }}</p>{% endif %}
+    </div>
+
+    <div class="form-group mb-0">
+      <label class="form-label" for="{{ form.description.id_for_label }}">{{ form.description.label }}</label>
+      {{ form.description }}
+      {% if form.description.help_text %}<p class="form-help">{{ form.description.help_text }}</p>{% endif %}
+      {% if form.description.errors %}<p class="form-error">{{ form.description.errors.as_text }}</p>{% endif %}
+    </div>
+  </div>
+
+  <div class="alert-info mb-4">
+    <strong>Nota:</strong> l'ECN semplice non richiede istruttoria né CCB —
+    viene autoapprovato subito e resta comunque tracciato nello storico
+    documento e in Archivio. Per varianti che richiedono valutazione Qualità
+    o CCB, usa "+ Richiedi ECN standard" invece.
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Crea ECN semplice (autoapprovato)</button>
+    <a href="{% url 'document_detail' document.pk %}" class="btn-secondary">Annulla</a>
+  </div>
+</form>
+{% endblock %}

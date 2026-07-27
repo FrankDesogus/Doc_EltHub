@@ -30,6 +30,10 @@ class ChangeNotice(models.Model):
         ALL        = 'all',        'Tutti gli approvatori (ALL)'
         SEQUENTIAL = 'sequential', 'Sequenziale (SEQUENTIAL)'
 
+    class FlowType(models.TextChoices):
+        STANDARD = 'standard', 'Standard (CCB)'
+        SIMPLE   = 'simple',   'Semplice (automatico)'
+
     # ------------------------------------------------------------------
     # Identificazione
     # ------------------------------------------------------------------
@@ -111,6 +115,16 @@ class ChangeNotice(models.Model):
         choices=Status.choices,
         default=Status.DRAFT,
         verbose_name='Stato',
+    )
+    flow_type = models.CharField(
+        max_length=20,
+        choices=FlowType.choices,
+        default=FlowType.STANDARD,
+        verbose_name='Tipo di flusso',
+        help_text=(
+            'Standard: passa da istruttoria/CCB. '
+            'Semplice: autoapprovato, nessuna CCB (TASK-022).'
+        ),
     )
 
     # ------------------------------------------------------------------
