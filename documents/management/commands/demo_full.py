@@ -69,6 +69,8 @@ class Command(BaseCommand):
         self._scenario_approval_policies(supervisor, mario, lucia, anna, folder)
         self._scenario_sanatoria(supervisor, mario)
         self._scenario_project_snapshot(supervisor)
+        self._scenario_user_signatures(supervisor, mario, lucia, anna)
+        self._scenario_pdf_workflow(mario, lucia, folder)
 
         self.stdout.write(self.style.SUCCESS('\nDemo full completato.'))
 
@@ -650,6 +652,193 @@ class Command(BaseCommand):
         self._step(
             f'{project.code}: snapshot revisione {snap.revision_label} emesso '
             f'({n_items} documenti congelati).'
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Scenario 9 — Firme visive fittizie (TASK-028)
+    #
+    # Non è firma digitale: solo un'immagine PNG associata al profilo
+    # utente, usata dal registro di approvazione del PDF approvato quando
+    # l'utente approva/rifiuta una revisione (snapshot al momento della
+    # decisione — vedi ApprovalDecision.snapshot_signature_image).
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _scenario_user_signatures(self, supervisor, mario, lucia, anna):
+        from accounts.models import UserSignature
+
+        for user, initials, color in [
+            (supervisor, 'SD', (30, 60, 140, 255)),
+            (mario, 'MR', (150, 30, 30, 255)),
+            (lucia, 'LB', (30, 110, 60, 255)),
+            (anna, 'AN', (140, 90, 20, 255)),
+        ]:
+            if UserSignature.objects.filter(user=user).exists():
+                self._step(f'{user.username}: firma visiva già esistente, saltata.')
+                continue
+            sig = UserSignature.objects.create(user=user)
+            sig.image.save(
+                f'firma_demo_{user.username}.png',
+                self._fake_signature_png(initials, color),
+                save=True,
+            )
+            self._step(
+                f'{user.username}: firma visiva fittizia creata ({initials}) — '
+                'immagine PNG demo, non è firma digitale.'
+            )
+
+    @staticmethod
+    def _fake_signature_png(initials, color):
+        """
+        Genera uno scarabocchio PNG fittizio (nessuna firma reale, solo per
+        demo/test manuale): un tratto ondulato + iniziali, sfondo trasparente.
+        """
+        import math
+        from io import BytesIO
+
+        from django.core.files.base import ContentFile
+        from PIL import Image, ImageDraw
+
+        width, height = 300, 100
+        img = Image.new('RGBA', (width, height), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(img)
+
+        points = []
+        for x in range(10, width - 60, 3):
+            y = height // 2 + int(16 * math.sin(x / 11.0)) + ((x // 7) % 5 - 2)
+            points.append((x, y))
+        draw.line(points, fill=color, width=3, joint='curve')
+        draw.text((width - 46, height // 2 - 8), initials, fill=color)
+
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        return ContentFile(buf.read())
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Scenario 10 — Flusso PDF di rappresentazione / PDF approvato opzionale
+    # (TASK-023..035): un documento con requires_approved_pdf=True percorre
+    # sia la via automatica (sorgente .txt → conversione reportlab) sia la
+    # via manuale (sorgente .docx → PDF caricato dall'autore), più una bozza
+    # ferma al gate per mostrare il blocco all'invio.
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _scenario_pdf_workflow(self, author, approver, folder):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from approvals.services import approve_version
+        from documents.models import Document
+        from documents.pdf_converters import render_text_to_pdf_bytes
+        from documents.pdf_pipeline import confirm_representation_pdf, upload_manual_representation_pdf
+        from documents.services import create_document_file, create_new_revision, submit_version_for_approval
+
+        CODE = 'DEMO-PDF-001'
+        if Document.objects.filter(code=CODE).exists():
+            self._step(f'{CODE}: già esistente, saltato (flusso PDF).')
+        else:
+            doc = Document.objects.create(
+                code=CODE,
+                title='Specifica critica con PDF approvato — Demo flusso PDF',
+                category=Document.Category.QUALITY,
+                document_type='SYSD',
+                project_folder=folder,
+                owner=author,
+                created_by=author,
+                requires_approved_pdf=True,
+                requires_ecn_for_revision=False,
+            )
+
+            txt_bytes = (
+                'Specifica tecnica — prima emissione.\n\n'
+                'Documento demo per il flusso PDF di rappresentazione / PDF '
+                'approvato con registro delle approvazioni e firme visive.\n'
+            ).encode('utf-8')
+            src00 = create_document_file(
+                SimpleUploadedFile('specifica.txt', txt_bytes, content_type='text/plain'),
+                author,
+            )
+            ver00 = create_new_revision(
+                doc, author, '00', 0, file=src00,
+                change_summary='Prima emissione (PDF di rappresentazione auto-generato da .txt).',
+                _bypass_ecn_check=True,
+            )
+            ver00.refresh_from_db()
+            confirm_representation_pdf(ver00, author)
+            req00 = submit_version_for_approval(ver00, author, [approver], send_notifications=False)
+            approve_version(req00, approver,
+                            comment='Prima emissione approvata — PDF approvato generato.',
+                            send_notifications=False)
+            doc.refresh_from_db()
+            self._step(
+                f'{CODE}: Rev. 00 — sorgente .txt, PDF di rappresentazione auto-generato e '
+                'confermato, approvata → PDF approvato con registro generato.'
+            )
+
+            docx_bytes = b'PK\x03\x04' + b'contenuto docx fittizio per demo' * 5
+            src01 = create_document_file(
+                SimpleUploadedFile(
+                    'specifica_v2.docx', docx_bytes,
+                    content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                ),
+                author,
+            )
+            ver01 = create_new_revision(
+                doc, author, '01', 1, file=src01,
+                change_summary='Revisione con sorgente .docx (PDF di rappresentazione manuale).',
+                _bypass_ecn_check=True,
+            )
+            ver01.refresh_from_db()
+
+            manual_pdf_bytes = render_text_to_pdf_bytes(
+                'Rappresentazione caricata manualmente — Rev. 01 — Demo flusso PDF.'.encode('utf-8')
+            )
+            upload_manual_representation_pdf(
+                ver01,
+                SimpleUploadedFile('specifica_v2_rappresentazione.pdf', manual_pdf_bytes,
+                                  content_type='application/pdf'),
+                author,
+            )
+            confirm_representation_pdf(ver01, author)
+            req01 = submit_version_for_approval(ver01, author, [approver], send_notifications=False)
+            approve_version(req01, approver,
+                            comment='Rev. 01 approvata — PDF di rappresentazione manuale confermato.',
+                            send_notifications=False)
+            doc.refresh_from_db()
+            self._step(
+                f'{CODE}: Rev. 01 — sorgente .docx (MANUAL_REQUIRED), PDF di rappresentazione '
+                'caricato manualmente, confermato, approvata → nuovo PDF approvato generato.'
+            )
+
+        CODE_GATE = 'DEMO-PDF-GATE'
+        if Document.objects.filter(code=CODE_GATE).exists():
+            self._step(f'{CODE_GATE}: già esistente, saltato.')
+            return
+
+        doc_gate = Document.objects.create(
+            code=CODE_GATE,
+            title='Bozza in attesa di PDF di rappresentazione — Demo gate invio',
+            category=Document.Category.QUALITY,
+            document_type='WIPO',
+            project_folder=folder,
+            owner=author,
+            created_by=author,
+            requires_approved_pdf=True,
+        )
+        docx_bytes_gate = b'PK\x03\x04' + b'contenuto docx fittizio per demo gate' * 5
+        src_gate = create_document_file(
+            SimpleUploadedFile(
+                'bozza_gate.docx', docx_bytes_gate,
+                content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            ),
+            author,
+        )
+        create_new_revision(
+            doc_gate, author, '00', 0, file=src_gate,
+            change_summary='Bozza — richiede PDF di rappresentazione manuale prima dell\'invio.',
+            _bypass_ecn_check=True,
+        )
+        self._step(
+            f'{CODE_GATE}: bozza con requires_approved_pdf=True e sorgente .docx senza PDF '
+            'ancora confermato — mostra il gate che blocca l\'invio in approvazione.'
         )
 
     # ──────────────────────────────────────────────────────────────────────
