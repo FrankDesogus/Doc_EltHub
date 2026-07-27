@@ -1,24 +1,43 @@
 """
-Generazione del PDF approvato (TASK-030).
+Generazione del PDF approvato (TASK-030, firma in calce corretta — verifica
+manuale del 2026-07-27).
 
 Quando una ApprovalRequest raggiunge l'esito APPROVED, il sistema genera un
-nuovo artefatto separato: il PDF di rappresentazione congelato + una pagina
-finale con il registro delle approvazioni (nome, ruolo, decisione,
-timestamp, eventuale firma visiva, nota sull'assenza di firma digitale).
+nuovo artefatto separato: il PDF di rappresentazione congelato + il registro
+delle approvazioni (nome, ruolo, decisione, timestamp, eventuale firma
+visiva, nota sull'assenza di firma digitale).
 
-Non modifica mai il PDF di rappresentazione né il file sorgente. Non va mai
-generato per richieste REJECTED (il chiamante in approvals/services.py lo
-invoca solo nel ramo di approvazione finale). Va chiamata fuori dalla
-transazione che finalizza l'approvazione: un errore qui non deve annullare
-un'approvazione già registrata correttamente — resta solo un
-ApprovedPDFArtifact in stato FAILED, rigenerabile.
+Collocazione del registro — strategia ibrida:
+
+  - Strategia primaria ("in calce"): l'ultima pagina del PDF di
+    rappresentazione viene resa più alta (si estende il suo stesso
+    MediaBox), il contenuto originale viene traslato verso l'alto per
+    liberare un'area realmente vuota in fondo, e il registro viene
+    stampato in quello spazio nuovo. Non c'è mai sovrapposizione con il
+    contenuto esistente perché lo spazio è creato ex novo, non "indovinato"
+    sopra al contenuto — verificato visivamente anche su una pagina
+    completamente piena fino in fondo (nessuno spazio libero preesistente).
+  - Fallback (pagina dedicata): se il registro risultasse troppo alto per
+    un footer ragionevole (molti approvatori) o se l'estensione del canvas
+    fallisse per qualunque motivo tecnico, il registro viene invece
+    stampato su una pagina finale separata (comportamento originale) — mai
+    un errore di generazione per questo.
+
+Non modifica mai il PDF di rappresentazione né il file sorgente (si lavora
+su una copia in memoria). Non va mai generato per richieste REJECTED (il
+chiamante in approvals/services.py lo invoca solo nel ramo di approvazione
+finale). Va chiamata fuori dalla transazione che finalizza l'approvazione:
+un errore qui non deve annullare un'approvazione già registrata
+correttamente — resta solo un ApprovedPDFArtifact in stato FAILED,
+rigenerabile.
 """
 
 import io
 
 from django.core.files.base import ContentFile
 from django.utils import timezone
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, Transformation
+from pypdf.generic import RectangleObject
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -31,6 +50,18 @@ DISCLAIMER = (
     "nel sistema documentale e non costituiscono firma digitale o firma "
     "elettronica qualificata."
 )
+
+# Altezza massima ragionevole per un footer "in calce" (in punti). Oltre
+# questa soglia (tipicamente con molti approvatori) si passa alla pagina
+# finale dedicata: un footer più alto di così non si leggerebbe più come
+# "in calce", ma come un'appendice travestita da footer.
+_MAX_FOOTER_HEIGHT_PT = 130 * mm
+
+_MARGIN = 12 * mm
+_ROW_HEIGHT_TEXT_ONLY = 6 * mm
+_ROW_HEIGHT_WITH_IMAGE = 16 * mm
+_SIGNATURE_IMG_WIDTH = 26 * mm
+_SIGNATURE_IMG_HEIGHT = 9 * mm
 
 
 def generate_approved_pdf(version, actor=None, force=False):
@@ -69,8 +100,8 @@ def generate_approved_pdf(version, actor=None, force=False):
 
     artifact = _get_or_create_artifact(version)
     try:
-        registry_bytes = _build_registry_page(version)
-        merged_bytes = _merge_pdfs(rep.file.path, registry_bytes)
+        decisions = _final_decisions(version)
+        merged_bytes = _build_approved_pdf_bytes(version, rep.file.path, decisions)
         artifact.file.save(_approved_filename(version), ContentFile(merged_bytes), save=False)
         artifact.status = ApprovedPDFArtifact.Status.GENERATED
         artifact.source_representation_pdf_id = rep.pk
@@ -100,7 +131,153 @@ def _get_or_create_artifact(version):
     return ApprovedPDFArtifact.objects.create()
 
 
-def _merge_pdfs(representation_pdf_path, registry_page_bytes):
+def _final_decisions(version):
+    approval_request = (
+        version.approval_requests.filter(status='APPROVED').order_by('-completed_at').first()
+    )
+    if not approval_request:
+        return approval_request, []
+    decisions = list(
+        approval_request.decisions
+        .filter(decision='APPROVED')
+        .order_by('snapshot_approver_order', 'decided_at')
+    )
+    return approval_request, decisions
+
+
+def _build_approved_pdf_bytes(version, representation_pdf_path, decisions_tuple):
+    approval_request, decisions = decisions_tuple
+    reader = PdfReader(representation_pdf_path)
+
+    footer_height = _estimate_footer_height(decisions)
+    if footer_height <= _MAX_FOOTER_HEIGHT_PT:
+        try:
+            return _stamp_footer_on_last_page(
+                reader, version, approval_request, decisions, footer_height,
+            )
+        except Exception:
+            pass  # ripiego sulla pagina finale dedicata, mai un errore di generazione per questo
+
+    registry_bytes = _build_registry_standalone_page(version, approval_request, decisions)
+    return _append_page(representation_pdf_path, registry_bytes)
+
+
+def _estimate_footer_height(decisions):
+    header_block = 22 * mm  # titolo registro + riga stato/codice/revisione + riga policy/data
+    rows = sum(
+        _ROW_HEIGHT_WITH_IMAGE if d.snapshot_signature_image else _ROW_HEIGHT_TEXT_ONLY
+        for d in decisions
+    ) or _ROW_HEIGHT_TEXT_ONLY
+    disclaimer_block = 10 * mm
+    return header_block + rows + disclaimer_block + 2 * _MARGIN
+
+
+def _stamp_footer_on_last_page(reader, version, approval_request, decisions, footer_height):
+    writer = PdfWriter()
+    n_pages = len(reader.pages)
+
+    for i, page in enumerate(reader.pages):
+        if i < n_pages - 1:
+            writer.add_page(page)
+            continue
+
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+
+        footer_bytes = _build_footer_overlay(version, approval_request, decisions, width, footer_height)
+        footer_page = PdfReader(io.BytesIO(footer_bytes)).pages[0]
+
+        # Sposta il contenuto originale verso l'alto per liberare, in fondo,
+        # un'area realmente vuota (mai "indovinata" sopra al contenuto).
+        page.add_transformation(Transformation().translate(tx=0, ty=footer_height))
+        page.mediabox = RectangleObject([0, 0, width, height + footer_height])
+        if page.cropbox is not None:
+            page.cropbox = RectangleObject([0, 0, width, height + footer_height])
+        # L'area [0, footer_height] è vuota per costruzione: nessuna sovrapposizione.
+        page.merge_page(footer_page)
+
+        writer.add_page(page)
+
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _build_footer_overlay(version, approval_request, decisions, width, footer_height):
+    """Registro compatto, disegnato con origine (0,0) in basso a sinistra,
+    pensato per essere incollato esattamente nell'area liberata in calce."""
+    document = version.document
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(width, footer_height))
+
+    y = footer_height - _MARGIN
+    pdf.setLineWidth(0.5)
+    pdf.line(_MARGIN, y, width - _MARGIN, y)
+    y -= 6 * mm
+
+    pdf.setFont('Helvetica-Bold', 11)
+    pdf.drawString(_MARGIN, y, "REGISTRO DI APPROVAZIONE")
+    y -= 6 * mm
+
+    pdf.setFont('Helvetica', 8.5)
+    policy = approval_request.get_approval_policy_display() if approval_request else '—'
+    completed = (
+        timezone.localtime(approval_request.completed_at).strftime('%d/%m/%Y %H:%M')
+        if approval_request and approval_request.completed_at else '—'
+    )
+    pdf.drawString(
+        _MARGIN, y,
+        f"APPROVATO — {document.code} rev.{version.revision_label} — "
+        f"{policy} — concluso il {completed}",
+    )
+    y -= 6 * mm
+
+    for decision in decisions:
+        name = (
+            decision.snapshot_approver_display_name
+            or decision.approver.get_full_name()
+            or decision.approver.username
+        )
+        role = (
+            "Approvatore"
+            if decision.snapshot_approver_order is None
+            else f"Approvatore (fase {decision.snapshot_approver_order})"
+        )
+        decided_at = timezone.localtime(decision.decided_at).strftime('%d/%m/%Y %H:%M')
+
+        pdf.setFont('Helvetica', 9)
+        if decision.snapshot_signature_image:
+            try:
+                img = ImageReader(decision.snapshot_signature_image.path)
+                pdf.drawImage(
+                    img, _MARGIN, y - _SIGNATURE_IMG_HEIGHT,
+                    width=_SIGNATURE_IMG_WIDTH, height=_SIGNATURE_IMG_HEIGHT,
+                    mask='auto', preserveAspectRatio=True,
+                )
+                pdf.drawString(
+                    _MARGIN + _SIGNATURE_IMG_WIDTH + 4 * mm,
+                    y - _SIGNATURE_IMG_HEIGHT / 2 - 1 * mm,
+                    f"{name} — {role} — {decision.get_decision_display()} — {decided_at}",
+                )
+                y -= _ROW_HEIGHT_WITH_IMAGE
+                continue
+            except Exception:
+                pass
+        pdf.drawString(_MARGIN, y, f"{name} — {role} — {decision.get_decision_display()} — {decided_at}")
+        y -= _ROW_HEIGHT_TEXT_ONLY
+
+    pdf.setFont('Helvetica-Oblique', 6.5)
+    text_obj = pdf.beginText(_MARGIN, max(y - 2 * mm, _MARGIN / 2))
+    for wrapped_line in _wrap(DISCLAIMER, 140):
+        text_obj.textLine(wrapped_line)
+    pdf.drawText(text_obj)
+
+    pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+def _append_page(representation_pdf_path, registry_page_bytes):
     reader = PdfReader(representation_pdf_path)
     registry_reader = PdfReader(io.BytesIO(registry_page_bytes))
 
@@ -115,11 +292,11 @@ def _merge_pdfs(representation_pdf_path, registry_page_bytes):
     return buffer.getvalue()
 
 
-def _build_registry_page(version):
+def _build_registry_standalone_page(version, approval_request, decisions):
+    """Fallback: pagina finale dedicata (usata solo quando il footer 'in
+    calce' risulterebbe troppo alto, o se l'estensione della pagina fallisce
+    per un motivo tecnico)."""
     document = version.document
-    approval_request = (
-        version.approval_requests.filter(status='APPROVED').order_by('-completed_at').first()
-    )
 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -147,14 +324,6 @@ def _build_registry_page(version):
     state['y'] -= 4 * mm
     line("Approvatori:", bold=True)
 
-    decisions = []
-    if approval_request:
-        decisions = list(
-            approval_request.decisions
-            .filter(decision='APPROVED')
-            .order_by('snapshot_approver_order', 'decided_at')
-        )
-
     for decision in decisions:
         name = (
             decision.snapshot_approver_display_name
@@ -167,19 +336,24 @@ def _build_registry_page(version):
             else f"Approvatore (fase {decision.snapshot_approver_order})"
         )
         decided_at = timezone.localtime(decision.decided_at).strftime('%d/%m/%Y %H:%M')
-        line(f"  {name} — {role} — {decision.get_decision_display()} — {decided_at}", size=9)
+        row_top = state['y']
+        pdf.setFont('Helvetica', 9)
+        pdf.drawString(margin + 2 * mm, row_top, f"{name} — {role} — {decision.get_decision_display()} — {decided_at}")
 
         if decision.snapshot_signature_image:
             try:
                 img = ImageReader(decision.snapshot_signature_image.path)
+                img_y = row_top - 4 * mm - _SIGNATURE_IMG_HEIGHT
                 pdf.drawImage(
-                    img, margin + 4 * mm, state['y'] - 10 * mm,
-                    width=30 * mm, height=10 * mm,
+                    img, margin + 4 * mm, img_y,
+                    width=_SIGNATURE_IMG_WIDTH, height=_SIGNATURE_IMG_HEIGHT,
                     mask='auto', preserveAspectRatio=True,
                 )
-                state['y'] -= 12 * mm
+                state['y'] = img_y - 4 * mm
             except Exception:
-                pass
+                state['y'] = row_top - _ROW_HEIGHT_TEXT_ONLY
+        else:
+            state['y'] = row_top - _ROW_HEIGHT_TEXT_ONLY
 
     state['y'] -= 8 * mm
     pdf.setFont('Helvetica-Oblique', 8)

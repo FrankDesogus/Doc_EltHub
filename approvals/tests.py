@@ -326,6 +326,153 @@ class ApprovedPDFAutoGenerationTests(TestCase):
 
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
+class ApprovedPDFFooterPlacementTests(TestCase):
+    """
+    Verifica manuale del 2026-07-27 (AREA 2): il registro delle approvazioni
+    deve comparire realmente "in calce" all'ultima pagina di contenuto
+    quando è tecnicamente sicuro, senza mai sovrapporsi al contenuto
+    esistente — con una pagina finale dedicata come fallback per i casi in
+    cui il registro sarebbe troppo alto per un footer ragionevole.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.author = User.objects.create_user('footer-author', password='pw')
+        self.document = make_document(code='FOOTER-001', owner=self.author, requires_approved_pdf=True)
+
+    @staticmethod
+    def _content_pdf_bytes(n_pages=1, fill_bottom=False):
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        buf = io.BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        width, height = A4
+        for _ in range(n_pages):
+            pdf.setFont('Helvetica', 11)
+            y = height - 30
+            floor = 10 if fill_bottom else 150
+            while y > floor:
+                pdf.drawString(30, y, "Riga di contenuto reale del documento sorgente")
+                y -= 14
+            pdf.showPage()
+        pdf.save()
+        return buf.getvalue()
+
+    @staticmethod
+    def _signature_png_bytes():
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new('RGBA', (300, 100), (0, 100, 200, 255)).save(buf, format='PNG')
+        return buf.getvalue()
+
+    def _approvers_with_signatures(self, n, signed=True):
+        from accounts.models import UserSignature
+        users = []
+        for i in range(n):
+            u = User.objects.create_user(f'footer-approver{i}', password='pw', first_name=f'Nome{i}', last_name='Cognome')
+            if signed:
+                sig = UserSignature.objects.create(user=u)
+                sig.image.save(f'firma{i}.png', SimpleUploadedFile(f'firma{i}.png', self._signature_png_bytes()), save=True)
+            users.append(u)
+        return users
+
+    def test_footer_used_for_single_approver_no_extra_page(self):
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(1)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0])
+            version.refresh_from_db()
+
+            self.assertEqual(version.approved_pdf.status, 'generated')
+            reader = PdfReader(version.approved_pdf.file.path)
+            self.assertEqual(len(reader.pages), 1)  # footer in calce: nessuna pagina aggiunta
+            text = reader.pages[0].extract_text()
+        self.assertIn('REGISTRO DI APPROVAZIONE', text)
+        self.assertIn('Riga di contenuto reale', text)  # contenuto originale ancora presente
+
+    def test_no_overlap_when_last_page_completely_full(self):
+        """Caso peggiore: pagina piena fino in fondo, nessuno spazio libero
+        preesistente — la generazione deve comunque riuscire senza sovrapporsi."""
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(2)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=2, fill_bottom=True), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0])
+            approve_version(req, approvers[1])
+            version.refresh_from_db()
+
+            self.assertEqual(version.approved_pdf.status, 'generated')
+            reader = PdfReader(version.approved_pdf.file.path)
+            # Pagina estesa (footer in calce), non una pagina aggiuntiva.
+            self.assertEqual(len(reader.pages), 2)
+
+    def test_falls_back_to_dedicated_page_when_registry_too_tall(self):
+        """Molti approvatori con firma -> il footer supererebbe l'altezza
+        massima ragionevole: deve ricadere sulla pagina finale dedicata."""
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(10)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            for u in approvers:
+                approve_version(req, u)
+            version.refresh_from_db()
+
+            self.assertEqual(version.approved_pdf.status, 'generated')
+            reader = PdfReader(version.approved_pdf.file.path)
+            self.assertEqual(len(reader.pages), 2)  # pagina di contenuto + pagina registro dedicata
+            registry_text = reader.pages[1].extract_text()
+        self.assertIn('REGISTRO DI APPROVAZIONE', registry_text)
+        for u in approvers:
+            self.assertIn(u.get_full_name(), registry_text)
+
+    def test_disclaimer_present_in_footer_variant(self):
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        approvers = self._approvers_with_signatures(1, signed=False)
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0])
+            version.refresh_from_db()
+            text = PdfReader(version.approved_pdf.file.path).pages[0].extract_text()
+        self.assertIn('non costituiscono firma digitale', text)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
 class RejectVersionTests(TestCase):
 
     def setUp(self):
