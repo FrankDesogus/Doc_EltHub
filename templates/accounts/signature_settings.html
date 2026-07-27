@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Firma visiva{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Firma visiva</h1>
+    <p class="text-gray-500 text-sm mt-1">
+      Rappresentazione grafica interna delle tue approvazioni, mostrata nel registro di
+      approvazione del PDF approvato. Non è una firma digitale o una firma elettronica qualificata.
+    </p>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <h2 class="section-title mb-0">Firma attuale</h2>
+  </div>
+  <div class="detail-grid">
+    <div class="detail-item">
+      <span class="detail-label">Nome mostrato</span>
+      <span class="detail-value">{{ request.user.get_full_name|default:request.user.username }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Immagine PNG</span>
+      <span class="detail-value">
+        {% if signature_data_uri %}
+          <img src="{{ signature_data_uri }}" alt="Firma visiva" style="max-height:60px;max-width:100%;">
+        {% else %}
+          Nessuna immagine caricata — nel registro di approvazione verrà usato solo il nome testuale.
+        {% endif %}
+      </span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="section-title mb-0">Carica / sostituisci firma</h2>
+  </div>
+  <div class="p-4">
+    <form method="post" enctype="multipart/form-data">
+      {% csrf_token %}
+      {{ form.image }}
+      {% if form.image.errors %}
+      <p class="text-red-600 text-xs mt-1">{{ form.image.errors|join:", " }}</p>
+      {% endif %}
+      <p class="text-xs text-gray-500 mt-2">PNG, max 300 KB, max 1000×400 px. Trasparenza supportata.</p>
+      <button type="submit" class="btn-primary mt-3">Salva firma</button>
+    </form>
+    {% if signature_data_uri %}
+    <form method="post" class="mt-3">
+      {% csrf_token %}
+      <input type="hidden" name="remove" value="1">
+      <button type="submit" class="btn-secondary btn-sm">Rimuovi firma (solo testo)</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
