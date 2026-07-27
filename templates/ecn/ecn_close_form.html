@@ -16,11 +16,17 @@
   <p class="page-header-sub">{{ ecn.title }}</p>
 </div>
 
-{% if warn_no_version %}
-<div class="alert-warning mb-4">
-  <strong>Attenzione:</strong> non risulta ancora collegata una revisione di esecuzione a questo ECN.
-  Puoi procedere con la chiusura, ma la revisione eseguita dovrà essere collegata successivamente.
+{% if not ready_to_close %}
+<div class="alert-danger mb-4">
+  <strong>Non è ancora possibile chiudere questo ECN:</strong> {{ not_ready_reason }}
 </div>
+{% if not ecn.executed_version %}
+<div class="mb-4">
+  <a href="{% url 'document_new_revision' ecn.document_id %}?ecn={{ ecn.pk }}" class="btn-primary">
+    Crea revisione da questo ECN
+  </a>
+</div>
+{% endif %}
 {% endif %}
 
 <!-- Riepilogo ECN -->
@@ -52,6 +58,7 @@
   </div>
 </div>
 
+{% if ready_to_close %}
 <form method="post">
   {% csrf_token %}
 
@@ -72,4 +79,9 @@
     <a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="btn-secondary">Annulla</a>
   </div>
 </form>
+{% else %}
+<div class="form-actions">
+  <a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="btn-secondary">Torna al dettaglio ECN</a>
+</div>
+{% endif %}
 {% endblock %}

@@ -1231,3 +1231,76 @@ class PDFPolicyInFlightWorkflowTests(TestCase):
 
         self.assertIsNotNone(version.approved_pdf)
         self.assertEqual(version.approved_pdf.status, 'generated')
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class SimpleEcnAutoCloseEndToEndTests(TestCase):
+    """
+    AREA 3 (verifica manuale 2026-07-27) — integrazione branch PDF + TASK-022:
+    prova end-to-end che l'approvazione reale di una revisione (via
+    approve_version, non chiamando il service ECN direttamente) chiude
+    automaticamente l'ECN semplice collegato, e che questo e' indipendente
+    dalla policy PDF del documento (ECN semplice + PDF attivo/disattivo).
+    """
+
+    def setUp(self):
+        self.author = User.objects.create_user('e2e-author', password='pw')
+        self.approver = User.objects.create_user('e2e-approver', password='pw')
+
+    def _document_with_current_version(self, code, requires_approved_pdf):
+        doc = make_document(code=code, owner=self.author, requires_approved_pdf=requires_approved_pdf)
+        first_version = create_new_revision(doc, self.author, '00', 0, _bypass_ecn_check=True)
+        req = submit_version_for_approval(first_version, self.author, [self.approver])
+        approve_version(req, self.approver, send_notifications=False)
+        doc.refresh_from_db()
+        return doc
+
+    def test_simple_ecn_closes_automatically_after_real_approval_pdf_disabled(self):
+        from ecn.models import ChangeNotice
+        from ecn.services import create_simple_ecn
+
+        doc = self._document_with_current_version('E2E-ECN-001', requires_approved_pdf=False)
+        ecn = create_simple_ecn(
+            document=doc, proposed_by=self.author, title='Revisione rapida', send_notifications=False,
+        )
+        version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice')
+        req = submit_version_for_approval(version, self.author, [self.approver])
+        approve_version(req, self.approver, send_notifications=False)
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+    def test_simple_ecn_closes_automatically_after_real_approval_pdf_enabled(self):
+        """Stessa prova con il workflow PDF attivo sul documento: le due dimensioni restano indipendenti."""
+        from ecn.models import ChangeNotice
+        from ecn.services import create_simple_ecn
+
+        doc = self._document_with_current_version('E2E-ECN-002', requires_approved_pdf=True)
+        ecn = create_simple_ecn(
+            document=doc, proposed_by=self.author, title='Revisione rapida', send_notifications=False,
+        )
+        version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice')
+        req = submit_version_for_approval(version, self.author, [self.approver])
+        # Nessun file sorgente: il gate PDF non si applica (fuori scope), invio consentito comunque.
+        approve_version(req, self.approver, send_notifications=False)
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+    def test_standard_ecn_stays_open_after_real_approval(self):
+        from ecn.models import ChangeNotice
+        from ecn.services import create_change_notice
+
+        doc = self._document_with_current_version('E2E-ECN-003', requires_approved_pdf=False)
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.author, title='ECN standard',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
+        )
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.save(update_fields=['status'])
+        version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN standard')
+        req = submit_version_for_approval(version, self.author, [self.approver])
+        approve_version(req, self.approver, send_notifications=False)
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # non chiuso: serve chiusura manuale

@@ -196,6 +196,12 @@ def ecn_detail(request, ecn_id):
             ).select_related('recorded_by').order_by('-historical_date')
         )
 
+    # AREA 3 (verifica manuale 2026-07-27): il pulsante "Chiudi ECN" non deve
+    # comparire come azione pronta se il backend la bloccherebbe comunque —
+    # stessa fonte di verità di ecn_close (get_close_readiness).
+    from ecn.services import get_close_readiness
+    ready_to_close, not_ready_reason = get_close_readiness(ecn)
+
     return render(request, 'ecn/ecn_detail.html', {
         'ecn': ecn,
         'attachments': attachments,
@@ -206,6 +212,8 @@ def ecn_detail(request, ecn_id):
         'has_ccb_configured': has_ccb_configured,
         'can_review': can_review_ecn(request.user, ecn),
         'can_close': can_close_ecn(request.user, ecn),
+        'ready_to_close': ready_to_close,
+        'not_ready_reason': not_ready_reason,
         'can_attach': can_add_ecn_attachment(request.user, ecn),
         'can_create_rev_from_ecn': can_create_rev_from_ecn,
         'can_edit': can_edit_ecn(request.user, ecn),
@@ -697,7 +705,7 @@ def ecn_review(request, ecn_id):
 def ecn_close(request, ecn_id):
     """APPROVED → CLOSED."""
     from ecn.forms import ChangeNoticeCloseForm
-    from ecn.services import close_change_notice
+    from ecn.services import close_change_notice, get_close_readiness
 
     ecn = get_object_or_404(
         ChangeNotice.objects.select_related('document', 'document_version', 'executed_version'),
@@ -714,10 +722,17 @@ def ecn_close(request, ecn_id):
         )
         return redirect('ecn:ecn_detail', ecn_id=ecn_id)
 
-    # Avvisa se non c'è ancora una revisione eseguita (il service blocca la chiusura)
-    warn_no_version = ecn.executed_version is None
+    # Unica fonte di verità (ecn/services.py:get_close_readiness): la stessa
+    # regola che il service applicherà in POST — mai un messaggio diverso
+    # tra "puoi provare" e "il backend blocca comunque" (AREA 3).
+    ready_to_close, not_ready_reason = get_close_readiness(ecn)
 
-    if request.method == 'POST':
+    if request.method == 'POST' and not ready_to_close:
+        # Stessa regola della UI e del service: se non è pronto, il form non
+        # viene nemmeno processato — nessun messaggio contraddittorio.
+        messages.error(request, not_ready_reason)
+        form = ChangeNoticeCloseForm(current_user=request.user)
+    elif request.method == 'POST':
         form = ChangeNoticeCloseForm(request.POST, current_user=request.user)
         if form.is_valid():
             d = form.cleaned_data
@@ -747,7 +762,8 @@ def ecn_close(request, ecn_id):
     return render(request, 'ecn/ecn_close_form.html', {
         'form': form,
         'ecn': ecn,
-        'warn_no_version': warn_no_version,
+        'ready_to_close': ready_to_close,
+        'not_ready_reason': not_ready_reason,
         'sanatoria_available': can_use_sanatoria(request.user),
     })
 

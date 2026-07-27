@@ -172,8 +172,8 @@
   <a href="{% url 'ecn:ecn_review' ecn.pk %}" class="btn-primary">Decisione CCB</a>
   {% endif %}
 
-  {% if ecn.status == 'approved' and can_close %}
-  <a href="{% url 'ecn:ecn_close' ecn.pk %}" class="btn-success">Chiudi ECN</a>
+  {% if ecn.status == 'approved' and can_close and ready_to_close %}
+  <a href="{% url 'ecn:ecn_close' ecn.pk %}" class="btn-success">Chiudi ECN — pronto</a>
   {% endif %}
 
   {% if can_attach %}
@@ -329,6 +329,13 @@
       — <span class="badge-status-{{ ecn.executed_version.status }}">{{ ecn.executed_version.get_status_display }}</span>
     </dd>
   </dl>
+  {% if ecn.status == 'approved' %}
+    {% if ready_to_close %}
+    <p class="text-green-700 text-sm mt-2">ECN pronto per la chiusura.</p>
+    {% else %}
+    <p class="text-amber-700 text-sm mt-2">{{ not_ready_reason }}</p>
+    {% endif %}
+  {% endif %}
   {% else %}
   <p class="text-amber-700 text-sm">
     Nessuna revisione di esecuzione collegata. La nuova revisione del documento verrà collegata a questo ECN nel passo successivo.

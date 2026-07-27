@@ -498,13 +498,22 @@ def _make_approved_document(owner, folder=None, code='DOC-SVC'):
     return doc, version
 
 
-def _make_executed_version(ecn, created_by):
-    """Crea una DocumentVersion draft e la collega come executed_version dell'ECN."""
+def _make_executed_version(ecn, created_by, status=DocumentVersion.Status.APPROVED):
+    """
+    Crea una DocumentVersion e la collega come executed_version dell'ECN.
+
+    Default status=APPROVED (AREA 3, verifica manuale 2026-07-27):
+    get_close_readiness/close_change_notice richiedono che la revisione di
+    esecuzione sia realmente approvata, non solo collegata — passare
+    status=DRAFT/IN_APPROVAL/REJECTED esplicitamente per i test che
+    verificano il blocco della chiusura in quei casi.
+    """
+    revision_number = DocumentVersion.objects.filter(document=ecn.document).count()
     new_ver = DocumentVersion.objects.create(
         document=ecn.document,
-        revision_label='01',
-        revision_number=1,
-        status=DocumentVersion.Status.DRAFT,
+        revision_label=f'{revision_number:02d}',
+        revision_number=revision_number,
+        status=status,
         is_current=False,
         created_by=created_by,
     )
@@ -1399,6 +1408,33 @@ class ECNServiceWorkflowTests(TestCase):
             close_change_notice(ecn, self.manager)
         self.assertIn('nessuna revisione', str(ctx.exception).lower())
 
+    def test_close_fails_when_executed_version_not_yet_approved(self):
+        """
+        AREA 3 (verifica manuale 2026-07-27): una revisione collegata ma
+        ancora in bozza/in approvazione/rifiutata non deve permettere la
+        chiusura — l'autoapprovazione dell'ECN autorizza la modifica, non
+        significa che la modifica sia stata completata.
+        """
+        for status in (
+            DocumentVersion.Status.DRAFT,
+            DocumentVersion.Status.IN_APPROVAL,
+            DocumentVersion.Status.REJECTED,
+        ):
+            with self.subTest(status=status):
+                ecn = self._to_approved(f'ECN-WF-CLOSE-NOTYET-{status}')
+                _make_executed_version(ecn, self.proposer, status=status)
+                with self.assertRaises(ValidationError) as ctx:
+                    close_change_notice(ecn, self.manager)
+                self.assertIn('non è ancora approvata', str(ctx.exception))
+
+    def test_close_succeeds_when_executed_version_approved(self):
+        ecn = self._to_approved('ECN-WF-CLOSE-APPROVED-EXEC')
+        _make_executed_version(ecn, self.proposer, status=DocumentVersion.Status.APPROVED)
+        close_change_notice(ecn, self.manager)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+
     def test_close_fails_if_not_approved(self):
         ecn = self._to_under_review('ECN-WF-CLOSE-STATE')
         with self.assertRaises(ValidationError):
@@ -1497,6 +1533,59 @@ class ECNServiceWorkflowTests(TestCase):
         self.assertIn('ECN_SUBMITTED', actions)
         self.assertIn('ECN_APPROVED', actions)
         self.assertIn('ECN_CLOSED', actions)
+
+
+class GetCloseReadinessTests(TestCase):
+    """AREA 3 — get_close_readiness: unica fonte di verità, usata da UI e service."""
+
+    def setUp(self):
+        self.proposer = _make_user('readiness_proposer')
+        self.manager = _make_user_in_groups('readiness_manager', GROUP_MANAGERS)
+        self.folder = _make_folder(self.proposer, code='READINESS-FOLD')
+        self.document, self.version = _make_approved_document(self.proposer, self.folder, code='READINESS-DOC')
+
+    def _make_ecn_approved(self, code='ECN-READY-001'):
+        from ecn.services import create_change_notice
+        ecn = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN readiness test', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code=code, send_notifications=False,
+        )
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.save(update_fields=['status'])
+        return ecn
+
+    def test_not_ready_when_not_approved(self):
+        from ecn.services import get_close_readiness
+        ecn = self._make_ecn_approved('ECN-READY-002')
+        ecn.status = ChangeNotice.Status.DRAFT
+        ecn.save(update_fields=['status'])
+        ready, reason = get_close_readiness(ecn)
+        self.assertFalse(ready)
+        self.assertIn('non è nello stato approvato', reason)
+
+    def test_not_ready_when_no_executed_version(self):
+        from ecn.services import get_close_readiness
+        ecn = self._make_ecn_approved()
+        ready, reason = get_close_readiness(ecn)
+        self.assertFalse(ready)
+        self.assertIn('Nessuna revisione', reason)
+
+    def test_not_ready_when_executed_version_draft(self):
+        from ecn.services import get_close_readiness
+        ecn = self._make_ecn_approved('ECN-READY-003')
+        _make_executed_version(ecn, self.proposer, status=DocumentVersion.Status.DRAFT)
+        ready, reason = get_close_readiness(ecn)
+        self.assertFalse(ready)
+        self.assertIn('non è ancora approvata', reason)
+
+    def test_ready_when_executed_version_approved(self):
+        from ecn.services import get_close_readiness
+        ecn = self._make_ecn_approved('ECN-READY-004')
+        _make_executed_version(ecn, self.proposer, status=DocumentVersion.Status.APPROVED)
+        ready, reason = get_close_readiness(ecn)
+        self.assertTrue(ready)
+        self.assertEqual(reason, '')
 
 
 # ---------------------------------------------------------------------------
@@ -1815,18 +1904,52 @@ class ECNViewTests(TestCase):
         self.client.force_login(self.manager)
         r = self.client.get(f'/ecn/{self.ecn.pk}/close/')
         self.assertEqual(r.status_code, 200)
-        # Nessun avviso perché executed_version è impostata
-        self.assertNotContains(r, 'Attenzione')
+        # Nessun blocco perché executed_version è impostata ED è approvata
+        self.assertNotContains(r, 'Non è ancora possibile chiudere')
 
     def test_ecn_close_manager_sees_warning_without_exec_version(self):
-        """Il form di chiusura avvisa se executed_version non è impostata."""
+        """
+        AREA 3 (verifica manuale 2026-07-27): il form di chiusura mostra un
+        blocco chiaro (mai un "puoi procedere comunque" contraddittorio) se
+        executed_version non è impostata — stesso motivo che il service
+        userebbe per rifiutare la chiusura.
+        """
         self.ecn.status = ChangeNotice.Status.APPROVED
         self.ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
         self.ecn.save(update_fields=['status', 'ccb_class'])
         self.client.force_login(self.manager)
         r = self.client.get(f'/ecn/{self.ecn.pk}/close/')
         self.assertEqual(r.status_code, 200)
-        self.assertContains(r, 'Attenzione')
+        self.assertContains(r, 'Non è ancora possibile chiudere')
+        self.assertContains(r, 'Crea revisione da questo ECN')
+        # Il form di chiusura non deve essere mostrato quando non è pronto.
+        self.assertNotContains(r, 'Conferma chiusura ECN')
+
+    def test_ecn_close_blocked_when_executed_version_not_yet_approved(self):
+        """Revisione collegata ma ancora in bozza: chiusura bloccata con motivo specifico."""
+        self.ecn.status = ChangeNotice.Status.APPROVED
+        self.ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        self.ecn.save(update_fields=['status', 'ccb_class'])
+        _make_executed_version(self.ecn, self.proposer, status=DocumentVersion.Status.DRAFT)
+        self.client.force_login(self.manager)
+        r = self.client.get(f'/ecn/{self.ecn.pk}/close/')
+        self.assertContains(r, 'non è ancora approvata')
+        self.assertNotContains(r, 'Conferma chiusura ECN')
+
+    def test_ecn_detail_close_button_hidden_when_not_ready(self):
+        """Il pulsante 'Chiudi ECN' non deve comparire se il backend bloccherebbe comunque."""
+        self.ecn.status = ChangeNotice.Status.APPROVED
+        self.ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        self.ecn.save(update_fields=['status', 'ccb_class'])
+        self.client.force_login(self.manager)
+        r = self.client.get(f'/ecn/{self.ecn.pk}/')
+        self.assertNotContains(r, 'Chiudi ECN — pronto')
+
+    def test_ecn_detail_close_button_shown_when_ready(self):
+        self._put_ecn_approved_with_exec_version()
+        self.client.force_login(self.manager)
+        r = self.client.get(f'/ecn/{self.ecn.pk}/')
+        self.assertContains(r, 'Chiudi ECN — pronto')
 
     def test_ecn_close_post_closes_ecn(self):
         self._put_ecn_approved_with_exec_version()
@@ -3556,6 +3679,88 @@ class SimpleEcnServiceTests(TestCase):
         ecn.refresh_from_db()
         self.assertEqual(ecn.executed_version_id, version.pk)
         self.assertIsNotNone(ecn.executed_at)
+
+
+class AutoCloseSimpleEcnTests(TestCase):
+    """
+    AREA 3 (verifica manuale 2026-07-27): l'ECN a flusso semplice si chiude
+    automaticamente quando la sua revisione di esecuzione viene approvata
+    definitivamente — mai per un ECN standard, mai prima che la revisione
+    sia realmente approvata.
+    """
+
+    def setUp(self):
+        self.author = _make_user('autoclose_author')
+        self.approver = _make_user('autoclose_approver')
+        self.folder = _make_folder(self.author, code='AUTOCLOSE-FOLD')
+        self.document = _make_document(self.author, self.folder, code='AUTOCLOSE-DOC-001')
+        self.version = _make_version(self.document, self.author)
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+
+    def test_simple_ecn_auto_closes_when_execution_approved(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_simple_ecn_if_ready, create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.save(update_fields=['status'])
+
+        auto_close_simple_ecn_if_ready(new_version, self.approver)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+        self.assertEqual(ecn.closed_by_id, self.approver.pk)
+
+    def test_auto_close_writes_distinct_audit_action(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_simple_ecn_if_ready, create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.save(update_fields=['status'])
+
+        AuditLog.objects.all().delete()
+        auto_close_simple_ecn_if_ready(new_version, self.approver)
+        log = AuditLog.objects.filter(action='ECN_CLOSED_AUTO').first()
+        self.assertIsNotNone(log)
+
+    def test_standard_ecn_never_auto_closed(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_simple_ecn_if_ready, create_change_notice
+
+        ecn = create_change_notice(
+            document=self.document, proposed_by=self.author,
+            title='ECN standard', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.save(update_fields=['status'])
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN standard',
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.save(update_fields=['status'])
+
+        auto_close_simple_ecn_if_ready(new_version, self.approver)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # invariato, non chiuso
+
+    def test_no_auto_close_when_no_matching_ecn(self):
+        """Una versione senza alcun ECN collegato non deve sollevare eccezioni."""
+        from ecn.services import auto_close_simple_ecn_if_ready
+        auto_close_simple_ecn_if_ready(self.version, self.approver)  # non deve sollevare
 
 
 class SimpleEcnViewTests(TestCase):

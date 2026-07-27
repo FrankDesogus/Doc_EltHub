@@ -689,40 +689,72 @@ def reject_change_notice(change_notice, user, reason, comment=None, send_notific
     return change_notice
 
 
+def get_close_readiness(change_notice):
+    """
+    Unica fonte di verità sul "si può chiudere questo ECN adesso?" (verifica
+    manuale del 2026-07-27: la pagina di chiusura mostrava un avviso "puoi
+    procedere comunque" mentre il servizio bloccava sempre la chiusura nello
+    stesso identico caso — usata sia dalla UI che dal gate di chiusura, così
+    non possono più divergere).
+
+    Restituisce (pronto: bool, motivo: str). `motivo` è vuoto se pronto.
+
+    Una revisione di esecuzione collegata ma non ancora approvata (bozza,
+    in approvazione, rifiutata) blocca la chiusura esattamente come nessuna
+    revisione collegata affatto — l'ECN autorizza la modifica, ma la
+    modifica non è "fatta" finché la revisione non è realmente approvata.
+    """
+    from ecn.models import ChangeNotice
+
+    if change_notice.status != ChangeNotice.Status.APPROVED:
+        return False, (
+            f"L'ECN non è nello stato approvato (stato attuale: "
+            f"{change_notice.get_status_display()})."
+        )
+
+    if change_notice.executed_version_id is None:
+        return False, (
+            "Nessuna revisione di esecuzione collegata a questo ECN. "
+            "Crea prima la nuova revisione del documento a partire da questo ECN."
+        )
+
+    executed = change_notice.executed_version
+    if executed.status != executed.Status.APPROVED:
+        return False, (
+            f"La revisione di esecuzione collegata (Rev. {executed.revision_label}) "
+            f"non è ancora approvata — stato attuale: {executed.get_status_display()}. "
+            f"L'ECN potrà essere chiuso quando quella revisione sarà approvata."
+        )
+
+    return True, ''
+
+
 def close_change_notice(change_notice, user, close_notes='', send_notifications=True):
     """
     Il Responsabile Qualità chiude l'ECN: APPROVED → CLOSED.
 
-    Richiede che executed_version sia già stato impostato (la nuova revisione
-    eseguita deve essere collegata prima di chiudere l'ECN).
+    Richiede che la revisione di esecuzione collegata sia già stata
+    approvata (vedi get_close_readiness — stessa regola usata dalla UI,
+    mai un messaggio diverso tra le due).
     Invia email al proponente.
 
     Raises:
       PermissionDenied: se l'utente non è Document Manager/staff.
-      ValidationError: se lo stato non è APPROVED o executed_version è None.
+      ValidationError: se get_close_readiness segnala che non è pronto.
     """
-    from ecn.models import ChangeNotice
     from ecn.permissions import can_close_ecn
 
     if not can_close_ecn(user, change_notice):
         raise PermissionDenied("Non hai il permesso di chiudere questo ECN.")
 
-    if change_notice.status != ChangeNotice.Status.APPROVED:
-        raise ValidationError(
-            f"Solo gli ECN approvati possono essere chiusi. "
-            f"Stato attuale: {change_notice.get_status_display()}."
-        )
-
-    if change_notice.executed_version_id is None:
-        raise ValidationError(
-            "Impossibile chiudere l'ECN: nessuna revisione di esecuzione collegata. "
-            "Crea prima la nuova revisione del documento a partire da questo ECN."
-        )
+    ready, reason = get_close_readiness(change_notice)
+    if not ready:
+        raise ValidationError(reason)
 
     old_status = change_notice.status
     now = timezone.now()
 
-    change_notice.status     = ChangeNotice.Status.CLOSED
+    change_notice.status     = change_notice.Status.CLOSED
     change_notice.close_notes = close_notes
     change_notice.closed_by  = user
     change_notice.closed_at  = now
@@ -744,6 +776,63 @@ def close_change_notice(change_notice, user, close_notes='', send_notifications=
             pass
 
     return change_notice
+
+
+def auto_close_simple_ecn_if_ready(version, actor):
+    """
+    Chiusura automatica dell'ECN a flusso semplice (TASK-022) quando la sua
+    revisione di esecuzione viene approvata definitivamente (verifica
+    manuale del 2026-07-27, AREA 3).
+
+    L'autoapprovazione dell'ECN semplice riguarda solo l'autorizzazione
+    della modifica, non significa che la modifica sia già stata eseguita:
+    la chiusura avviene qui, non alla creazione dell'ECN, e solo quando
+    `version` (appena diventata APPROVED) è realmente la revisione di
+    esecuzione collegata.
+
+    Un ECN standard non viene mai chiuso automaticamente da questa funzione
+    — resta "pronto per la chiusura" (get_close_readiness) in attesa che un
+    Responsabile Qualità lo chiuda manualmente da ecn_close, con le sue
+    note di chiusura.
+
+    Non richiede il permesso can_close_ecn (l'attore è chi ha approvato la
+    revisione, non necessariamente un Quality Manager) — è una transizione
+    di sistema legata all'approvazione stessa, non un'azione utente
+    separata. Va chiamata dopo che l'approvazione è già stata registrata
+    correttamente: non deve mai sollevare eccezioni che possano essere
+    scambiate per un fallimento dell'approvazione.
+    """
+    from ecn.models import ChangeNotice
+
+    candidates = version.ecns_executed.filter(
+        flow_type=ChangeNotice.FlowType.SIMPLE,
+        status=ChangeNotice.Status.APPROVED,
+    )
+    for ecn in candidates:
+        old_status = ecn.status
+        now = timezone.now()
+        ecn.status = ChangeNotice.Status.CLOSED
+        ecn.close_notes = (
+            'Chiuso automaticamente: ECN a flusso semplice, revisione di '
+            'esecuzione approvata definitivamente.'
+        )
+        ecn.closed_by = actor
+        ecn.closed_at = now
+        ecn.save(update_fields=['status', 'close_notes', 'closed_by', 'closed_at'])
+
+        _write_audit(
+            actor=actor,
+            action='ECN_CLOSED_AUTO',
+            ecn=ecn,
+            old_status=old_status,
+            new_status=ecn.status,
+        )
+        try:
+            _notify_silently('notify_ecn_closed', ecn)
+            from notifications.inbox import notify_ecn_closed_inapp
+            notify_ecn_closed_inapp(ecn)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
