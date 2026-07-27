@@ -155,11 +155,12 @@
     </div>
     {% endif %}
   </div>
-  {% if show_edit %}
+  {% if version.representation_pdf.file or show_edit %}
   <div class="px-4 pb-4 flex flex-wrap items-center gap-2">
     {% if version.representation_pdf.file %}
     <a href="{% url 'version_representation_pdf_download' version.pk %}" class="btn-secondary btn-sm">⬇ Scarica PDF di rappresentazione</a>
     {% endif %}
+    {% if show_edit %}
     <form method="post" action="{% url 'version_pdf_upload' version.pk %}" enctype="multipart/form-data" class="flex items-center gap-2">
       {% csrf_token %}
       <input type="file" name="representation_pdf" accept="application/pdf" required class="text-xs">
@@ -170,6 +171,7 @@
       {% csrf_token %}
       <button type="submit" class="btn-primary btn-sm">Confermo che il PDF rappresenta correttamente il sorgente</button>
     </form>
+    {% endif %}
     {% endif %}
   </div>
   {% endif %}

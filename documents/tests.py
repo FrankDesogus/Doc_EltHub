@@ -242,6 +242,18 @@ class DocumentViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.document.code)
 
+    def test_document_detail_links_to_current_version_detail(self):
+        """
+        AREA 2 (verifica manuale 2026-07-27): document_detail non collegava
+        affatto alla pagina di dettaglio versione, l'unico punto che mostra
+        il PDF di rappresentazione e il PDF approvato — un utente non aveva
+        modo di raggiungerli dalla pagina principale del documento.
+        """
+        version = self._approve_first_version(self.document)
+        self.client.login(username='viewer', password='pw')
+        response = self.client.get(reverse('document_detail', args=[self.document.pk]))
+        self.assertContains(response, reverse('version_detail', args=[version.pk]))
+
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
 class AuthorWorkflowViewTests(TestCase):

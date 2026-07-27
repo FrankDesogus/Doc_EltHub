@@ -98,9 +98,12 @@
 <div class="card mb-4">
   <div class="card-header flex items-center justify-between">
     <h2 class="section-title mb-0">Versione corrente — Rev. {{ document.current_version.revision_label }}</h2>
-    {% if document.current_version.file %}
-    <a href="{% url 'version_download' document.current_version.pk %}" class="btn-secondary btn-sm">⬇ Scarica</a>
-    {% endif %}
+    <div class="flex items-center gap-2">
+      <a href="{% url 'version_detail' document.current_version.pk %}" class="btn-secondary btn-sm">Dettaglio versione</a>
+      {% if document.current_version.file %}
+      <a href="{% url 'version_download' document.current_version.pk %}" class="btn-secondary btn-sm">⬇ Scarica</a>
+      {% endif %}
+    </div>
   </div>
   <div class="detail-grid">
     <div class="detail-item">
