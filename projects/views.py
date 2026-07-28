@@ -406,16 +406,17 @@ def project_list(request):
     })
 
 
-@login_required
-def project_detail(request, project_id):
-    project = get_object_or_404(
-        Project.objects.select_related('root_folder', 'root_folder__parent', 'manager'),
-        pk=project_id,
-    )
-
+def _assert_can_view_project(request, project):
+    """
+    Stessa regola di accesso usata da project_detail e project_history
+    (TASK 2, 2026-07-28): la vista storica non deve essere raggiungibile con
+    permessi diversi (più permissivi) rispetto al dettaglio ordinario — mai
+    solo un pulsante nascosto, un accesso diretto via URL deve fallire allo
+    stesso modo.
+    """
     if not _can_manage_project(request.user):
         if project.root_folder:
-            # Document Auditor globale può vedere il dettaglio progetto (per audit)
+            # Document Auditor globale può vedere il progetto (per audit)
             from projects.permissions import _is_privileged
             if not _is_privileged(request.user):
                 from projects.resolver import has_folder_permission as _has_fperm
@@ -426,6 +427,16 @@ def project_detail(request, project_id):
                     raise PermissionDenied
         else:
             raise PermissionDenied
+
+
+@login_required
+def project_detail(request, project_id):
+    project = get_object_or_404(
+        Project.objects.select_related('root_folder', 'root_folder__parent', 'manager'),
+        pk=project_id,
+    )
+
+    _assert_can_view_project(request, project)
 
     # ── Ricerca documenti nel progetto ──────────────────────────────────────
     from django.core.paginator import Paginator as _Paginator
@@ -499,19 +510,12 @@ def project_detail(request, project_id):
         ).exclude(document_type='').values_list('document_type', flat=True).distinct().order_by('document_type')
     ) if project.root_folder else []
 
-    revisions = project.revisions.order_by('-revision_number')
-
-    version_snapshots = project.revisions.filter(
-        snapshot_type='version'
-    ).order_by('-revision_number')
-    revision_snapshots = project.revisions.filter(
-        snapshot_type='revision'
-    ).order_by('-revision_number')
-
-    from projects.services import build_project_baseline_comparison
-    current_baseline, comparison_rows = build_project_baseline_comparison(
-        project, snapshot_type='revision'
-    )
+    # TASK 2 (2026-07-28): lo storico snapshot dettagliato (elenco completo
+    # versioni/revisioni salvate, confronto baseline) si è spostato in
+    # project_history — qui resta solo un riepilogo compatto (conteggio +
+    # ultimo snapshot) per la vista operativa.
+    snapshot_count = project.revisions.count()
+    latest_snapshot = project.revisions.order_by('-revision_number').first()
 
     from projects.permissions import can_create_document_in_folder
     can_create_doc = (
@@ -549,21 +553,14 @@ def project_detail(request, project_id):
             .order_by('-proposed_at')[:20]
         )
 
-    from django.urls import reverse as _reverse
-    _save_version_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk}) + '?snapshot_type=version'
-    _save_revision_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk}) + '?snapshot_type=revision'
-
     return render(request, 'projects/project_detail.html', {
         'project': project,
         'documents': documents,
         'subfolders': subfolders,
-        'revisions': revisions,
-        'version_snapshots': version_snapshots,
-        'revision_snapshots': revision_snapshots,
+        'snapshot_count': snapshot_count,
+        'latest_snapshot': latest_snapshot,
         'can_manage': _can_manage_project(request.user),
         'can_create_doc': can_create_doc,
-        'current_baseline': current_baseline,
-        'comparison_rows': comparison_rows,
         'show_audit': show_audit,
         'audit_logs': audit_logs,
         'project_ecns': project_ecns,
@@ -574,10 +571,119 @@ def project_detail(request, project_id):
         'doc_type_choices': doc_type_choices,
         'project_folder_choices': project_folder_choices,
         'doc_page_obj': documents if project.root_folder else None,
-        # snapshot URLs
-        'snapshot_urls_available': True,
+    })
+
+
+@login_required
+def project_history(request, project_id):
+    """
+    Storico completo del progetto (TASK 2, 2026-07-28): tutte le versioni e
+    revisioni salvate, confronto con la baseline, ECN e audit log completi
+    — spostato fuori dalla vista operativa project_detail, che ora mostra
+    solo un riepilogo. Stessa regola di accesso di project_detail
+    (_assert_can_view_project): non raggiungibile con permessi diversi da
+    chi potrebbe già vedere il progetto stesso.
+    """
+    project = get_object_or_404(
+        Project.objects.select_related('root_folder', 'root_folder__parent', 'manager'),
+        pk=project_id,
+    )
+    _assert_can_view_project(request, project)
+
+    version_snapshots = project.revisions.filter(
+        snapshot_type='version'
+    ).order_by('-revision_number')
+    revision_snapshots = project.revisions.filter(
+        snapshot_type='revision'
+    ).order_by('-revision_number')
+
+    from projects.services import build_project_baseline_comparison
+    current_baseline, comparison_rows = build_project_baseline_comparison(
+        project, snapshot_type='revision'
+    )
+
+    from documents.permissions import can_view_audit
+    show_audit = can_view_audit(request.user, folder=project.root_folder)
+
+    audit_logs = None
+    if show_audit:
+        from auditlog.models import AuditLog
+        from documents.models import Document as _Doc
+        from projects.services import get_project_document_folders
+        _folders = get_project_document_folders(project)
+        _doc_ids = []
+        if _folders:
+            _doc_ids = list(_Doc.objects.filter(
+                project_folder__in=_folders
+            ).values_list('pk', flat=True))
+        audit_logs = AuditLog.objects.filter(
+            Q(changes__project_id=project.pk)
+            | Q(changes__document_id__in=_doc_ids)
+        ).select_related('user').order_by('-timestamp')
+
+    project_ecns = []
+    if project.root_folder:
+        from ecn.models import ChangeNotice
+        project_ecns = list(
+            ChangeNotice.objects
+            .filter(document__project_folder=project.root_folder)
+            .select_related('document', 'proposed_by')
+            .order_by('-proposed_at')
+        )
+
+    from django.urls import reverse as _reverse
+    _save_version_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk}) + '?snapshot_type=version'
+    _save_revision_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk}) + '?snapshot_type=revision'
+
+    return render(request, 'projects/project_history.html', {
+        'project': project,
+        'version_snapshots': version_snapshots,
+        'revision_snapshots': revision_snapshots,
+        'current_baseline': current_baseline,
+        'comparison_rows': comparison_rows,
+        'show_audit': show_audit,
+        'audit_logs': audit_logs,
+        'project_ecns': project_ecns,
+        'can_manage': _can_manage_project(request.user),
         'save_version_url': _save_version_url,
         'save_revision_url': _save_revision_url,
+    })
+
+
+@login_required
+def archive_project_list(request):
+    """
+    Sezione generale "Archivio Progetti" (TASK 2, 2026-07-28): stessa
+    visibilità di project_list (Project non ha uno stato "archiviato"
+    distinto, a differenza di Document — non inventiamo una distinzione
+    che il dominio non conserva). Serve da punto d'ingresso verso lo
+    storico di ciascun progetto, in modo simmetrico all'Archivio Documenti.
+    """
+    from django.core.paginator import Paginator
+
+    qs = Project.objects.select_related('root_folder', 'root_folder__parent', 'manager').order_by('code')
+
+    if not _can_manage_project(request.user):
+        from projects.permissions import get_project_visible_folder_ids
+        visible_ids = get_project_visible_folder_ids(request.user)
+        qs = qs.filter(
+            Q(root_folder__isnull=False) & Q(root_folder_id__in=visible_ids)
+        )
+
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(code__icontains=q) | Q(name__icontains=q) | Q(description__icontains=q)
+        )
+
+    paginator = Paginator(qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page', 1))
+
+    return render(request, 'projects/archive_project_list.html', {
+        'projects': page_obj,
+        'page_obj': page_obj,
+        'q': q,
+        'total_count': paginator.count,
     })
 
 

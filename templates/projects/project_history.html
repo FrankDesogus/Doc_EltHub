@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}{{ project.code }} — Storico — Documentale{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<nav class="breadcrumb">
+  <a href="{% url 'project_list' %}">Progetti</a>
+  <span class="breadcrumb-sep">›</span>
+  <a href="{% url 'project_detail' project.pk %}">{{ project.code }}</a>
+  <span class="breadcrumb-sep">›</span>
+  <span>Storico</span>
+</nav>
+
+<div class="page-header flex items-center justify-between flex-wrap gap-2">
+  <div>
+    <h1 class="flex items-center gap-2">
+      {{ project.code }} — {{ project.name }}
+      <span class="text-xs text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-semibold">📜 Storico completo</span>
+    </h1>
+  </div>
+  <a href="{% url 'project_detail' project.pk %}" class="btn-secondary btn-sm">Vista semplificata</a>
+</div>
+
+<!-- Snapshot: versioni e revisioni salvate -->
+<div class="flex items-center justify-between mb-2 mt-4 gap-4 flex-wrap">
+  <h2 class="section-title mb-0">Snapshot salvati</h2>
+  {% if can_manage %}
+  <div class="flex gap-2 flex-wrap">
+    <a href="{{ save_version_url }}" class="btn-primary btn-sm">Salva versione</a>
+    <a href="{{ save_revision_url }}" class="btn-secondary btn-sm">Salva revisione</a>
+  </div>
+  {% endif %}
+</div>
+<p class="meta mb-5">Fotografia documentale in un momento specifico. Le modifiche successive non aggiornano gli snapshot salvati.</p>
+
+<!-- Versioni salvate -->
+<h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-2">Versioni salvate</h3>
+{% if version_snapshots %}
+<div class="table-container mb-6">
+  <table class="data-table">
+    <thead><tr>
+      <th>Versione</th>
+      <th>Titolo</th>
+      <th>Stato</th>
+      <th>Corrente</th>
+      <th>Emessa il</th>
+      <th class="w-20"></th>
+    </tr></thead>
+    <tbody>
+      {% for snap in version_snapshots %}
+      <tr>
+        <td class="font-mono font-semibold">{{ snap.revision_label }}</td>
+        <td>{{ snap.title }}</td>
+        <td>
+          {% if snap.status == 'draft' %}<span class="badge-status-draft">Bozza</span>
+          {% elif snap.status == 'issued' %}<span class="badge-status-approved">Emessa</span>
+          {% elif snap.status == 'superseded' %}<span class="badge-status-superseded">Superata</span>
+          {% elif snap.status == 'archived' %}<span class="badge-status-archived">Archiviata</span>
+          {% else %}<span>{{ snap.status }}</span>
+          {% endif %}
+        </td>
+        <td>{% if snap.is_current %}<span class="text-green-600 font-semibold">✔</span>{% endif %}</td>
+        <td class="meta whitespace-nowrap">{{ snap.issued_at|date:"d/m/Y"|default:"—" }}</td>
+        <td><a href="{% url 'project_revision_detail' snap.pk %}" class="btn-secondary btn-sm">Apri</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="meta mb-6">Nessuna versione salvata.</p>
+{% endif %}
+
+<!-- Revisioni salvate -->
+<h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-2">Revisioni salvate</h3>
+{% if revision_snapshots %}
+<div class="table-container mb-6">
+  <table class="data-table">
+    <thead><tr>
+      <th>Revisione</th>
+      <th>Titolo</th>
+      <th>Stato</th>
+      <th>Corrente</th>
+      <th>Emessa il</th>
+      <th class="w-20"></th>
+    </tr></thead>
+    <tbody>
+      {% for snap in revision_snapshots %}
+      <tr>
+        <td class="font-mono font-semibold">{{ snap.revision_label }}</td>
+        <td>{{ snap.title }}</td>
+        <td>
+          {% if snap.status == 'draft' %}<span class="badge-status-draft">Bozza</span>
+          {% elif snap.status == 'issued' %}<span class="badge-status-approved">Emessa</span>
+          {% elif snap.status == 'superseded' %}<span class="badge-status-superseded">Superata</span>
+          {% elif snap.status == 'archived' %}<span class="badge-status-archived">Archiviata</span>
+          {% else %}<span>{{ snap.status }}</span>
+          {% endif %}
+        </td>
+        <td>{% if snap.is_current %}<span class="text-green-600 font-semibold">✔</span>{% endif %}</td>
+        <td class="meta whitespace-nowrap">{{ snap.issued_at|date:"d/m/Y"|default:"—" }}</td>
+        <td><a href="{% url 'project_revision_detail' snap.pk %}" class="btn-secondary btn-sm">Apri</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="meta mb-6">Nessuna revisione salvata.</p>
+{% endif %}
+
+<!-- Confronto con revisione corrente -->
+{% if current_baseline %}
+<h2 class="section-title mt-4">Confronto con revisione corrente</h2>
+<div class="alert-info mb-4">
+  Revisione corrente: <strong>{{ current_baseline.revision_label }}</strong> — {{ current_baseline.title }}{% if current_baseline.issued_at %} ({{ current_baseline.issued_at|date:"d/m/Y" }}){% endif %}
+</div>
+{% if comparison_rows %}
+<div class="table-container">
+  <table class="data-table">
+    <thead><tr>
+      <th>Documento</th>
+      <th>Revisione corrente</th>
+      <th>Revisione snapshot</th>
+      <th>Stato</th>
+    </tr></thead>
+    <tbody>
+      {% for row in comparison_rows %}
+      <tr>
+        <td>
+          {% if row.document %}
+          <a href="{% url 'document_detail' row.document.pk %}" class="text-brand-600 hover:underline font-mono font-semibold">{{ row.document.code }}</a>
+          <div class="text-xs text-slate-400">{{ row.document.title }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td>{% if row.current_version %}Rev. {{ row.current_version.revision_label }}{% else %}<span class="meta">—</span>{% endif %}</td>
+        <td>{% if row.baseline_version %}Rev. {{ row.baseline_version.revision_label }}{% else %}<span class="meta">—</span>{% endif %}</td>
+        <td>
+          {% if row.status == 'aligned' %}<span class="badge-status-approved">{{ row.status_label }}</span>
+          {% elif row.status == 'changed' %}<span class="badge-status-draft">{{ row.status_label }}</span>
+          {% elif row.status == 'new' %}<span class="badge-status-in_approval">{{ row.status_label }}</span>
+          {% elif row.status == 'missing' %}<span class="badge-status-rejected">{{ row.status_label }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="meta">Nessun documento approvato trovato nelle cartelle del progetto.</p>
+{% endif %}
+{% endif %}
+
+<!-- ECN / Varianti collegate (elenco completo) -->
+{% if project_ecns %}
+<h2 class="section-title mt-8">ECN / Varianti collegate</h2>
+<div class="table-container">
+  <table class="data-table">
+    <thead><tr>
+      <th>Codice</th>
+      <th>Titolo</th>
+      <th>Documento</th>
+      <th>Stato</th>
+      <th>Proposto il</th>
+    </tr></thead>
+    <tbody>
+      {% for ecn in project_ecns %}
+      <tr>
+        <td class="font-mono font-semibold"><a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="hover:underline">{{ ecn.code }}</a></td>
+        <td>{{ ecn.title }}</td>
+        <td><a href="{% url 'document_detail' ecn.document_id %}" class="text-brand-600 hover:underline">{{ ecn.document.code }}</a></td>
+        <td class="meta">{{ ecn.get_status_display }}</td>
+        <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- Storico eventi (audit completo) -->
+{% if show_audit %}
+<h2 class="section-title mt-8">Storico eventi</h2>
+{% if audit_logs %}
+<div class="table-container">
+  <table class="data-table">
+    <thead><tr>
+      <th>Data/ora</th>
+      <th>Utente</th>
+      <th>Azione</th>
+      <th>Oggetto</th>
+    </tr></thead>
+    <tbody>
+      {% for entry in audit_logs %}
+      <tr>
+        <td class="meta whitespace-nowrap">{{ entry.timestamp|date:"d/m/Y H:i" }}</td>
+        <td>{% if entry.user %}{{ entry.user.get_full_name|default:entry.user.username }}{% else %}—{% endif %}</td>
+        <td><code class="text-xs px-1.5 py-0.5 rounded">{{ entry.action }}</code></td>
+        <td class="meta text-xs">{{ entry.object_repr }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="meta">Nessun evento registrato per questo progetto.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -135,15 +135,19 @@
       </div>
       {% endif %}
 
-      {% if sb_can_archive %}
       <div class="sidebar-section border-t border-white/[0.06] pt-4">
         <div class="sidebar-section-title">Storico</div>
+        {% if sb_can_archive %}
         <a href="{% url 'archive_document_list' %}"
            class="sidebar-link {% if p|slice:':9' == '/archivio' %}sidebar-link-active{% endif %}">
           <span>📦</span> Archivio documenti
         </a>
+        {% endif %}
+        <a href="{% url 'archive_project_list' %}"
+           class="sidebar-link {% if p|slice:':17' == '/archivio-progett' %}sidebar-link-active{% endif %}">
+          <span>🗂️</span> Archivio progetti
+        </a>
       </div>
-      {% endif %}
 
     </nav>
     {% endwith %}
