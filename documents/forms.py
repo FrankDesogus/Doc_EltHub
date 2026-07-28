@@ -223,21 +223,13 @@ class DocumentMetadataEditForm(forms.ModelForm):
 
     class Meta:
         model = Document
-        fields = ['title', 'description', 'revision_scheme', 'allow_simple_ecn', 'requires_approved_pdf']
+        fields = ['title', 'description', 'revision_scheme', 'requires_approved_pdf']
         labels = {
             'title': 'Titolo',
             'description': 'Descrizione',
-            'allow_simple_ecn': 'Consenti ECN a flusso semplice per questo documento',
             'requires_approved_pdf': 'Richiede copia PDF approvata con registro delle approvazioni',
         }
         help_texts = {
-            'allow_simple_ecn': (
-                'Se disattivato, per i prossimi ECN di questo documento sarà possibile '
-                'usare solo il flusso standard (istruttoria e votazione CCB): il flusso '
-                'semplice (autoapprovato) non sarà proponibile. L\'ECN standard resta '
-                'sempre disponibile. Vale solo per gli ECN non ancora creati: gli ECN '
-                'già esistenti e i workflow già in corso non cambiano.'
-            ),
             'requires_approved_pdf': (
                 'Vale solo per le revisioni non ancora inviate in approvazione: le '
                 'revisioni storiche e i workflow già in corso non cambiano. Se esiste '
@@ -248,6 +240,32 @@ class DocumentMetadataEditForm(forms.ModelForm):
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),
         }
+
+    def __init__(self, *args, current_user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Allineamento 2026-07-28 alla decisione presa per allow_simple_ecn:
+        # solo superuser o supervisor_demo (demo mode) possono cambiare questa
+        # configurazione DOPO la creazione del documento — non autori/manager,
+        # che pure possono modificare titolo/descrizione/schema/PDF. L'autore
+        # può comunque impostarla liberamente in fase di creazione documento
+        # (DocumentCreateForm, invariato). Il campo non viene aggiunto affatto
+        # al form per chi non è autorizzato: un tentativo di POST grezzo con
+        # allow_simple_ecn=on viene ignorato (nessun campo, nessun cleaned_data),
+        # non solo nascosto lato client.
+        from documents.permissions import can_edit_simple_ecn_flag
+        if current_user is not None and can_edit_simple_ecn_flag(current_user):
+            self.fields['allow_simple_ecn'] = forms.BooleanField(
+                required=False,
+                initial=self.instance.allow_simple_ecn if self.instance else True,
+                label='Consenti ECN a flusso semplice per questo documento',
+                help_text=(
+                    'Se disattivato, per i prossimi ECN di questo documento sarà possibile '
+                    'usare solo il flusso standard (istruttoria e votazione CCB): il flusso '
+                    'semplice (autoapprovato) non sarà proponibile. L\'ECN standard resta '
+                    'sempre disponibile. Vale solo per gli ECN non ancora creati: gli ECN '
+                    'già esistenti e i workflow già in corso non cambiano.'
+                ),
+            )
 
 
 class ApproverRowForm(forms.Form):

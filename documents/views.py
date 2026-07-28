@@ -1008,16 +1008,23 @@ def edit_document_metadata(request, document_id):
         # già il nuovo valore.
         old_requires_approved_pdf = doc.requires_approved_pdf
         old_allow_simple_ecn = doc.allow_simple_ecn
-        form = DocumentMetadataEditForm(request.POST, instance=doc)
+        form = DocumentMetadataEditForm(request.POST, instance=doc, current_user=request.user)
         if form.is_valid():
             try:
                 instance = form.save(commit=False)
+                # allow_simple_ecn non è più un campo Meta (solo superuser/
+                # supervisor_demo lo vedono nel form, vedi can_edit_simple_ecn_flag):
+                # va applicato manualmente solo se presente nel form di questo
+                # utente. Un tentativo di POST grezzo da chi non è autorizzato
+                # non ha alcun effetto, perché il campo non esiste affatto qui.
+                if 'allow_simple_ecn' in form.fields:
+                    instance.allow_simple_ecn = form.cleaned_data['allow_simple_ecn']
                 instance.full_clean()
                 instance.save()
 
                 changed_notes = []
 
-                if instance.allow_simple_ecn != old_allow_simple_ecn:
+                if 'allow_simple_ecn' in form.fields and instance.allow_simple_ecn != old_allow_simple_ecn:
                     from auditlog.services import create_audit_log as _cal
                     _cal(
                         user=request.user,
@@ -1067,7 +1074,7 @@ def edit_document_metadata(request, document_id):
                         else:
                             form.add_error(None, msg)
     else:
-        form = DocumentMetadataEditForm(instance=doc)
+        form = DocumentMetadataEditForm(instance=doc, current_user=request.user)
 
     return render(request, 'documents/edit_document_metadata.html', {
         'form': form,

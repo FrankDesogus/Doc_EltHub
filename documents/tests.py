@@ -5522,6 +5522,17 @@ class SimpleEcnUiTests(TestCase):
         response = self.client.get(reverse('document_new'))
         self.assertNotContains(response, 'Consenti revisioni senza ECN obbligatorio')
 
+    def test_new_document_page_has_no_stray_comment_text(self):
+        """
+        Regressione 2026-07-28: un commento Django {# ... #} multi-riga non
+        viene nascosto da Django (limite reale, verificato empiricamente) e
+        veniva mostrato come testo grezzo sulla pagina. Convertito in
+        {% comment %}...{% endcomment %}, che supporta più righe.
+        """
+        response = self.client.get(reverse('document_new'))
+        self.assertNotContains(response, '{#')
+        self.assertNotContains(response, '#}')
+
     def test_document_detail_shows_both_ecn_creation_buttons(self):
         doc, _ = _make_published_doc('SIMPLEUI-DOC-001', self.folder, self.viewer)
         response = self.client.get(reverse('document_detail', args=[doc.pk]))
@@ -5600,23 +5611,65 @@ class AllowSimpleEcnCreationTests(TestCase):
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
 class AllowSimpleEcnMetadataEditTests(TestCase):
-    """Modifica successiva della policy: permessi, audit, effetto solo futuro."""
+    """
+    Modifica successiva della policy (allineato 2026-07-28): SOLO superuser o
+    supervisor_demo (demo mode) possono cambiarla dopo la creazione — non
+    autori/manager, che pure possono modificare titolo/descrizione/schema/PDF.
+    L'autore resta libero di impostarla alla creazione (vedi
+    AllowSimpleEcnCreationTests).
+    """
 
     def setUp(self):
         from django.contrib.auth.models import Group
         self.author = User.objects.create_user('simplemeta-author', password='pw')
+        self.manager = User.objects.create_user('simplemeta-manager', password='pw')
+        self.superuser = User.objects.create_superuser('simplemeta-super', 'x@example.com', 'pw')
         self.stranger = User.objects.create_user('simplemeta-stranger', password='pw')
         Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        Group.objects.get_or_create(name='Document Managers')[0].user_set.add(self.manager)
         self.document = make_document(code='SIMPLEMETA-001', owner=self.author)
         create_new_revision(self.document, self.author, '00', 0)
 
-    def test_shown_in_metadata_edit_form(self):
+    def test_hidden_in_metadata_edit_form_for_author(self):
         self.client.login(username='simplemeta-author', password='pw')
+        response = self.client.get(reverse('document_edit_metadata', args=[self.document.pk]))
+        self.assertNotContains(response, 'allow_simple_ecn')
+
+    def test_hidden_in_metadata_edit_form_for_manager(self):
+        self.client.login(username='simplemeta-manager', password='pw')
+        response = self.client.get(reverse('document_edit_metadata', args=[self.document.pk]))
+        self.assertNotContains(response, 'allow_simple_ecn')
+
+    def test_visible_in_metadata_edit_form_for_superuser(self):
+        self.client.login(username='simplemeta-super', password='pw')
         response = self.client.get(reverse('document_edit_metadata', args=[self.document.pk]))
         self.assertContains(response, 'allow_simple_ecn')
 
-    def test_owner_can_disable(self):
+    def test_author_cannot_disable_even_via_raw_post(self):
+        """Il campo non esiste nel form dell'autore: un POST grezzo non ha alcun effetto."""
         self.client.login(username='simplemeta-author', password='pw')
+        response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+            'allow_simple_ecn': '',  # tenta di forzare a False
+        })
+        self.assertRedirects(response, reverse('document_detail', args=[self.document.pk]))
+        self.document.refresh_from_db()
+        self.assertTrue(self.document.allow_simple_ecn)  # invariato
+
+    def test_manager_cannot_reenable_even_via_raw_post(self):
+        """Stesso principio con il flag già disattivato: il manager non può riattivarlo."""
+        self.document.allow_simple_ecn = False
+        self.document.save(update_fields=['allow_simple_ecn'])
+        self.client.login(username='simplemeta-manager', password='pw')
+        self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+            'allow_simple_ecn': 'on',
+        })
+        self.document.refresh_from_db()
+        self.assertFalse(self.document.allow_simple_ecn)  # invariato
+
+    def test_superuser_can_disable(self):
+        self.client.login(username='simplemeta-super', password='pw')
         response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
             'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
         })
@@ -5624,19 +5677,43 @@ class AllowSimpleEcnMetadataEditTests(TestCase):
         self.document.refresh_from_db()
         self.assertFalse(self.document.allow_simple_ecn)
 
-    def test_owner_can_reenable(self):
+    def test_superuser_can_reenable(self):
         self.document.allow_simple_ecn = False
         self.document.save(update_fields=['allow_simple_ecn'])
-        self.client.login(username='simplemeta-author', password='pw')
+        self.client.login(username='simplemeta-super', password='pw')
         response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
             'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
             'allow_simple_ecn': 'on',
         })
-        self.assertRedirects(response, reverse('document_detail', args=[self.document.pk]))
         self.document.refresh_from_db()
         self.assertTrue(self.document.allow_simple_ecn)
 
-    def test_unauthorized_user_cannot_edit(self):
+    @override_settings(
+        DOCUMENTALE_DEMO_MODE=True, DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='simplemeta-demosup',
+        EMAIL_BACKEND=LOCMEM,
+    )
+    def test_demo_supervisor_can_disable(self):
+        # Anche Document Manager, solo per superare il gate generale
+        # can_edit_document_metadata: isola che l'accesso al campo viene da
+        # is_demo_supervisor, non dal ruolo Manager (di per sé insufficiente,
+        # vedi test_hidden_in_metadata_edit_form_for_manager).
+        from django.contrib.auth.models import Group
+        demosup = User.objects.create_user('simplemeta-demosup', password='pw')
+        demosup.groups.add(Group.objects.get_or_create(name='Document Managers')[0])
+        self.client.login(username='simplemeta-demosup', password='pw')
+        response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+        })
+        # Verifica solo il redirect (302 verso document_detail): il documento
+        # di test è una bozza mai pubblicata, quindi document_detail stesso
+        # non sarebbe visibile a questo utente (Manager vede solo documenti
+        # pubblicati) — irrilevante per ciò che questo test verifica.
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('document_detail', args=[self.document.pk]))
+        self.document.refresh_from_db()
+        self.assertFalse(self.document.allow_simple_ecn)
+
+    def test_unauthorized_user_cannot_edit_metadata_at_all(self):
         self.client.login(username='simplemeta-stranger', password='pw')
         response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
             'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
@@ -5647,7 +5724,7 @@ class AllowSimpleEcnMetadataEditTests(TestCase):
 
     def test_change_is_audited_with_old_and_new_value(self):
         from auditlog.models import AuditLog
-        self.client.login(username='simplemeta-author', password='pw')
+        self.client.login(username='simplemeta-super', password='pw')
         self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
             'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
         })
@@ -5660,7 +5737,7 @@ class AllowSimpleEcnMetadataEditTests(TestCase):
 
     def test_no_change_no_audit_log_entry(self):
         from auditlog.models import AuditLog
-        self.client.login(username='simplemeta-author', password='pw')
+        self.client.login(username='simplemeta-super', password='pw')
         self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
             'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
             'allow_simple_ecn': 'on',
@@ -5668,6 +5745,26 @@ class AllowSimpleEcnMetadataEditTests(TestCase):
         self.assertFalse(
             AuditLog.objects.filter(action='ECN_SIMPLE_POLICY_CHANGED', object_id=str(self.document.pk)).exists()
         )
+
+    def test_author_can_still_set_it_at_creation(self):
+        """L'autore resta libero di impostare il flag in fase di creazione documento."""
+        from django.contrib.auth.models import Group
+        from projects.models import ProjectFolderMembership
+        folder = _make_folder(code='SIMPLEMETA-CREATE-FOLD', owner=self.author)
+        ProjectFolderMembership.objects.create(
+            folder=folder, user=self.author, role='author', created_by=self.author,
+        )
+        self.client.login(username='simplemeta-author', password='pw')
+        response = self.client.post(reverse('document_new'), {
+            'code': 'SIMPLEMETA-CREATE-001', 'title': 'Doc test', 'description': '',
+            'category': Document.Category.QUALITY, 'document_type': '',
+            'project_folder': folder.pk,
+            'revision_scheme': 'numeric', 'revision_label': '00', 'revision_number': '0',
+            'change_summary': '',
+            # allow_simple_ecn assente → checkbox non spuntata
+        })
+        doc = Document.objects.get(code='SIMPLEMETA-CREATE-001')
+        self.assertFalse(doc.allow_simple_ecn)
 
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
