@@ -55,6 +55,9 @@
       {% if document.requires_approved_pdf %}
       <span class="text-xs text-teal-700 bg-teal-50 px-2 py-0.5 rounded">Richiede copia PDF approvata</span>
       {% endif %}
+      {% if not document.allow_simple_ecn %}
+      <span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">Solo ECN standard (flusso semplice non consentito)</span>
+      {% endif %}
     </div>
     {% if document.description %}
     <p class="text-sm text-gray-600 mt-2">{{ document.description }}</p>
@@ -81,7 +84,9 @@
       {% endif %}
     {% endif %}
     {% if show_create_ecn %}
+    {% if document.allow_simple_ecn %}
     <a href="{% url 'ecn:ecn_create_simple' %}?document={{ document.pk }}" class="btn-secondary">+ Crea ECN semplice</a>
+    {% endif %}
     <a href="{% url 'ecn:ecn_create' %}?document={{ document.pk }}" class="btn-secondary">+ Richiedi ECN standard</a>
     {% endif %}
     {% if show_edit_metadata %}

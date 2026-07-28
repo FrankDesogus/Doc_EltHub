@@ -123,6 +123,12 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
             "L'ECN semplice può essere creato solo su documenti con almeno una revisione."
         )
 
+    if not document.allow_simple_ecn:
+        raise ValidationError(
+            "Il flusso ECN semplice non è consentito per questo documento. "
+            "Usa l'ECN standard (con istruttoria e votazione CCB)."
+        )
+
     if created_by is None:
         created_by = proposed_by
 

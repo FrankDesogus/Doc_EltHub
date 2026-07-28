@@ -82,6 +82,18 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
             'Il normale ciclo di approvazione rimane obbligatorio.'
         ),
     )
+    allow_simple_ecn = forms.BooleanField(
+        required=False,
+        initial=True,
+        label='Consenti ECN a flusso semplice per questo documento',
+        help_text=(
+            'Se disattivato, per questo documento sarà possibile creare solo ECN '
+            'standard (con istruttoria e votazione CCB): l\'ECN a flusso semplice '
+            '(autoapprovato, senza CCB) non sarà proponibile. L\'ECN standard resta '
+            'sempre disponibile in ogni caso. Modificabile in seguito dai metadati '
+            'del documento.'
+        ),
+    )
     requires_approved_pdf = forms.BooleanField(
         required=False,
         initial=False,
@@ -211,13 +223,21 @@ class DocumentMetadataEditForm(forms.ModelForm):
 
     class Meta:
         model = Document
-        fields = ['title', 'description', 'revision_scheme', 'requires_approved_pdf']
+        fields = ['title', 'description', 'revision_scheme', 'allow_simple_ecn', 'requires_approved_pdf']
         labels = {
             'title': 'Titolo',
             'description': 'Descrizione',
+            'allow_simple_ecn': 'Consenti ECN a flusso semplice per questo documento',
             'requires_approved_pdf': 'Richiede copia PDF approvata con registro delle approvazioni',
         }
         help_texts = {
+            'allow_simple_ecn': (
+                'Se disattivato, per i prossimi ECN di questo documento sarà possibile '
+                'usare solo il flusso standard (istruttoria e votazione CCB): il flusso '
+                'semplice (autoapprovato) non sarà proponibile. L\'ECN standard resta '
+                'sempre disponibile. Vale solo per gli ECN non ancora creati: gli ECN '
+                'già esistenti e i workflow già in corso non cambiano.'
+            ),
             'requires_approved_pdf': (
                 'Vale solo per le revisioni non ancora inviate in approvazione: le '
                 'revisioni storiche e i workflow già in corso non cambiano. Se esiste '

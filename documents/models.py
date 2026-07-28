@@ -155,6 +155,18 @@ class Document(models.Model):
             'prima di creare una nuova revisione.'
         ),
     )
+    allow_simple_ecn = models.BooleanField(
+        default=True,
+        verbose_name='Consenti ECN a flusso semplice per questo documento',
+        help_text=(
+            'Se disattivato, per questo documento sarà possibile creare solo ECN '
+            'standard (con istruttoria e votazione CCB): l\'ECN a flusso semplice '
+            '(autoapprovato, senza CCB) non sarà proponibile. L\'ECN standard resta '
+            'sempre disponibile in ogni caso, indipendentemente da questa opzione. '
+            'Il cambiamento vale solo per i prossimi ECN non ancora creati: gli ECN '
+            'già esistenti e i workflow già in corso non cambiano.'
+        ),
+    )
     requires_approved_pdf = models.BooleanField(
         default=False,
         verbose_name='Richiede copia PDF approvata con registro delle approvazioni',

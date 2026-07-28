@@ -24,7 +24,7 @@ from documents.services import (
 LOCMEM = 'django.core.mail.backends.locmem.EmailBackend'
 
 
-def make_document(code='DOC-001', owner=None, requires_approved_pdf=False):
+def make_document(code='DOC-001', owner=None, requires_approved_pdf=False, allow_simple_ecn=True):
     return Document.objects.create(
         code=code,
         title='Documento di test',
@@ -32,6 +32,7 @@ def make_document(code='DOC-001', owner=None, requires_approved_pdf=False):
         owner=owner,
         created_by=owner,
         requires_approved_pdf=requires_approved_pdf,
+        allow_simple_ecn=allow_simple_ecn,
     )
 
 
@@ -5537,3 +5538,254 @@ class SimpleEcnUiTests(TestCase):
         response = self.client.get(reverse('document_detail', args=[doc.pk]))
         self.assertContains(response, 'approvazione diretta senza ECN')
         self.assertContains(response, '+ Nuova revisione</a>')
+
+
+# ---------------------------------------------------------------------------
+# AREA A (2026-07-28) — Document.allow_simple_ecn: nuova opzione per
+# vietare specificamente il flusso ECN semplice (l'ECN standard resta
+# sempre consentito). Funzionalità mai esistita prima in nessuna forma
+# (verificato via cronologia Git completa + PROJECT_HANDOFF.md del
+# progetto originale, sezione ECNPOL-1): distinta sia da
+# requires_ecn_for_revision (ECN obbligatorio o no, in assoluto) sia da
+# ChangeNotice.flow_type (quale tipo è una singola istanza di ECN).
+# ---------------------------------------------------------------------------
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class AllowSimpleEcnCreationTests(TestCase):
+    """Opzione presente e salvata correttamente alla creazione del documento."""
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        self.author = User.objects.create_user('simplepol-author', password='pw')
+        Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        self.folder = _make_folder(code='SIMPLEPOL-FOLD', owner=self.author)
+        from projects.models import ProjectFolderMembership
+        ProjectFolderMembership.objects.create(
+            folder=self.folder, user=self.author, role='author', created_by=self.author,
+        )
+        self.client.force_login(self.author)
+
+    def _post_new_document(self, code, allow_simple_ecn_checked):
+        data = {
+            'code': code, 'title': 'Doc test', 'description': '',
+            'category': Document.Category.QUALITY, 'document_type': '',
+            'project_folder': self.folder.pk,
+            'revision_scheme': 'numeric', 'revision_label': '00', 'revision_number': '0',
+            'change_summary': '',
+        }
+        if allow_simple_ecn_checked:
+            data['allow_simple_ecn'] = 'on'
+        return self.client.post(reverse('document_new'), data)
+
+    def test_option_checked_by_default_in_creation_form(self):
+        response = self.client.get(reverse('document_new'))
+        self.assertContains(response, 'allow_simple_ecn')
+        self.assertContains(response, 'checked')
+
+    def test_document_created_with_flag_true_when_checked(self):
+        self._post_new_document('SIMPLEPOL-001', allow_simple_ecn_checked=True)
+        doc = Document.objects.get(code='SIMPLEPOL-001')
+        self.assertTrue(doc.allow_simple_ecn)
+
+    def test_document_created_with_flag_false_when_unchecked(self):
+        self._post_new_document('SIMPLEPOL-002', allow_simple_ecn_checked=False)
+        doc = Document.objects.get(code='SIMPLEPOL-002')
+        self.assertFalse(doc.allow_simple_ecn)
+
+    def test_default_value_is_true_at_model_level(self):
+        """Migrazione retrocompatibile: i documenti esistenti restano invariati (simple ECN consentito)."""
+        doc = make_document(code='SIMPLEPOL-DEFAULT', owner=self.author)
+        self.assertTrue(doc.allow_simple_ecn)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class AllowSimpleEcnMetadataEditTests(TestCase):
+    """Modifica successiva della policy: permessi, audit, effetto solo futuro."""
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        self.author = User.objects.create_user('simplemeta-author', password='pw')
+        self.stranger = User.objects.create_user('simplemeta-stranger', password='pw')
+        Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        self.document = make_document(code='SIMPLEMETA-001', owner=self.author)
+        create_new_revision(self.document, self.author, '00', 0)
+
+    def test_shown_in_metadata_edit_form(self):
+        self.client.login(username='simplemeta-author', password='pw')
+        response = self.client.get(reverse('document_edit_metadata', args=[self.document.pk]))
+        self.assertContains(response, 'allow_simple_ecn')
+
+    def test_owner_can_disable(self):
+        self.client.login(username='simplemeta-author', password='pw')
+        response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+        })
+        self.assertRedirects(response, reverse('document_detail', args=[self.document.pk]))
+        self.document.refresh_from_db()
+        self.assertFalse(self.document.allow_simple_ecn)
+
+    def test_owner_can_reenable(self):
+        self.document.allow_simple_ecn = False
+        self.document.save(update_fields=['allow_simple_ecn'])
+        self.client.login(username='simplemeta-author', password='pw')
+        response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+            'allow_simple_ecn': 'on',
+        })
+        self.assertRedirects(response, reverse('document_detail', args=[self.document.pk]))
+        self.document.refresh_from_db()
+        self.assertTrue(self.document.allow_simple_ecn)
+
+    def test_unauthorized_user_cannot_edit(self):
+        self.client.login(username='simplemeta-stranger', password='pw')
+        response = self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+        })
+        self.assertEqual(response.status_code, 403)
+        self.document.refresh_from_db()
+        self.assertTrue(self.document.allow_simple_ecn)
+
+    def test_change_is_audited_with_old_and_new_value(self):
+        from auditlog.models import AuditLog
+        self.client.login(username='simplemeta-author', password='pw')
+        self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+        })
+        log = AuditLog.objects.filter(
+            action='ECN_SIMPLE_POLICY_CHANGED', object_id=str(self.document.pk),
+        ).order_by('-timestamp').first()
+        self.assertIsNotNone(log)
+        self.assertTrue(log.changes['old_values']['allow_simple_ecn'])
+        self.assertFalse(log.changes['new_values']['allow_simple_ecn'])
+
+    def test_no_change_no_audit_log_entry(self):
+        from auditlog.models import AuditLog
+        self.client.login(username='simplemeta-author', password='pw')
+        self.client.post(reverse('document_edit_metadata', args=[self.document.pk]), {
+            'title': self.document.title, 'description': '', 'revision_scheme': 'numeric',
+            'allow_simple_ecn': 'on',
+        })
+        self.assertFalse(
+            AuditLog.objects.filter(action='ECN_SIMPLE_POLICY_CHANGED', object_id=str(self.document.pk)).exists()
+        )
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class AllowSimpleEcnEnforcementTests(TestCase):
+    """Standard sempre consentito; semplice bloccato solo quando disattivato — a livello service e UI."""
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        self.author = User.objects.create_user('simpleenf-author', password='pw')
+        self.approver = User.objects.create_user('simpleenf-approver', password='pw')
+        Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        self.folder = _make_folder(code='SIMPLEENF-FOLD', owner=self.author)
+        from projects.models import ProjectFolderMembership
+        ProjectFolderMembership.objects.create(
+            folder=self.folder, user=self.author, role='author', created_by=self.author,
+        )
+
+    def _published_doc(self, code, allow_simple_ecn):
+        doc, ver = _make_published_doc(code, self.folder, self.author)
+        doc.allow_simple_ecn = allow_simple_ecn
+        doc.save(update_fields=['allow_simple_ecn'])
+        return doc, ver
+
+    def test_create_simple_ecn_raises_when_disallowed(self):
+        from ecn.services import create_simple_ecn
+        doc, _ = self._published_doc('SIMPLEENF-001', allow_simple_ecn=False)
+        with self.assertRaises(ValidationError) as ctx:
+            create_simple_ecn(document=doc, proposed_by=self.author, title='Tentativo', send_notifications=False)
+        self.assertIn('non è consentito', str(ctx.exception))
+
+    def test_create_simple_ecn_still_works_when_allowed(self):
+        from ecn.models import ChangeNotice
+        from ecn.services import create_simple_ecn
+        doc, _ = self._published_doc('SIMPLEENF-002', allow_simple_ecn=True)
+        ecn = create_simple_ecn(document=doc, proposed_by=self.author, title='OK', send_notifications=False)
+        self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
+
+    def test_standard_ecn_always_available_when_simple_disallowed(self):
+        """Requisito esplicito: l'ECN standard non deve mai essere bloccato da questa opzione."""
+        from ecn.models import ChangeNotice
+        from ecn.services import create_change_notice
+        doc, _ = self._published_doc('SIMPLEENF-003', allow_simple_ecn=False)
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.author, title='Standard sempre ok',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        self.assertIsNotNone(ecn.pk)
+
+    def test_document_detail_hides_simple_button_when_disallowed(self):
+        doc, _ = self._published_doc('SIMPLEENF-004', allow_simple_ecn=False)
+        self.client.force_login(self.author)
+        response = self.client.get(reverse('document_detail', args=[doc.pk]))
+        self.assertNotContains(response, '+ Crea ECN semplice')
+        self.assertContains(response, '+ Richiedi ECN standard')
+
+    def test_document_detail_shows_both_buttons_when_allowed(self):
+        doc, _ = self._published_doc('SIMPLEENF-005', allow_simple_ecn=True)
+        self.client.force_login(self.author)
+        response = self.client.get(reverse('document_detail', args=[doc.pk]))
+        self.assertContains(response, '+ Crea ECN semplice')
+        self.assertContains(response, '+ Richiedi ECN standard')
+
+    def test_document_detail_shows_policy_badge_when_disallowed(self):
+        doc, _ = self._published_doc('SIMPLEENF-006', allow_simple_ecn=False)
+        self.client.force_login(self.author)
+        response = self.client.get(reverse('document_detail', args=[doc.pk]))
+        self.assertContains(response, 'Solo ECN standard')
+
+    def test_ecn_create_simple_view_redirects_with_message_when_disallowed(self):
+        doc, _ = self._published_doc('SIMPLEENF-007', allow_simple_ecn=False)
+        self.client.force_login(self.author)
+        response = self.client.get(
+            reverse('ecn:ecn_create_simple') + f'?document={doc.pk}', follow=True,
+        )
+        self.assertRedirects(response, reverse('document_detail', args=[doc.pk]))
+        self.assertContains(response, 'non è consentito')
+
+    def test_existing_simple_ecn_unaffected_by_later_disallow(self):
+        """Cambiare la policy non tocca ECN già esistenti né i workflow già in corso."""
+        from ecn.models import ChangeNotice
+        from ecn.services import create_simple_ecn
+        doc, _ = self._published_doc('SIMPLEENF-008', allow_simple_ecn=True)
+        ecn = create_simple_ecn(document=doc, proposed_by=self.author, title='Prima del cambio', send_notifications=False)
+
+        doc.allow_simple_ecn = False
+        doc.save(update_fields=['allow_simple_ecn'])
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
+        self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
+
+        # La revisione di esecuzione collegata a questo ECN già esistente
+        # deve poter essere creata regolarmente nonostante il flag sia
+        # ora disattivato (il gate riguarda solo la CREAZIONE di NUOVI
+        # ECN semplici, non l'uso di uno già approvato).
+        version = create_new_revision(
+            doc, self.author, '01', 1, ecn=ecn, change_summary='Eseguita dopo il cambio policy',
+        )
+        self.assertEqual(version.status, DocumentVersion.Status.DRAFT)
+
+    def test_historical_document_default_unaffected_by_new_field(self):
+        """Documenti storici/preesistenti restano invariati: allow_simple_ecn default True."""
+        doc, ver = _make_published_doc('SIMPLEENF-HIST', self.folder, self.author)
+        self.assertTrue(doc.allow_simple_ecn)
+
+    def test_not_confused_with_legacy_no_ecn_path(self):
+        """
+        Un documento con requires_ecn_for_revision=False (percorso legacy, nessun
+        ECN richiesto affatto) e allow_simple_ecn=False (nessun ECN semplice, ma
+        ECN non richiesto comunque in questo caso) non genera errori: le due
+        configurazioni sono ortogonali, non si sostituiscono a vicenda.
+        """
+        doc, _ = self._published_doc('SIMPLEENF-009', allow_simple_ecn=False)
+        doc.requires_ecn_for_revision = False
+        doc.save(update_fields=['requires_ecn_for_revision'])
+        # Nessun ECN necessario affatto: la revisione diretta funziona comunque.
+        version = create_new_revision(doc, self.author, '01', 1, change_summary='Diretta, nessun ECN')
+        self.assertEqual(version.status, DocumentVersion.Status.DRAFT)
+

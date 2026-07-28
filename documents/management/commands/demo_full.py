@@ -72,6 +72,7 @@ class Command(BaseCommand):
         self._scenario_user_signatures(supervisor, mario, lucia, anna)
         self._scenario_pdf_workflow(mario, lucia, folder)
         self._scenario_ecn_standard_execution_pending(supervisor, mario, lucia, anna, folder)
+        self._scenario_simple_ecn_disallowed(supervisor, mario, lucia, folder)
 
         self.stdout.write(self.style.SUCCESS('\nDemo full completato.'))
 
@@ -464,6 +465,79 @@ class Command(BaseCommand):
             f'{CODE}: {ecn.code} approvato + Rev. 01 IN_APPROVAL (policy ALL, 2 approvatori) '
             '— esecuzione ancora in corso, ECN non ancora chiuso: si chiuderà da solo alla '
             'approvazione definitiva di entrambi gli approvatori.'
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Scenario 4ter — Document.allow_simple_ecn=False (AREA A, 2026-07-28):
+    # per questo documento è consentito solo l'ECN standard (con CCB);
+    # l'ECN semplice non è proponibile. Dimostra che lo standard resta
+    # sempre disponibile e completa comunque una revisione regolarmente.
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _scenario_simple_ecn_disallowed(self, supervisor, author, approver, folder):
+        from documents.models import Document
+        from documents.services import create_new_revision, submit_version_for_approval
+        from approvals.services import approve_version
+        from ecn.models import ChangeNotice
+        from ecn.services import approve_change_notice, configure_ccb, create_change_notice, create_simple_ecn, submit_change_notice, update_ccb_dossier
+
+        CODE = 'DEMO-ECN-SIMPLE-DISALLOWED'
+        if Document.objects.filter(code=CODE).exists():
+            self._step(f'{CODE}: già esistente, saltato.')
+            return
+
+        doc = Document.objects.create(
+            code=CODE,
+            title='Specifica critica — solo ECN standard consentito (Demo AREA A)',
+            category=Document.Category.QUALITY,
+            document_type='SYSD',
+            project_folder=folder,
+            owner=author,
+            created_by=author,
+            allow_simple_ecn=False,
+        )
+        ver00 = create_new_revision(doc, author, '00', 0,
+                                    change_summary='Prima emissione.',
+                                    _bypass_ecn_check=True)
+        req00 = submit_version_for_approval(ver00, author, [approver], send_notifications=False)
+        approve_version(req00, approver, comment='Prima emissione approvata.', send_notifications=False)
+        doc.refresh_from_db()
+
+        # Dimostra il blocco esplicito: il tentativo di ECN semplice è rifiutato.
+        try:
+            create_simple_ecn(document=doc, proposed_by=author, title='Tentativo bloccato', send_notifications=False)
+            blocked_ok = False
+        except Exception:
+            blocked_ok = True
+
+        # L'ECN standard resta invece sempre disponibile.
+        ecn = create_change_notice(
+            document=doc, proposed_by=author,
+            title='Aggiornamento sezione 2 — solo standard consentito',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code='ECN-NOSIMPLE-001',
+        )
+        configure_ccb(ecn, actor=supervisor, users=[supervisor], policy='any',
+                      coordinator=supervisor, send_notifications=False)
+        update_ccb_dossier(ecn, actor=supervisor, ccb_class='class2',
+                           ccb_requirements='Verificato.', ccb_technical_impact='Limitato.')
+        submit_change_notice(ecn, supervisor, send_notifications=False)
+        approve_change_notice(ecn, supervisor, ccb_class='class2', ccb_requirements='Approvato.',
+                              ccb_technical_impact='Limitato.', comment='CCB approva — demo.',
+                              send_notifications=False)
+
+        ver01 = create_new_revision(doc, author, '01', 1, ecn=ecn,
+                                    change_summary='Aggiornamento sezione 2 (da ECN-NOSIMPLE-001).')
+        req01 = submit_version_for_approval(ver01, author, [approver], send_notifications=False)
+        approve_version(req01, approver, comment='Rev. 01 approvata.', send_notifications=False)
+        doc.refresh_from_db()
+        ecn.refresh_from_db()
+
+        self._step(
+            f'{CODE}: allow_simple_ecn=False — tentativo ECN semplice '
+            f'{"correttamente bloccato" if blocked_ok else "NON bloccato (errore)"}, '
+            f'ECN standard {ecn.code} usato regolarmente '
+            f'({ecn.get_status_display()} automaticamente dopo Rev. 01).'
         )
 
     # ──────────────────────────────────────────────────────────────────────

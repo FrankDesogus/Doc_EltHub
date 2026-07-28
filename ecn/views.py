@@ -343,6 +343,14 @@ def ecn_create_simple(request):
     if not can_create_ecn(request.user, document):
         raise PermissionDenied
 
+    if not document.allow_simple_ecn:
+        messages.error(
+            request,
+            'Il flusso ECN semplice non è consentito per questo documento. '
+            'Usa l\'ECN standard (con istruttoria e votazione CCB).',
+        )
+        return redirect('document_detail', document_id=document.pk)
+
     if request.method == 'POST':
         form = SimpleEcnForm(request.POST)
         if form.is_valid():

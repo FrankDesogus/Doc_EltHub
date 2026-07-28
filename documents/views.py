@@ -648,6 +648,7 @@ def new_document(request):
                         project_folder=d['project_folder'],
                         revision_scheme=d.get('revision_scheme', 'numeric'),
                         requires_ecn_for_revision=not d.get('ecn_exemption', False),
+                        allow_simple_ecn=d.get('allow_simple_ecn', True),
                         requires_approved_pdf=d.get('requires_approved_pdf', False),
                         owner=request.user,
                         created_by=request.user,
@@ -661,6 +662,7 @@ def new_document(request):
                             'code': doc.code,
                             'category': doc.category,
                             'requires_ecn_for_revision': doc.requires_ecn_for_revision,
+                            'allow_simple_ecn': doc.allow_simple_ecn,
                             'requires_approved_pdf': doc.requires_approved_pdf,
                         },
                         document=doc,
@@ -990,12 +992,30 @@ def edit_document_metadata(request, document_id):
         # della validazione, quindi leggere il valore dopo is_valid() darebbe
         # già il nuovo valore.
         old_requires_approved_pdf = doc.requires_approved_pdf
+        old_allow_simple_ecn = doc.allow_simple_ecn
         form = DocumentMetadataEditForm(request.POST, instance=doc)
         if form.is_valid():
             try:
                 instance = form.save(commit=False)
                 instance.full_clean()
                 instance.save()
+
+                changed_notes = []
+
+                if instance.allow_simple_ecn != old_allow_simple_ecn:
+                    from auditlog.services import create_audit_log as _cal
+                    _cal(
+                        user=request.user,
+                        action='ECN_SIMPLE_POLICY_CHANGED',
+                        instance=instance,
+                        old_values={'allow_simple_ecn': old_allow_simple_ecn},
+                        new_values={'allow_simple_ecn': instance.allow_simple_ecn},
+                        document=instance,
+                    )
+                    changed_notes.append(
+                        'La modifica al flusso ECN semplice vale solo per i prossimi ECN non '
+                        'ancora creati: gli ECN già esistenti e i workflow già in corso non cambiano.'
+                    )
 
                 if instance.requires_approved_pdf != old_requires_approved_pdf:
                     from auditlog.services import create_audit_log as _cal
@@ -1007,11 +1027,16 @@ def edit_document_metadata(request, document_id):
                         new_values={'requires_approved_pdf': instance.requires_approved_pdf},
                         document=instance,
                     )
+                    changed_notes.append(
+                        'La modifica al PDF approvato vale solo per le revisioni non ancora '
+                        'inviate in approvazione: le revisioni storiche e i workflow già in '
+                        'corso non cambiano.'
+                    )
+
+                if changed_notes:
                     messages.success(
                         request,
-                        f'Metadati di {doc.code} aggiornati. La modifica al PDF approvato vale '
-                        f'solo per le revisioni non ancora inviate in approvazione: le revisioni '
-                        f'storiche e i workflow già in corso non cambiano.',
+                        f'Metadati di {doc.code} aggiornati. ' + ' '.join(changed_notes),
                     )
                 else:
                     messages.success(

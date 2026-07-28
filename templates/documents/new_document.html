@@ -108,6 +108,23 @@
      approvazione. Il campo resta nel form/modello per compatibilità con i
      documenti esistenti (requires_ecn_for_revision), solo non più mostrato qui. #}
 
+  <!-- Sezione: Governance ECN -->
+  <div class="form-section">
+    <div class="form-section-title">Governance ECN</div>
+    <div class="form-group mb-0">
+      <label class="flex items-center gap-2 cursor-pointer">
+        {{ form.allow_simple_ecn }}
+        <span class="form-label mb-0">{{ form.allow_simple_ecn.label }}</span>
+      </label>
+      {% if form.allow_simple_ecn.help_text %}
+      <p class="form-help">{{ form.allow_simple_ecn.help_text }}</p>
+      {% endif %}
+      {% for error in form.allow_simple_ecn.errors %}
+      <p class="form-error">{{ error }}</p>
+      {% endfor %}
+    </div>
+  </div>
+
   <!-- Sezione: PDF approvato -->
   <div class="form-section">
     <div class="form-section-title">PDF approvato</div>
