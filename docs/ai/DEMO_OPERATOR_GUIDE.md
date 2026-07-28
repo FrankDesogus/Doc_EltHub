@@ -110,7 +110,7 @@ credenziali sopra. **Mai avviare su `0.0.0.0` o esporre in rete.**
    `DEMO-POL-SEQ` per mostrare le policy di approvazione (basta un
    approvatore vs sequenza ordinata).
 6. **ECN** (`/ecn/`) → dashboard con ECN in tutti e 6 gli stati
-   (draft, in istruttoria CCB, in revisione, approvata, rifiutata,
+   (draft, in istruttoria CCB, in valutazione, approvata, rifiutata,
    chiusa). Aprire `DEMO-ECN-EXEC` per mostrare l'ECN che ha originato
    una revisione (link visibile in `version_detail`).
 7. **ECN semplice (TASK-022)**: aprire `DEMO-ECN-SIMPLE-001` — la

@@ -120,6 +120,18 @@ class ChangeNoticeModelTests(TestCase):
         self.assertIn('rejected', valid)
         self.assertIn('closed', valid)
 
+    def test_under_review_label_is_in_valutazione_ccb(self):
+        """
+        Etichetta 2026-07-28: solo il testo mostrato cambia ("In Revisione
+        CCB" → "In Valutazione CCB"), il valore tecnico persistito
+        ('under_review') resta invariato.
+        """
+        ecn = _make_ecn(self.document, self.version, self.user, code='ECN-LABEL-001')
+        ecn.status = ChangeNotice.Status.UNDER_REVIEW
+        ecn.save(update_fields=['status'])
+        self.assertEqual(ecn.status, 'under_review')
+        self.assertEqual(ecn.get_status_display(), 'In Valutazione CCB')
+
     def test_all_motivation_choices_valid(self):
         valid = {m.value for m in ChangeNotice.Motivation}
         self.assertIn('improvement', valid)
@@ -1711,6 +1723,15 @@ class ECNViewTests(TestCase):
         r = self.client.get(f'/ecn/{self.ecn.pk}/')
         # STEP I: il pulsante si chiama "Decisione CCB"
         self.assertContains(r, 'Decisione CCB')
+
+    def test_ecn_detail_shows_in_valutazione_ccb_label(self):
+        """Etichetta 2026-07-28: il badge mostra 'In Valutazione CCB', non più 'In Revisione CCB'."""
+        self.ecn.status = ChangeNotice.Status.UNDER_REVIEW
+        self.ecn.save(update_fields=['status'])
+        self.client.force_login(self.manager)
+        r = self.client.get(f'/ecn/{self.ecn.pk}/')
+        self.assertContains(r, 'In Valutazione CCB')
+        self.assertNotContains(r, 'In Revisione CCB')
 
     def test_ecn_detail_shows_approvers_section(self):
         """ECN-E: la sezione Componenti CCB mostra l'approvatore."""

@@ -67,7 +67,7 @@
   <h2 class="section-title mb-0">Pronte da inviare</h2>
   {% if draft_ccb_ready %}<span class="badge-ecn-ccb_prep">{{ draft_ccb_ready|length }}</span>{% endif %}
 </div>
-<p class="meta mb-3">ECN in bozza con CCB configurata — pronti per l'invio in revisione.</p>
+<p class="meta mb-3">ECN in bozza con CCB configurata — pronti per l'invio in valutazione.</p>
 {% if draft_ccb_ready %}
 <div class="table-container">
   <table class="data-table">
@@ -104,12 +104,12 @@
 </div>
 {% endif %}
 
-{# ---- 3: In revisione CCB ---- #}
+{# ---- 3: In Valutazione CCB ---- #}
 <div class="flex items-center gap-2 mb-2 mt-8">
-  <h2 class="section-title mb-0">In revisione CCB</h2>
+  <h2 class="section-title mb-0">In Valutazione CCB</h2>
   {% if under_review_data %}<span class="badge-ecn-under_review">{{ under_review_data|length }}</span>{% endif %}
 </div>
-<p class="meta mb-3">ECN in corso di revisione da parte della CCB.</p>
+<p class="meta mb-3">ECN in corso di valutazione da parte della CCB.</p>
 {% if under_review_data %}
 <div class="table-container">
   <table class="data-table">
@@ -143,8 +143,8 @@
 {% else %}
 <div class="card mb-6">
   <div class="empty-state py-8">
-    <div class="empty-state-title">Nessun ECN in revisione</div>
-    <div class="empty-state-desc">Nessun ECN in revisione CCB.</div>
+    <div class="empty-state-title">Nessun ECN in valutazione</div>
+    <div class="empty-state-desc">Nessun ECN in valutazione CCB.</div>
   </div>
 </div>
 {% endif %}

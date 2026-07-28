@@ -25,7 +25,7 @@ _STATUS_LABELS = {
     'archived': 'Archiviato',
     # ECN
     'ccb_preparation': 'Istruttoria CCB',
-    'under_review': 'In revisione CCB',
+    'under_review': 'In Valutazione CCB',
     'closed': 'Chiusa',
     # Approvatori
     'pending': 'In attesa',

@@ -69,7 +69,7 @@
         <tr>
           <td><a href="{% url 'ecn:ecn_detail' ca.change_notice.pk %}" class="font-mono font-semibold text-brand-800 hover:underline">{{ ca.change_notice.code }}</a></td>
           <td>{{ ca.change_notice.title }}</td>
-          <td><span class="badge-ecn-under_review">In revisione</span></td>
+          <td><span class="badge-ecn-under_review">In Valutazione</span></td>
           <td>
             <a href="{% url 'ecn:ecn_detail' ca.change_notice.pk %}" class="btn-primary btn-sm">Decidi</a>
           </td>
@@ -161,7 +161,7 @@
           <td>
             {% if ecn.status == 'draft' %}<span class="badge-ecn-draft">Bozza</span>
             {% elif ecn.status == 'ccb_preparation' %}<span class="badge-ecn-ccb_prep">Istruttoria CCB</span>
-            {% elif ecn.status == 'under_review' %}<span class="badge-ecn-under_review">In revisione CCB</span>
+            {% elif ecn.status == 'under_review' %}<span class="badge-ecn-under_review">In Valutazione CCB</span>
             {% elif ecn.status == 'approved' %}<span class="badge-ecn-approved">Approvata</span>
             {% elif ecn.status == 'rejected' %}<span class="badge-ecn-rejected">Rifiutata</span>
             {% elif ecn.status == 'closed' %}<span class="badge-ecn-closed">Chiusa</span>

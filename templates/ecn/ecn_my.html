@@ -40,7 +40,7 @@
         <td>
           {% if ecn.status == 'draft' %}<span class="badge-ecn-draft">Bozza</span>
           {% elif ecn.status == 'ccb_preparation' %}<span class="badge-ecn-ccb_prep">Istruttoria CCB</span>
-          {% elif ecn.status == 'under_review' %}<span class="badge-ecn-under_review">In revisione CCB</span>
+          {% elif ecn.status == 'under_review' %}<span class="badge-ecn-under_review">In Valutazione CCB</span>
           {% elif ecn.status == 'approved' %}<span class="badge-ecn-approved">Approvata</span>
           {% elif ecn.status == 'rejected' %}<span class="badge-ecn-rejected">Rifiutata</span>
           {% elif ecn.status == 'closed' %}<span class="badge-ecn-closed">Chiusa</span>
@@ -73,7 +73,7 @@
   <span class="badge-ecn-under_review">{{ pending_approvals|length }}</span>
   {% endif %}
 </div>
-<p class="meta mb-3">ECN in revisione dove sei designato come approvatore CCB e non hai ancora espresso il voto.</p>
+<p class="meta mb-3">ECN in valutazione dove sei designato come approvatore CCB e non hai ancora espresso il voto.</p>
 
 {% if pending_approvals %}
 <div class="table-container mb-6">

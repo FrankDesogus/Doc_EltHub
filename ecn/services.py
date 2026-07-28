@@ -253,7 +253,7 @@ def reopen_ccb_configuration(change_notice, actor, reason=''):
     # Verifica stato e condizioni prima del permesso, per dare errori più chiari
     if change_notice.status != ChangeNotice.Status.UNDER_REVIEW:
         raise ValidationError(
-            "La riapertura CCB è possibile solo su ECN in revisione."
+            "La riapertura CCB è possibile solo su ECN in valutazione."
         )
 
     if not change_notice.decisions.exists():
@@ -323,7 +323,7 @@ def set_change_notice_approvers(change_notice, users, policy=None, actor=None):
     if change_notice.status not in allowed:
         raise ValidationError(
             "Gli approvatori possono essere assegnati solo a ECN in bozza, "
-            "istruttoria CCB o in revisione senza decisioni."
+            "istruttoria CCB o in valutazione senza decisioni."
         )
 
     if change_notice.status == ChangeNotice.Status.UNDER_REVIEW and change_notice.decisions.exists():
@@ -491,7 +491,7 @@ def approve_change_notice(
 
     if change_notice.status != ChangeNotice.Status.UNDER_REVIEW:
         raise ValidationError(
-            f"Solo gli ECN in revisione CCB possono essere approvati. "
+            f"Solo gli ECN in valutazione CCB possono essere approvati. "
             f"Stato attuale: {change_notice.get_status_display()}."
         )
 
@@ -619,7 +619,7 @@ def reject_change_notice(change_notice, user, reason, comment=None, send_notific
 
     if change_notice.status != ChangeNotice.Status.UNDER_REVIEW:
         raise ValidationError(
-            f"Solo gli ECN in revisione CCB possono essere rifiutati. "
+            f"Solo gli ECN in valutazione CCB possono essere rifiutati. "
             f"Stato attuale: {change_notice.get_status_display()}."
         )
 

@@ -19,7 +19,7 @@
     {% elif ecn.status == 'ccb_preparation' %}
     <span class="badge-ecn-ccb_prep">Istruttoria CCB</span>
     {% elif ecn.status == 'under_review' %}
-    <span class="badge-ecn-under_review">In revisione CCB</span>
+    <span class="badge-ecn-under_review">In Valutazione CCB</span>
     {% elif ecn.status == 'approved' %}
     <span class="badge-ecn-approved">Approvata</span>
     {% elif ecn.status == 'rejected' %}
@@ -82,7 +82,7 @@
   </div>
   {% else %}
   <div class="alert-info mb-4">
-    <strong>In revisione:</strong> L'ECN è in corso di revisione da parte della CCB.
+    <strong>In Valutazione:</strong> L'ECN è in corso di valutazione da parte della CCB.
   </div>
   {% endif %}
 {% elif ecn.status == 'approved' %}

@@ -8,7 +8,7 @@ class ChangeNotice(models.Model):
     class Status(models.TextChoices):
         DRAFT           = 'draft',           'Bozza'
         CCB_PREPARATION = 'ccb_preparation', 'Istruttoria CCB'
-        UNDER_REVIEW    = 'under_review',    'In revisione CCB'
+        UNDER_REVIEW    = 'under_review',    'In Valutazione CCB'
         APPROVED        = 'approved',        'Approvata'
         REJECTED        = 'rejected',        'Rifiutata'
         CLOSED          = 'closed',          'Chiusa'

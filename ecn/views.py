@@ -651,7 +651,7 @@ def ecn_review(request, ecn_id):
     if ecn.status != ChangeNotice.Status.UNDER_REVIEW:
         messages.error(
             request,
-            f'L\'ECN non è in revisione CCB (stato: {ecn.get_status_display()}).',
+            f'L\'ECN non è in valutazione CCB (stato: {ecn.get_status_display()}).',
         )
         return redirect('ecn:ecn_detail', ecn_id=ecn_id)
 
@@ -998,7 +998,7 @@ def ecn_dashboard(request):
     draft_no_ccb = [e for e in all_draft if not e.approvers.exists()]
     draft_ccb_ready = [e for e in all_draft if e.approvers.exists()]
 
-    # 3: IN REVISIONE CCB — con progresso approvatori
+    # 3: IN VALUTAZIONE CCB — con progresso approvatori
     under_review_raw = (
         ChangeNotice.objects
         .filter(status=ChangeNotice.Status.UNDER_REVIEW)
