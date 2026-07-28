@@ -1943,13 +1943,13 @@ class ECNViewTests(TestCase):
         self.ecn.save(update_fields=['status', 'ccb_class'])
         self.client.force_login(self.manager)
         r = self.client.get(f'/ecn/{self.ecn.pk}/')
-        self.assertNotContains(r, 'Chiudi ECN — pronto')
+        self.assertNotContains(r, 'Chiudi ECN manualmente')
 
     def test_ecn_detail_close_button_shown_when_ready(self):
         self._put_ecn_approved_with_exec_version()
         self.client.force_login(self.manager)
         r = self.client.get(f'/ecn/{self.ecn.pk}/')
-        self.assertContains(r, 'Chiudi ECN — pronto')
+        self.assertContains(r, 'Chiudi ECN manualmente')
 
     def test_ecn_close_post_closes_ecn(self):
         self._put_ecn_approved_with_exec_version()
@@ -3681,12 +3681,13 @@ class SimpleEcnServiceTests(TestCase):
         self.assertIsNotNone(ecn.executed_at)
 
 
-class AutoCloseSimpleEcnTests(TestCase):
+class AutoCloseEcnTests(TestCase):
     """
-    AREA 3 (verifica manuale 2026-07-27): l'ECN a flusso semplice si chiude
-    automaticamente quando la sua revisione di esecuzione viene approvata
-    definitivamente — mai per un ECN standard, mai prima che la revisione
-    sia realmente approvata.
+    Requisito aziendale del 2026-07-28: sia l'ECN standard sia l'ECN a
+    flusso semplice si chiudono automaticamente quando la loro revisione
+    di esecuzione viene approvata definitivamente e diventa la versione
+    corrente del documento — mai prima, mai per una revisione diversa da
+    quella collegata, mai due volte.
     """
 
     def setUp(self):
@@ -3698,9 +3699,23 @@ class AutoCloseSimpleEcnTests(TestCase):
         self.document.current_version = self.version
         self.document.save(update_fields=['current_version'])
 
+    def _approve_and_promote(self, version):
+        """Simula ciò che _finalize_approval fa davvero prima di chiamare l'auto-close."""
+        old_current = self.document.current_version
+        if old_current is not None and old_current.pk != version.pk:
+            DocumentVersion.objects.filter(pk=old_current.pk).update(
+                status=DocumentVersion.Status.SUPERSEDED, is_current=False,
+            )
+        version.status = DocumentVersion.Status.APPROVED
+        version.is_current = True
+        version.save(update_fields=['status', 'is_current'])
+        self.document.current_version = version
+        self.document.save(update_fields=['current_version'])
+        self.document.refresh_from_db()
+
     def test_simple_ecn_auto_closes_when_execution_approved(self):
         from documents.services import create_new_revision
-        from ecn.services import auto_close_simple_ecn_if_ready, create_simple_ecn
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
@@ -3709,36 +3724,16 @@ class AutoCloseSimpleEcnTests(TestCase):
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
         )
-        new_version.status = DocumentVersion.Status.APPROVED
-        new_version.save(update_fields=['status'])
+        self._approve_and_promote(new_version)
 
-        auto_close_simple_ecn_if_ready(new_version, self.approver)
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
         self.assertEqual(ecn.closed_by_id, self.approver.pk)
 
-    def test_auto_close_writes_distinct_audit_action(self):
+    def test_standard_ecn_auto_closes_when_execution_approved(self):
         from documents.services import create_new_revision
-        from ecn.services import auto_close_simple_ecn_if_ready, create_simple_ecn
-
-        ecn = create_simple_ecn(
-            document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False,
-        )
-        new_version = create_new_revision(
-            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
-        )
-        new_version.status = DocumentVersion.Status.APPROVED
-        new_version.save(update_fields=['status'])
-
-        AuditLog.objects.all().delete()
-        auto_close_simple_ecn_if_ready(new_version, self.approver)
-        log = AuditLog.objects.filter(action='ECN_CLOSED_AUTO').first()
-        self.assertIsNotNone(log)
-
-    def test_standard_ecn_never_auto_closed(self):
-        from documents.services import create_new_revision
-        from ecn.services import auto_close_simple_ecn_if_ready, create_change_notice
+        from ecn.services import auto_close_executed_ecn_if_ready, create_change_notice
 
         ecn = create_change_notice(
             document=self.document, proposed_by=self.author,
@@ -3750,17 +3745,139 @@ class AutoCloseSimpleEcnTests(TestCase):
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN standard',
         )
-        new_version.status = DocumentVersion.Status.APPROVED
-        new_version.save(update_fields=['status'])
+        self._approve_and_promote(new_version)
 
-        auto_close_simple_ecn_if_ready(new_version, self.approver)
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
         ecn.refresh_from_db()
-        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # invariato, non chiuso
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+        self.assertEqual(ecn.closed_by_id, self.approver.pk)
+        self.assertIn('Rev. 01', ecn.close_notes)
+
+    def test_auto_close_writes_distinct_audit_action_with_revision_reference(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
+        )
+        self._approve_and_promote(new_version)
+
+        AuditLog.objects.all().delete()
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
+        log = AuditLog.objects.filter(action='ECN_CLOSED_AUTO').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.changes['metadata']['closing_revision_id'], new_version.pk)
+        self.assertEqual(log.changes['metadata']['closing_revision_label'], '01')
+        self.assertEqual(log.changes['metadata']['flow_type'], ChangeNotice.FlowType.SIMPLE)
 
     def test_no_auto_close_when_no_matching_ecn(self):
         """Una versione senza alcun ECN collegato non deve sollevare eccezioni."""
-        from ecn.services import auto_close_simple_ecn_if_ready
-        auto_close_simple_ecn_if_ready(self.version, self.approver)  # non deve sollevare
+        from ecn.services import auto_close_executed_ecn_if_ready
+        self.version.is_current = True
+        self.version.save(update_fields=['is_current'])
+        auto_close_executed_ecn_if_ready(self.version, self.approver)  # non deve sollevare
+
+    def test_no_auto_close_when_version_not_current(self):
+        """
+        Guardia esplicita: una versione APPROVED ma non ancora promossa a
+        corrente (chiamata anomala/fuori sequenza) non chiude l'ECN.
+        """
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.is_current = False  # mai promossa a corrente
+        new_version.save(update_fields=['status', 'is_current'])
+
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # non chiuso
+
+    def test_rejected_version_never_triggers_close(self):
+        """Una revisione rifiutata (mai is_current) non deve mai chiudere l'ECN collegato."""
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
+        )
+        new_version.status = DocumentVersion.Status.REJECTED
+        new_version.save(update_fields=['status'])
+
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # non chiuso
+
+    def test_unrelated_version_approval_does_not_close_other_ecn(self):
+        """Approvare una revisione NON collegata a un ECN non deve mai chiuderlo."""
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        # Nessun ecn= collegato a questa seconda revisione.
+        unrelated_version = create_new_revision(
+            self.document, self.author, '02', 2, change_summary='Non collegata a nessun ECN',
+            _bypass_ecn_check=True,
+        )
+        self._approve_and_promote(unrelated_version)
+
+        auto_close_executed_ecn_if_ready(unrelated_version, self.approver)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # invariato
+
+    def test_idempotent_no_double_close_no_double_email(self):
+        """Richiamare la funzione due volte non chiude due volte né invia due email."""
+        from django.core import mail
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
+        from notifications.models import NotificationLog
+
+        ecn = create_simple_ecn(
+            document=self.document, proposed_by=self.author,
+            title='Revisione rapida', send_notifications=False,
+        )
+        new_version = create_new_revision(
+            self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
+        )
+        self._approve_and_promote(new_version)
+
+        mail.outbox = []
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
+        first_closed_at = ChangeNotice.objects.get(pk=ecn.pk).closed_at
+        n_logs_after_first = NotificationLog.objects.count()
+
+        auto_close_executed_ecn_if_ready(new_version, self.approver)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.closed_at, first_closed_at)  # invariato: nessuna seconda chiusura
+        self.assertEqual(NotificationLog.objects.count(), n_logs_after_first)  # nessuna email in più
+
+    def test_pdf_regeneration_does_not_reclose_or_renotify(self):
+        """
+        La rigenerazione del PDF approvato non richiama affatto l'auto-chiusura:
+        verifica diretta che regenerate_approved_pdf_view non tocchi l'ECN.
+        """
+        import inspect
+        import documents.views as documents_views
+        source = inspect.getsource(documents_views.regenerate_approved_pdf_view)
+        self.assertNotIn('auto_close', source)
 
 
 class SimpleEcnViewTests(TestCase):

@@ -2712,7 +2712,17 @@ class DemoSupervisorTests(TestCase):
         req = submit_version_for_approval(ver01, self.supervisor, [self.supervisor])
         approve_version(req, self.supervisor)
         ecn.refresh_from_db()
-        # Chiude ECN
+        # L'approvazione definitiva di Rev. 01 chiude già l'ECN automaticamente
+        # (requisito 2026-07-28) — nessuna azione manuale necessaria qui.
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+        # Simula un caso eccezionale (sanatoria/correzione amministrativa):
+        # supervisor_demo deve comunque poter chiudere manualmente un ECN
+        # che si trovasse di nuovo in stato APPROVED con esecuzione pronta.
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.closed_by = None
+        ecn.closed_at = None
+        ecn.save(update_fields=['status', 'closed_by', 'closed_at'])
         close_change_notice(ecn, self.supervisor)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
@@ -2809,7 +2819,8 @@ class DemoSupervisorEndToEndTests(TestCase):
         """
         supervisor_demo esegue l'intero ciclo di vita documentale da solo:
         crea bozza → approva → crea ECN → configura CCB (solo sé) → invia →
-        approva ECN → crea revisione → approva revisione → chiude ECN.
+        approva ECN → crea revisione → approva revisione → ECN chiuso
+        automaticamente (requisito 2026-07-28).
         """
         from documents.models import Document, DocumentVersion
         from documents.services import create_new_revision, submit_version_for_approval
@@ -2822,7 +2833,6 @@ class DemoSupervisorEndToEndTests(TestCase):
             update_ccb_dossier,
             submit_change_notice,
             approve_change_notice,
-            close_change_notice,
         )
 
         sup = self.supervisor
@@ -2910,9 +2920,9 @@ class DemoSupervisorEndToEndTests(TestCase):
         v00.refresh_from_db()
         doc.refresh_from_db()
 
-        # 12. Chiude ECN (executed_version è stato impostato al passo 9)
-        ecn.refresh_from_db()
-        close_change_notice(ecn, sup, close_notes='ECN chiuso dal test E2E')
+        # 12. L'approvazione definitiva di Rev. 01 (passo 11) ha già chiuso
+        # l'ECN automaticamente (executed_version impostato al passo 9;
+        # requisito 2026-07-28) — nessuna chiusura manuale necessaria.
         ecn.refresh_from_db()
 
         # ── Verifiche finali ──────────────────────────────────────────────

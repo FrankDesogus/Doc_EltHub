@@ -71,6 +71,7 @@ class Command(BaseCommand):
         self._scenario_project_snapshot(supervisor)
         self._scenario_user_signatures(supervisor, mario, lucia, anna)
         self._scenario_pdf_workflow(mario, lucia, folder)
+        self._scenario_ecn_standard_execution_pending(supervisor, mario, lucia, anna, folder)
 
         self.stdout.write(self.style.SUCCESS('\nDemo full completato.'))
 
@@ -172,7 +173,7 @@ class Command(BaseCommand):
         from approvals.services import approve_version
         from ecn.models import ChangeNotice
         from ecn.services import (
-            approve_change_notice, close_change_notice, configure_ccb,
+            approve_change_notice, configure_ccb,
             create_change_notice, reject_change_notice, submit_change_notice,
             update_ccb_dossier,
         )
@@ -286,12 +287,15 @@ class Command(BaseCommand):
         approve_version(req01, supervisor,
                         comment='Rev. 01 approvata demo.',
                         send_notifications=False)
+        # Requisito 2026-07-28: l'approvazione definitiva di Rev. 01 chiude
+        # già automaticamente ECN-S-06 (standard) — nessuna chiusura manuale
+        # necessaria (né possibile: l'ECN non è più in stato APPROVED).
         doc.refresh_from_db()
         ecn_closed.refresh_from_db()
-        close_change_notice(ecn_closed, supervisor,
-                            close_notes='ECN eseguito. Rev. 01 approvata e pubblicata.',
-                            send_notifications=False)
-        self._step(f'ECN-S-06: stato CLOSED (Rev. 01 di {BASE_CODE} creata e approvata).')
+        self._step(
+            f'ECN-S-06: stato {ecn_closed.get_status_display()} — chiuso automaticamente '
+            f'dopo l\'approvazione di Rev. 01 di {BASE_CODE}.'
+        )
 
     # ──────────────────────────────────────────────────────────────────────
     # Scenario 4 — ECN che origina una revisione (mostra "ECN di origine")
@@ -303,7 +307,7 @@ class Command(BaseCommand):
         from approvals.services import approve_version
         from ecn.models import ChangeNotice
         from ecn.services import (
-            approve_change_notice, close_change_notice, configure_ccb,
+            approve_change_notice, configure_ccb,
             create_change_notice, submit_change_notice, update_ccb_dossier,
         )
 
@@ -378,15 +382,88 @@ class Command(BaseCommand):
         approve_version(req01, approver,
                         comment='Rev. 01 approvata.',
                         send_notifications=False)
+        # Requisito 2026-07-28: l'approvazione definitiva di Rev. 01 chiude
+        # già automaticamente ECN-EXEC-001 (standard, policy ALL) — nessuna
+        # chiusura manuale necessaria.
         doc.refresh_from_db()
         ecn.refresh_from_db()
-        close_change_notice(ecn, supervisor,
-                            close_notes='ECN chiuso dopo approvazione Rev. 01.',
-                            send_notifications=False)
 
         self._step(
-            f'{CODE}: Rev. 00 + ECN-EXEC-001 (policy ALL, 2 voti) + '
-            f'Rev. 01 con ECN di origine visibile in version_detail.'
+            f'{CODE}: Rev. 00 + ECN-EXEC-001 (policy ALL, 2 voti, {ecn.get_status_display()} '
+            f'automaticamente) + Rev. 01 con ECN di origine visibile in version_detail.'
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Scenario 4bis — ECN standard con revisione di esecuzione ancora in
+    # approvazione (requisito 2026-07-28): mostra lo stato intermedio
+    # "in attesa", prima della chiusura automatica che scatta solo alla
+    # approvazione definitiva della revisione collegata.
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _scenario_ecn_standard_execution_pending(self, supervisor, author, approver1, approver2, folder):
+        from documents.models import Document
+        from documents.services import create_new_revision, submit_version_for_approval
+        from approvals.services import approve_version
+        from ecn.models import ChangeNotice
+        from ecn.services import (
+            approve_change_notice, configure_ccb, create_change_notice,
+            submit_change_notice, update_ccb_dossier,
+        )
+
+        CODE = 'DEMO-ECN-PENDING-CLOSE'
+        if Document.objects.filter(code=CODE).exists():
+            self._step(f'{CODE}: già esistente, saltato.')
+            return
+
+        doc = Document.objects.create(
+            code=CODE,
+            title='Procedura demo — ECN standard con esecuzione in corso',
+            category=Document.Category.QUALITY,
+            document_type='SYSP',
+            project_folder=folder,
+            owner=author,
+            created_by=author,
+        )
+        ver00 = create_new_revision(doc, author, '00', 0,
+                                    change_summary='Prima emissione.',
+                                    _bypass_ecn_check=True)
+        req00 = submit_version_for_approval(ver00, author, [approver1], send_notifications=False)
+        approve_version(req00, approver1, comment='Prima emissione approvata.', send_notifications=False)
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=author,
+            title='Aggiornamento sezione 5 — procedura demo',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code='ECN-PENDING-001',
+        )
+        configure_ccb(ecn, actor=supervisor, users=[supervisor], policy='any',
+                      coordinator=supervisor, send_notifications=False)
+        update_ccb_dossier(ecn, actor=supervisor, ccb_class='class2',
+                           ccb_requirements='Verificato.', ccb_technical_impact='Limitato.')
+        submit_change_notice(ecn, supervisor, send_notifications=False)
+        approve_change_notice(ecn, supervisor,
+                              ccb_class='class2', ccb_requirements='Approvato.',
+                              ccb_technical_impact='Limitato.',
+                              comment='CCB approva — demo.', send_notifications=False)
+
+        ver01 = create_new_revision(
+            doc, author, '01', 1, ecn=ecn,
+            change_summary='Aggiornamento sezione 5 (da ECN-PENDING-001).',
+        )
+        submit_version_for_approval(
+            ver01, author, [approver1, approver2], approval_policy='all',
+            send_notifications=False,
+        )
+        # Deliberatamente NON approvata qui: Rev. 01 resta IN_APPROVAL e
+        # l'ECN resta APPROVED (non chiuso) — dimostra lo stato "in attesa"
+        # prima della chiusura automatica, che scatterà solo quando
+        # entrambi gli approvatori avranno approvato definitivamente.
+
+        self._step(
+            f'{CODE}: {ecn.code} approvato + Rev. 01 IN_APPROVAL (policy ALL, 2 approvatori) '
+            '— esecuzione ancora in corso, ECN non ancora chiuso: si chiuderà da solo alla '
+            'approvazione definitiva di entrambi gli approvatori.'
         )
 
     # ──────────────────────────────────────────────────────────────────────

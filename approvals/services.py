@@ -181,13 +181,15 @@ def approve_version(approval_request, approved_by, comment="", send_notification
             pass
 
     if is_final:
-        # Chiusura automatica dell'ECN a flusso semplice (AREA 3, verifica
-        # manuale del 2026-07-27): solo per flow_type=SIMPLE, mai per
-        # standard. Fuori dalla transazione, mai un errore qui che possa
-        # invalidare un'approvazione già registrata correttamente.
+        # Chiusura automatica dell'ECN collegato — standard o semplice
+        # (requisito aziendale del 2026-07-28, generalizza AREA 3 che
+        # limitava la chiusura automatica al solo flusso semplice). Fuori
+        # dalla transazione che ha finalizzato l'approvazione: un errore
+        # qui non deve mai invalidare un'approvazione già registrata
+        # correttamente.
         try:
-            from ecn.services import auto_close_simple_ecn_if_ready
-            auto_close_simple_ecn_if_ready(version, approved_by)
+            from ecn.services import auto_close_executed_ecn_if_ready
+            auto_close_executed_ecn_if_ready(version, approved_by)
         except Exception:
             pass
 

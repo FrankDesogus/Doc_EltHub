@@ -277,26 +277,53 @@ def notify_ecn_executed(change_notice):
         _send_and_log(recipient, subject, body)
 
 
-def notify_ecn_closed(change_notice):
+def notify_ecn_closed(change_notice, automatic=False):
     """
-    Invia email quando l'ECN è chiuso.
+    Invia email quando l'ECN è chiuso (manualmente o automaticamente).
     Destinatari: proponente, owner documento, ccb_coordinator,
     tutti i membri CCB, Quality Manager. Deduplica.
+
+    `automatic=True` (chiusura di sistema dopo l'approvazione definitiva
+    della revisione di esecuzione, sia flusso standard che semplice)
+    aggiunge la frase esplicita richiesta dal requisito aziendale e i
+    riferimenti alla revisione/orario di chiusura. Il testo non parla mai
+    di firma digitale.
     """
+    from django.utils import timezone
+
     from notifications.services import _send_and_log
 
     subject = f"[ECN] Chiuso: {change_notice.code}"
     recipients = _collect_ecn_outcome_recipients(change_notice)
 
+    executed = change_notice.executed_version
+    exec_label = f"Rev. {executed.revision_label}" if executed else '—'
+    closed_at_label = (
+        timezone.localtime(change_notice.closed_at).strftime('%d/%m/%Y %H:%M')
+        if change_notice.closed_at else '—'
+    )
+    closed_by = change_notice.closed_by
+    closed_by_label = (closed_by.get_full_name() or closed_by.username) if closed_by else '—'
+
     for recipient in recipients:
         body = (
             f"Gentile {recipient.get_full_name() or recipient.username},\n\n"
             f"l'ECN {change_notice.code} «{change_notice.title}» è stato chiuso.\n\n"
-            f"Documento      : {change_notice.document.code} — {change_notice.document.title}\n"
-            f"Proponente     : {change_notice.proposed_by.get_full_name() or change_notice.proposed_by.username}\n"
-            f"Note chiusura  : {change_notice.close_notes or '—'}\n\n"
-            f"Accedi al sistema documentale per i dettagli.\n\n"
-            f"Questo messaggio è generato automaticamente, non rispondere a questa email."
+            f"Documento               : {change_notice.document.code} — {change_notice.document.title}\n"
+            f"Revisione di esecuzione : {exec_label}\n"
+            f"Chiuso il               : {closed_at_label}\n"
+            f"Chiuso da               : {closed_by_label}\n"
+            f"Proponente              : {change_notice.proposed_by.get_full_name() or change_notice.proposed_by.username}\n"
+            f"Note chiusura           : {change_notice.close_notes or '—'}\n\n"
+        )
+        if automatic:
+            body += (
+                "La revisione di esecuzione è stata approvata e l'ECN è stato "
+                "chiuso automaticamente.\n\n"
+            )
+        body += (
+            "Accedi al sistema documentale per i dettagli.\n\n"
+            "Questo messaggio è generato automaticamente, non rispondere a questa email."
         )
         _send_and_log(recipient, subject, body)
 

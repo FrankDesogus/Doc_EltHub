@@ -1236,11 +1236,10 @@ class PDFPolicyInFlightWorkflowTests(TestCase):
 @override_settings(EMAIL_BACKEND=LOCMEM)
 class SimpleEcnAutoCloseEndToEndTests(TestCase):
     """
-    AREA 3 (verifica manuale 2026-07-27) — integrazione branch PDF + TASK-022:
-    prova end-to-end che l'approvazione reale di una revisione (via
-    approve_version, non chiamando il service ECN direttamente) chiude
-    automaticamente l'ECN semplice collegato, e che questo e' indipendente
-    dalla policy PDF del documento (ECN semplice + PDF attivo/disattivo).
+    Prova end-to-end (approve_version reale, non il service ECN diretto)
+    che la chiusura automatica dell'ECN collegato — standard o semplice
+    (requisito aziendale 2026-07-28, generalizza AREA 3) — è indipendente
+    dalla policy PDF del documento.
     """
 
     def setUp(self):
@@ -1287,7 +1286,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
 
-    def test_standard_ecn_stays_open_after_real_approval(self):
+    def test_standard_ecn_closes_automatically_after_real_approval(self):
         from ecn.models import ChangeNotice
         from ecn.services import create_change_notice
 
@@ -1303,4 +1302,105 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         approve_version(req, self.approver, send_notifications=False)
 
         ecn.refresh_from_db()
-        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # non chiuso: serve chiusura manuale
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+        self.assertIn('Rev. 01', ecn.close_notes)
+
+    def test_standard_ecn_closes_with_all_policy_only_on_final_approval(self):
+        """La chiusura avviene solo quando la richiesta ALL è davvero completa."""
+        from ecn.models import ChangeNotice
+        from ecn.services import create_change_notice
+
+        approver2 = User.objects.create_user('e2e-approver2', password='pw')
+        doc = self._document_with_current_version('E2E-ECN-ALL', requires_approved_pdf=False)
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.author, title='ECN standard ALL',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
+        )
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.save(update_fields=['status'])
+        version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN standard ALL')
+        req = submit_version_for_approval(
+            version, self.author, [self.approver, approver2], approval_policy='all',
+        )
+
+        approve_version(req, self.approver, send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)  # ancora in attesa del secondo voto
+
+        approve_version(req, approver2, send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+    def test_standard_ecn_closes_with_sequential_policy_only_on_final_approval(self):
+        """La chiusura avviene solo quando l'ultimo approvatore SEQUENTIAL ha deciso."""
+        from ecn.models import ChangeNotice
+        from ecn.services import create_change_notice
+
+        approver2 = User.objects.create_user('e2e-approver3', password='pw')
+        doc = self._document_with_current_version('E2E-ECN-SEQ', requires_approved_pdf=False)
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.author, title='ECN standard SEQUENTIAL',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
+        )
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.save(update_fields=['status'])
+        version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN standard SEQ')
+        req = submit_version_for_approval(
+            version, self.author, [self.approver, approver2], approval_policy='sequential',
+        )
+
+        approve_version(req, self.approver, send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
+
+        approve_version(req, approver2, send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+    def test_standard_ecn_ccb_members_receive_closure_email(self):
+        """
+        Requisito: alla chiusura automatica dello standard, tutti i membri
+        CCB assegnati a QUELLO specifico ECN ricevono l'email di chiusura —
+        non un elenco globale di utenti.
+        """
+        from django.core import mail
+        from ecn.models import ChangeNotice
+        from ecn.services import configure_ccb, create_change_notice
+
+        ccb_member1 = User.objects.create_user(
+            'e2e-ccb1', password='pw', email='ccb1@example.test', first_name='Ccb', last_name='Uno',
+        )
+        ccb_member2 = User.objects.create_user(
+            'e2e-ccb2', password='pw', email='ccb2@example.test', first_name='Ccb', last_name='Due',
+        )
+        # Utente estraneo: non deve mai ricevere l'email di chiusura di questo ECN.
+        stranger = User.objects.create_user('e2e-stranger', password='pw', email='stranger@example.test')
+
+        doc = self._document_with_current_version('E2E-ECN-CCB-MAIL', requires_approved_pdf=False)
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.author, title='ECN standard con CCB',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
+        )
+        configure_ccb(ecn, actor=self.author, users=[ccb_member1, ccb_member2], policy='any',
+                      send_notifications=False)
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.save(update_fields=['status'])
+
+        version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN standard')
+        req = submit_version_for_approval(version, self.author, [self.approver])
+
+        mail.outbox = []
+        approve_version(req, self.approver, send_notifications=False)
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+
+        sent_to = {addr for m in mail.outbox for addr in m.to}
+        self.assertIn(ccb_member1.email, sent_to)
+        self.assertIn(ccb_member2.email, sent_to)
+        self.assertNotIn(stranger.email, sent_to)
+
+        closure_emails = [m for m in mail.outbox if m.subject == f'[ECN] Chiuso: {ecn.code}']
+        self.assertTrue(closure_emails)
+        self.assertIn('chiuso automaticamente', closure_emails[0].body.lower())
+        self.assertIn('Rev. 01', closure_emails[0].body)

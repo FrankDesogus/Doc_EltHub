@@ -87,11 +87,15 @@
   {% endif %}
 {% elif ecn.status == 'approved' %}
   {% if ecn.executed_version %}
-  <div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-    <div class="text-sm font-semibold text-green-900 mb-1">Prossima azione</div>
-    <p class="text-sm text-green-800">
-      {% if can_close %}Revisione documento eseguita. Procedi con la chiusura formale dell'ECN.
-      {% else %}Revisione documento eseguita. Il Responsabile Qualità procederà con la chiusura.{% endif %}
+  <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+    <div class="text-sm font-semibold text-amber-900 mb-1">Caso eccezionale</div>
+    <p class="text-sm text-amber-800">
+      La revisione di esecuzione è approvata: normalmente il sistema chiude
+      automaticamente questo ECN nello stesso momento.
+      {% if ready_to_close %}
+        Non risulta ancora chiuso — se necessario,
+        {% if can_close %}puoi chiuderlo manualmente qui sotto.{% else %}un Responsabile Qualità può chiuderlo manualmente.{% endif %}
+      {% endif %}
     </p>
   </div>
   {% else %}
@@ -105,7 +109,13 @@
   {% endif %}
 {% elif ecn.status == 'closed' %}
 <div class="alert-info mb-4">
-  <strong>Completato:</strong> ECN chiuso il {{ ecn.closed_at|date:"d/m/Y" }}.
+  {% if closed_automatically %}
+    <strong>Completato:</strong> Chiuso automaticamente dopo l'approvazione della
+    revisione {% if ecn.executed_version %}Rev. {{ ecn.executed_version.revision_label }}{% endif %}
+    il {{ ecn.closed_at|date:"d/m/Y H:i" }}.
+  {% else %}
+    <strong>Completato:</strong> ECN chiuso il {{ ecn.closed_at|date:"d/m/Y" }}.
+  {% endif %}
 </div>
 {% elif ecn.status == 'rejected' %}
 <div class="alert-danger mb-4">
@@ -173,7 +183,7 @@
   {% endif %}
 
   {% if ecn.status == 'approved' and can_close and ready_to_close %}
-  <a href="{% url 'ecn:ecn_close' ecn.pk %}" class="btn-success">Chiudi ECN — pronto</a>
+  <a href="{% url 'ecn:ecn_close' ecn.pk %}" class="btn-success">Chiudi ECN manualmente (caso eccezionale)</a>
   {% endif %}
 
   {% if can_attach %}
@@ -348,6 +358,12 @@
 {% if ecn.status == 'closed' %}
 <div class="card">
   <h2 class="text-base font-semibold text-brand-900 mb-3 card-header">Chiusura</h2>
+  {% if closed_automatically %}
+  <p class="text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg p-3 mb-3">
+    Chiuso automaticamente dopo l'approvazione della revisione
+    {% if ecn.executed_version %}Rev. {{ ecn.executed_version.revision_label }}{% endif %}.
+  </p>
+  {% endif %}
   <dl class="dl-grid">
     {% if ecn.closed_by %}
     <dt>Chiuso da</dt>    <dd>{{ ecn.closed_by.get_full_name|default:ecn.closed_by.username }}</dd>

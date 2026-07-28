@@ -16,6 +16,14 @@
   <p class="page-header-sub">{{ ecn.title }}</p>
 </div>
 
+<div class="alert-warning mb-4">
+  <strong>Passo amministrativo eccezionale:</strong> normalmente il sistema chiude
+  automaticamente l'ECN non appena la revisione di esecuzione viene approvata
+  definitivamente — non serve intervenire qui. Questa pagina resta disponibile
+  per ECN storici, sanatoria o correzioni amministrative in casi che il sistema
+  non ha potuto chiudere da solo.
+</div>
+
 {% if not ready_to_close %}
 <div class="alert-danger mb-4">
   <strong>Non è ancora possibile chiudere questo ECN:</strong> {{ not_ready_reason }}

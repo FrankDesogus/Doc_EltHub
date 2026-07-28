@@ -778,57 +778,106 @@ def close_change_notice(change_notice, user, close_notes='', send_notifications=
     return change_notice
 
 
-def auto_close_simple_ecn_if_ready(version, actor):
+def auto_close_executed_ecn_if_ready(version, actor):
     """
-    Chiusura automatica dell'ECN a flusso semplice (TASK-022) quando la sua
-    revisione di esecuzione viene approvata definitivamente (verifica
-    manuale del 2026-07-27, AREA 3).
+    Chiusura automatica dell'ECN — standard o semplice — quando la sua
+    revisione di esecuzione viene approvata definitivamente e diventa la
+    versione corrente del documento (requisito aziendale del 2026-07-28,
+    che generalizza la chiusura automatica introdotta in AREA 3 per il
+    solo flusso semplice: la chiusura manuale del flusso standard non era
+    un placeholder provvisorio, ma una scelta di design esplicita — un
+    ultimo controllo umano del Responsabile Qualità distinto dall'esito
+    CCB — che il requisito attuale supera esplicitamente: nessuna delle
+    due famiglie di ECN richiede più una chiusura manuale nel percorso
+    operativo ordinario. La pagina di chiusura manuale (ecn_close) resta
+    per ECN storici, sanatoria e correzioni amministrative eccezionali).
 
-    L'autoapprovazione dell'ECN semplice riguarda solo l'autorizzazione
-    della modifica, non significa che la modifica sia già stata eseguita:
-    la chiusura avviene qui, non alla creazione dell'ECN, e solo quando
-    `version` (appena diventata APPROVED) è realmente la revisione di
-    esecuzione collegata.
+    Condizioni di sicurezza (oltre al filtro sulla query):
+      - `version` deve essere realmente approvata e corrente: chiamata in
+        un contesto anomalo su una versione non ancora promossa non fa
+        nulla, non solleva eccezioni;
+      - solo gli ECN il cui executed_version punta esattamente a
+        `version` vengono considerati (version.ecns_executed) — approvare
+        una revisione diversa non può mai chiudere un ECN che non le è
+        collegato;
+      - solo gli ECN nello stato APPROVED vengono chiusi: un ECN già
+        CLOSED (o mai approvato) non viene toccato una seconda volta —
+        idempotenza naturale, nessuna doppia chiusura e nessuna doppia
+        email anche se questa funzione venisse richiamata più volte
+        (di fatto la generazione/rigenerazione del PDF approvato non la
+        richiama affatto: resta un problema tecnico separato e
+        rieseguibile, indipendente dall'esito di chiusura dell'ECN).
 
-    Un ECN standard non viene mai chiuso automaticamente da questa funzione
-    — resta "pronto per la chiusura" (get_close_readiness) in attesa che un
-    Responsabile Qualità lo chiuda manualmente da ecn_close, con le sue
-    note di chiusura.
+    La chiusura (stato + note + audit) è atomica: un errore nella
+    scrittura dell'audit fa fallire anche il cambio di stato, evitando che
+    un ECN risulti chiuso senza traccia. La notifica email/in-app resta
+    fuori da questa transazione e non blocca né annulla la chiusura se
+    fallisce (stesso principio già adottato per la generazione del PDF
+    approvato): un errore di invio è già gestito e registrato dal sistema
+    di notifiche esistente (NotificationLog.error_message), non deve mai
+    riaprire o invalidare l'ECN appena chiuso.
 
     Non richiede il permesso can_close_ecn (l'attore è chi ha approvato la
-    revisione, non necessariamente un Quality Manager) — è una transizione
-    di sistema legata all'approvazione stessa, non un'azione utente
-    separata. Va chiamata dopo che l'approvazione è già stata registrata
-    correttamente: non deve mai sollevare eccezioni che possano essere
-    scambiate per un fallimento dell'approvazione.
+    revisione, non necessariamente un Quality Manager/membro CCB) — è una
+    transizione di sistema legata all'approvazione stessa, non un'azione
+    utente separata. Va chiamata dopo che l'approvazione è già stata
+    registrata correttamente: non deve mai sollevare eccezioni che possano
+    essere scambiate per un fallimento dell'approvazione (il chiamante la
+    invoca comunque dentro un try/except dedicato).
     """
+    from documents.models import DocumentVersion
     from ecn.models import ChangeNotice
 
-    candidates = version.ecns_executed.filter(
-        flow_type=ChangeNotice.FlowType.SIMPLE,
-        status=ChangeNotice.Status.APPROVED,
-    )
+    if version.status != DocumentVersion.Status.APPROVED or not version.is_current:
+        return
+
+    candidates = version.ecns_executed.filter(status=ChangeNotice.Status.APPROVED)
     for ecn in candidates:
         old_status = ecn.status
         now = timezone.now()
-        ecn.status = ChangeNotice.Status.CLOSED
-        ecn.close_notes = (
-            'Chiuso automaticamente: ECN a flusso semplice, revisione di '
-            'esecuzione approvata definitivamente.'
-        )
-        ecn.closed_by = actor
-        ecn.closed_at = now
-        ecn.save(update_fields=['status', 'close_notes', 'closed_by', 'closed_at'])
 
-        _write_audit(
-            actor=actor,
-            action='ECN_CLOSED_AUTO',
-            ecn=ecn,
-            old_status=old_status,
-            new_status=ecn.status,
-        )
+        if ecn.flow_type == ChangeNotice.FlowType.SIMPLE:
+            close_notes = (
+                'Chiuso automaticamente: ECN a flusso semplice, revisione di '
+                'esecuzione approvata definitivamente.'
+            )
+        else:
+            close_notes = (
+                f'Chiuso automaticamente: revisione di esecuzione Rev. '
+                f'{version.revision_label} approvata definitivamente e divenuta '
+                f'versione corrente del documento.'
+            )
+
+        with transaction.atomic():
+            ecn.status = ChangeNotice.Status.CLOSED
+            ecn.close_notes = close_notes
+            ecn.closed_by = actor
+            ecn.closed_at = now
+            ecn.save(update_fields=['status', 'close_notes', 'closed_by', 'closed_at'])
+
+            from auditlog.services import create_audit_log
+            create_audit_log(
+                user=actor,
+                action='ECN_CLOSED_AUTO',
+                instance=ecn,
+                old_values={'status': old_status},
+                new_values={'status': ecn.status},
+                document=ecn.document,
+                document_version=ecn.document_version,
+                metadata={
+                    'ecn_id': ecn.pk,
+                    'code': ecn.code,
+                    'old_status': old_status,
+                    'new_status': ecn.status,
+                    'flow_type': ecn.flow_type,
+                    'closing_revision_id': version.pk,
+                    'closing_revision_label': version.revision_label,
+                },
+            )
+
         try:
-            _notify_silently('notify_ecn_closed', ecn)
+            from ecn.notifications import notify_ecn_closed
+            notify_ecn_closed(ecn, automatic=True)
             from notifications.inbox import notify_ecn_closed_inapp
             notify_ecn_closed_inapp(ecn)
         except Exception:

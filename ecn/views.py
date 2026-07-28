@@ -202,6 +202,17 @@ def ecn_detail(request, ecn_id):
     from ecn.services import get_close_readiness
     ready_to_close, not_ready_reason = get_close_readiness(ecn)
 
+    # Requisito 2026-07-28: distingue chiusura automatica (di sistema, esito
+    # ordinario) da chiusura manuale (ecn_close, ora un percorso eccezionale)
+    # riusando l'AuditLog già scritto — nessun nuovo campo sul modello.
+    closed_automatically = False
+    if ecn.status == ChangeNotice.Status.CLOSED:
+        from auditlog.models import AuditLog
+        closed_automatically = AuditLog.objects.filter(
+            app_label='ecn', model_name='changenotice',
+            object_id=str(ecn.pk), action='ECN_CLOSED_AUTO',
+        ).exists()
+
     return render(request, 'ecn/ecn_detail.html', {
         'ecn': ecn,
         'attachments': attachments,
@@ -214,6 +225,7 @@ def ecn_detail(request, ecn_id):
         'can_close': can_close_ecn(request.user, ecn),
         'ready_to_close': ready_to_close,
         'not_ready_reason': not_ready_reason,
+        'closed_automatically': closed_automatically,
         'can_attach': can_add_ecn_attachment(request.user, ecn),
         'can_create_rev_from_ecn': can_create_rev_from_ecn,
         'can_edit': can_edit_ecn(request.user, ecn),
