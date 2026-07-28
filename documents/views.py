@@ -917,11 +917,26 @@ def submit_for_approval(request, version_id):
             prefix='approver', initial=[{}], current_user=request.user
         )
 
+    # AREA B (verifica manuale 2026-07-28): il gate bloccava correttamente
+    # l'invio ma la pagina non offriva alcun modo di caricare il PDF
+    # mancante — stessa fonte di verità del gate (get_pdf_submission_status),
+    # così la UI e il blocco server-side non possono mai divergere.
+    from documents.pdf_gate import get_pdf_submission_status
+    pdf_ready, pdf_reason, representation_pdf = get_pdf_submission_status(version)
+
     return render(request, 'documents/submit_for_approval.html', {
         'form': form,
         'approver_formset': approver_formset,
         'version': version,
         'document': version.document,
+        'pdf_ready': pdf_ready,
+        'pdf_reason': pdf_reason,
+        'representation_pdf': representation_pdf,
+        # Chi può inviare (Manager via cartella) non sempre coincide con chi
+        # può modificare/caricare il PDF della bozza (solo l'autore/superuser
+        # — can_edit_version, stessa regola di version_detail): mostrare le
+        # azioni di caricamento solo a chi può davvero usarle.
+        'can_edit_pdf': can_edit_version(request.user, version),
     })
 
 
@@ -1161,6 +1176,18 @@ def regenerate_approved_pdf_view(request, version_id):
     return redirect('version_detail', version_id=version.pk)
 
 
+def _pdf_redirect_target(request, version):
+    """
+    Le azioni di upload/conferma del PDF di rappresentazione possono partire
+    sia da version_detail sia dalla pagina di invio in approvazione (AREA B,
+    2026-07-28) — tornano da dove sono state invocate, whitelist esplicita
+    (mai un redirect a URL arbitrario fornito dal client).
+    """
+    if request.POST.get('next') == 'version_submit':
+        return redirect('version_submit', version_id=version.pk)
+    return redirect('version_detail', version_id=version.pk)
+
+
 @login_required
 def upload_representation_pdf_view(request, version_id):
     version = get_object_or_404(DocumentVersion, pk=version_id)
@@ -1174,7 +1201,7 @@ def upload_representation_pdf_view(request, version_id):
     uploaded = request.FILES.get('representation_pdf')
     if not uploaded:
         messages.error(request, "Nessun file PDF selezionato.")
-        return redirect('version_detail', version_id=version.pk)
+        return _pdf_redirect_target(request, version)
 
     from documents.pdf_pipeline import upload_manual_representation_pdf
     try:
@@ -1183,7 +1210,7 @@ def upload_representation_pdf_view(request, version_id):
     except ValidationError as e:
         messages.error(request, str(e))
 
-    return redirect('version_detail', version_id=version.pk)
+    return _pdf_redirect_target(request, version)
 
 
 @login_required
@@ -1203,4 +1230,4 @@ def confirm_representation_pdf_view(request, version_id):
     except ValidationError as e:
         messages.error(request, str(e))
 
-    return redirect('version_detail', version_id=version.pk)
+    return _pdf_redirect_target(request, version)

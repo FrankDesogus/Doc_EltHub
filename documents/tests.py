@@ -5789,3 +5789,311 @@ class AllowSimpleEcnEnforcementTests(TestCase):
         version = create_new_revision(doc, self.author, '01', 1, change_summary='Diretta, nessun ECN')
         self.assertEqual(version.status, DocumentVersion.Status.DRAFT)
 
+
+# ---------------------------------------------------------------------------
+# AREA B (2026-07-28) — la pagina "Invia in approvazione" offre un percorso
+# di caricamento del PDF di rappresentazione quando il gate blocca l'invio,
+# invece di un vicolo cieco (verifica manuale: il gate segnalava l'errore
+# ma non c'era alcun campo per risolverlo sulla stessa pagina). Riusa gli
+# stessi service (upload_manual_representation_pdf/confirm_representation_pdf,
+# get_pdf_submission_status) già usati da version_detail — nessuna logica
+# duplicata.
+# ---------------------------------------------------------------------------
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class SubmitForApprovalPdfUploadTests(TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        self.author = User.objects.create_user('submitpdf-author', password='pw')
+        self.approver = User.objects.create_user('submitpdf-approver', password='pw')
+        Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        self.document = make_document(code='SUBMITPDF-001', owner=self.author, requires_approved_pdf=True)
+
+    @staticmethod
+    def _real_pdf_bytes(text='Contenuto'):
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        buf = io.BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        pdf.drawString(50, 800, text)
+        pdf.showPage()
+        pdf.save()
+        return buf.getvalue()
+
+    # --- campo assente quando non serve --------------------------------
+
+    def test_no_pdf_section_when_policy_disabled(self):
+        doc = make_document(code='SUBMITPDF-NOPOLICY', owner=self.author, requires_approved_pdf=False)
+        version = create_new_revision(doc, self.author, 'A', 1)
+        self.client.login(username='submitpdf-author', password='pw')
+        response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertNotContains(response, 'PDF di rappresentazione')
+
+    def test_no_pdf_section_when_no_source_file(self):
+        version = create_new_revision(self.document, self.author, 'A', 1)
+        self.client.login(username='submitpdf-author', password='pw')
+        response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertNotContains(response, 'PDF di rappresentazione')
+
+    # --- conversione automatica riuscita: nessun upload necessario ------
+
+    def test_native_pdf_ready_no_upload_prompt_needed(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'a.pdf', b'%PDF-1.4 vero', content_type='application/pdf')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertContains(response, 'PDF di rappresentazione')
+        self.assertContains(response, 'pronto')
+        self.assertNotContains(response, 'Non puoi ancora inviare')
+
+    # --- conversione fallita / manuale: upload proposto -----------------
+
+    def test_conversion_failed_shows_upload_field(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'img.png', b'non e\' un png', content_type='image/png')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertContains(response, 'fallita')
+        self.assertContains(response, 'type="file"')
+        self.assertContains(response, reverse('version_pdf_upload', args=[version.pk]))
+
+    def test_manual_required_shows_upload_field(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertContains(response, 'caricamento manuale')
+        self.assertContains(response, 'type="file"')
+
+    def test_stale_shows_upload_field(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source_a = _make_source_document_file(self.author, 'a.pdf', b'%PDF-1.4 A', content_type='application/pdf')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source_a)
+            from documents.models import RepresentationPDF
+            version.refresh_from_db()
+            version.representation_pdf.status = RepresentationPDF.Status.STALE
+            version.representation_pdf.save(update_fields=['status'])
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertContains(response, 'non è aggiornato')
+        self.assertContains(response, 'type="file"')
+
+    def test_auto_reliable_unconfirmed_shows_confirm_step(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'note.txt', b'testo', content_type='text/plain')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertContains(response, 'Confermare')
+        self.assertContains(response, reverse('version_pdf_confirm', args=[version.pk]))
+
+    # --- caricamento dalla pagina di invio -------------------------------
+
+    def test_valid_upload_from_submit_page_redirects_back_to_submit_page(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'rappresentazione.pdf', self._real_pdf_bytes(), content_type='application/pdf',
+                ), 'next': 'version_submit'},
+            )
+        self.assertRedirects(response, reverse('version_submit', args=[version.pk]))
+        version.refresh_from_db()
+        self.assertIsNotNone(version.representation_pdf)
+
+    def test_upload_then_confirm_then_submit_succeeds(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'rappresentazione.pdf', self._real_pdf_bytes(), content_type='application/pdf',
+                ), 'next': 'version_submit'},
+            )
+            self.client.post(reverse('version_pdf_confirm', args=[version.pk]), {'next': 'version_submit'})
+            response = self.client.post(reverse('version_submit', args=[version.pk]), {
+                'approval_policy': 'all', 'due_date': '',
+                'approver-TOTAL_FORMS': '1', 'approver-INITIAL_FORMS': '0',
+                'approver-MIN_NUM_FORMS': '0', 'approver-MAX_NUM_FORMS': '1000',
+                'approver-0-approver': self.approver.pk,
+            })
+        self.assertRedirects(response, reverse('dashboard'))
+        version.refresh_from_db()
+        self.assertEqual(version.status, DocumentVersion.Status.IN_APPROVAL)
+
+    def test_non_pdf_upload_rejected(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'non_un_pdf.txt', b'testo semplice', content_type='text/plain',
+                ), 'next': 'version_submit'},
+                follow=True,
+            )
+        self.assertContains(response, 'deve essere un PDF')
+        version.refresh_from_db()
+        # Il sorgente .docx genera già in automatico una RepresentationPDF
+        # in stato "caricamento manuale richiesto" — il tentativo non valido
+        # non deve alterarla.
+        from documents.models import RepresentationPDF
+        self.assertEqual(version.representation_pdf.status, RepresentationPDF.Status.MANUAL_UPLOAD_REQUIRED)
+
+    def test_corrupted_pdf_rejected(self):
+        """File con estensione .pdf ma senza il magic number reale: rifiutato."""
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            response = self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'falso.pdf', b'questo non e\' un pdf valido', content_type='application/pdf',
+                ), 'next': 'version_submit'},
+                follow=True,
+            )
+        self.assertContains(response, 'non sembra un PDF valido')
+        version.refresh_from_db()
+        from documents.models import RepresentationPDF
+        self.assertEqual(version.representation_pdf.status, RepresentationPDF.Status.MANUAL_UPLOAD_REQUIRED)
+
+    def test_invalid_upload_does_not_replace_valid_pdf(self):
+        """Un caricamento non valido non deve sostituire un PDF già valido e confermato."""
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'rappresentazione.pdf', self._real_pdf_bytes(), content_type='application/pdf',
+                ), 'next': 'version_submit'},
+            )
+            self.client.post(reverse('version_pdf_confirm', args=[version.pk]), {'next': 'version_submit'})
+            version.refresh_from_db()
+            good_rep_id = version.representation_pdf_id
+            self.assertIsNotNone(version.representation_pdf.confirmed_at)
+
+            # Tenta di sostituire con un file non valido.
+            self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'non_un_pdf.txt', b'testo semplice', content_type='text/plain',
+                ), 'next': 'version_submit'},
+            )
+        version.refresh_from_db()
+        self.assertEqual(version.representation_pdf_id, good_rep_id)
+        self.assertIsNotNone(version.representation_pdf.confirmed_at)
+
+    def test_unauthorized_user_cannot_upload(self):
+        """Solo l'autore della bozza (o superuser) può caricare — stessa regola di can_edit_version."""
+        stranger = User.objects.create_user('submitpdf-stranger', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-stranger', password='pw')
+            response = self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'rappresentazione.pdf', self._real_pdf_bytes(), content_type='application/pdf',
+                ), 'next': 'version_submit'},
+            )
+        self.assertEqual(response.status_code, 403)
+
+    def test_upload_form_hidden_for_user_without_edit_permission(self):
+        """Un Manager che può inviare ma non modificare la bozza non vede i campi di upload."""
+        from django.contrib.auth.models import Group
+        manager = User.objects.create_user('submitpdf-manager', password='pw')
+        Group.objects.get_or_create(name='Document Managers')[0].user_set.add(manager)
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+        self.client.login(username='submitpdf-manager', password='pw')
+        response = self.client.get(reverse('version_submit', args=[version.pk]))
+        self.assertContains(response, 'caricamento manuale')
+        self.assertNotContains(response, '<input type="file" name="representation_pdf"')
+
+    def test_source_changed_after_upload_invalidates_confirmation(self):
+        """Se il sorgente cambia dopo il caricamento, il PDF torna obsoleto e la conferma si invalida."""
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'rappresentazione.pdf', self._real_pdf_bytes(), content_type='application/pdf',
+                ), 'next': 'version_submit'},
+            )
+            self.client.post(reverse('version_pdf_confirm', args=[version.pk]), {'next': 'version_submit'})
+            version.refresh_from_db()
+            self.assertIsNotNone(version.representation_pdf.confirmed_at)
+
+            new_source = _make_source_document_file(self.author, 'relazione_v2.docx', b'altro contenuto', content_type='application/octet-stream')
+            update_draft_version(version, self.author, 'A', 1, 'nuova versione sorgente', new_file=new_source)
+            version.refresh_from_db()
+
+            with self.assertRaises(ValidationError) as ctx:
+                submit_version_for_approval(version, self.author, [self.approver])
+        self.assertIn('caricamento manuale', str(ctx.exception))
+
+    def test_gate_error_after_upload_does_not_create_partial_approval_request(self):
+        """Un errore del gate dopo il caricamento non deve creare una richiesta di approvazione parziale."""
+        from approvals.models import ApprovalRequest
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', b'finto office', content_type='application/octet-stream')
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            self.client.login(username='submitpdf-author', password='pw')
+            # Carica ma NON conferma: il gate deve ancora bloccare.
+            self.client.post(
+                reverse('version_pdf_upload', args=[version.pk]),
+                {'representation_pdf': SimpleUploadedFile(
+                    'rappresentazione.pdf', self._real_pdf_bytes(), content_type='application/pdf',
+                ), 'next': 'version_submit'},
+            )
+            response = self.client.post(reverse('version_submit', args=[version.pk]), {
+                'approval_policy': 'all', 'due_date': '',
+                'approver-TOTAL_FORMS': '1', 'approver-INITIAL_FORMS': '0',
+                'approver-MIN_NUM_FORMS': '0', 'approver-MAX_NUM_FORMS': '1000',
+                'approver-0-approver': self.approver.pk,
+            })
+        self.assertEqual(response.status_code, 200)  # form re-renders, nessun redirect
+        self.assertFalse(ApprovalRequest.objects.filter(document_version=version).exists())
+        version.refresh_from_db()
+        self.assertEqual(version.status, DocumentVersion.Status.DRAFT)
+
+    def test_pdf_flow_independent_of_approval_policy(self):
+        """La readiness del PDF non dipende dalla policy di approvazione scelta (ANY/ALL/SEQUENTIAL)."""
+        approver2 = User.objects.create_user('submitpdf-approver2', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            for i, policy in enumerate(('any', 'all', 'sequential'), start=1):
+                source = _make_source_document_file(self.author, 'a.pdf', b'%PDF-1.4 vero', content_type='application/pdf')
+                version = create_new_revision(
+                    self.document, self.author, f'P{i}', 10 + i, file=source,
+                )
+                req = submit_version_for_approval(
+                    version, self.author, [self.approver, approver2], approval_policy=policy,
+                )
+                self.assertIsNotNone(req.pk)

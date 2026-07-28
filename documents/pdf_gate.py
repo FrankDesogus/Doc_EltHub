@@ -26,39 +26,61 @@ non viene bloccata qui.
 from django.core.exceptions import ValidationError
 
 
-def assert_ready_for_submission(version):
-    """Solleva ValidationError con un motivo esplicito se non si può inviare."""
+def get_pdf_submission_status(version):
+    """
+    Stato strutturato del PDF di rappresentazione rispetto all'invio in
+    approvazione — unica fonte di verità, usata sia da assert_ready_for_submission
+    (che solleva un'eccezione) sia dalla pagina di invio (che deve poter
+    mostrare un campo di caricamento contestuale quando il PDF manca o non
+    è valido, non solo un messaggio d'errore — AREA B, verifica manuale
+    2026-07-28: il gate bloccava correttamente l'invio ma non offriva alcun
+    percorso per risolvere il problema sulla stessa pagina).
+
+    Restituisce (pronto: bool, motivo: str, rep: RepresentationPDF | None).
+    `motivo` è vuoto se pronto. `rep` è l'eventuale rappresentazione PDF
+    esistente (anche quando non ancora pronta, es. STALE o da confermare),
+    utile alla UI per mostrare stato/errore/link di download.
+    """
     from documents.models import RepresentationPDF
 
     if not version.document.requires_approved_pdf:
-        return
+        return True, '', None
 
     if version.file_id is None:
-        return
+        return True, '', None
 
     rep = version.representation_pdf
     if rep is None:
-        raise ValidationError(
+        return False, (
             "Nessun PDF di rappresentazione presente. Caricare o generare il PDF "
             "di rappresentazione prima di inviare in approvazione."
-        )
+        ), None
     if rep.status == RepresentationPDF.Status.STALE:
-        raise ValidationError(
+        return False, (
             "Il PDF di rappresentazione non è aggiornato rispetto al file sorgente "
             "corrente. Ricaricare o rigenerare il PDF prima di inviare in approvazione."
-        )
+        ), rep
     if rep.status == RepresentationPDF.Status.CONVERSION_FAILED:
-        raise ValidationError(
+        return False, (
             "La conversione automatica del PDF di rappresentazione è fallita. "
             "Caricare manualmente il PDF prima di inviare in approvazione."
-        )
+        ), rep
     if rep.status == RepresentationPDF.Status.MANUAL_UPLOAD_REQUIRED:
-        raise ValidationError(
+        return False, (
             "Il formato del file sorgente richiede il caricamento manuale del PDF "
             "di rappresentazione prima di inviare in approvazione."
-        )
+        ), rep
     if rep.requires_confirmation and rep.confirmed_at is None:
-        raise ValidationError(
+        return False, (
             "Confermare che il PDF di rappresentazione rappresenta correttamente il "
             "file sorgente prima di inviare in approvazione."
-        )
+        ), rep
+
+    return True, '', rep
+
+
+def assert_ready_for_submission(version):
+    """Solleva ValidationError con un motivo esplicito se non si può inviare."""
+    ready, reason, _rep = get_pdf_submission_status(version)
+    if not ready:
+        raise ValidationError(reason)
