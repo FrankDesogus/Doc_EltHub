@@ -15,7 +15,8 @@
   <h1>Configura CCB — {{ ecn.code }}</h1>
   <p class="page-header-sub">
     Documento: <strong>{{ ecn.document.code }} — {{ ecn.document.title }}</strong> ·
-    Proposto da: {{ ecn.proposed_by.get_full_name|default:ecn.proposed_by.username }}
+    Proposto da: {{ ecn.proposed_by.get_full_name|default:ecn.proposed_by.username }} ·
+    Applicabilità: {% include "ecn/_applicability_badge.html" %}
   </p>
 </div>
 

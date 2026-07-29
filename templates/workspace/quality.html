@@ -66,7 +66,7 @@
       {% for ecn in ecn_to_review %}
       <tr>
         <td><a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="font-mono font-semibold text-elt-cyan-300 hover:underline">{{ ecn.code }}</a></td>
-        <td>{{ ecn.title }}</td>
+        <td>{{ ecn.title }} {% include "ecn/_applicability_badge.html" with ecn=ecn %}</td>
         <td class="meta">{{ ecn.proposed_by.get_full_name|default:ecn.proposed_by.username }}</td>
         <td class="meta whitespace-nowrap">{{ ecn.created_at|date:"d/m/Y" }}</td>
         <td>
@@ -109,7 +109,7 @@
       {% for ca in pending_ccb %}
       <tr>
         <td><a href="{% url 'ecn:ecn_detail' ca.change_notice.pk %}" class="font-mono font-semibold text-elt-cyan-300 hover:underline">{{ ca.change_notice.code }}</a></td>
-        <td>{{ ca.change_notice.title }}</td>
+        <td>{{ ca.change_notice.title }} {% include "ecn/_applicability_badge.html" with ecn=ca.change_notice %}</td>
         <td><a href="{% url 'ecn:ecn_detail' ca.change_notice.pk %}" class="btn-primary btn-sm">Decidi</a></td>
       </tr>
       {% endfor %}
@@ -147,7 +147,7 @@
       {% for ecn in ecn_to_close %}
       <tr>
         <td><a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="font-mono font-semibold text-elt-cyan-300 hover:underline">{{ ecn.code }}</a></td>
-        <td>{{ ecn.title }}</td>
+        <td>{{ ecn.title }} {% include "ecn/_applicability_badge.html" with ecn=ecn %}</td>
         <td class="meta">
           {% if ecn.executed_version %}
             {{ ecn.executed_version.document.code }} Rev.{{ ecn.executed_version.revision_number }}

@@ -30,7 +30,6 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 
 | ID | Titolo | Priorità | Note |
 | -- | ------ | -------- | ---- |
-| TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | Alta | TASK-036-2 già completata (da Claude Code); spec pronta in Dettaglio task |
 | TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | Alta | Dopo TASK-036-3, spec da scrivere |
 
 ## Completati
@@ -74,6 +73,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-035 | Matrice di test per la policy PDF opzionale (creazione, modifica, storico, workflow in corso) | — | 2026-07-27 |
 | TASK-036 | Applicabilità ECN obbligatoria (Fase 1: modello, service, form, view, admin, template principali, CSS sorgente) | — | 2026-07-29 |
 | TASK-036-2 | Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) | — | 2026-07-29 |
+| TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | questo commit locale | 2026-07-29 |
 
 ---
 
@@ -3032,6 +3032,40 @@ server di sviluppo. Non introdurre nuove classi CSS.
 
 Nessuno di nuovo. Solo la suite esistente (comando sopra) deve restare
 verde.
+
+#### Esito (2026-07-29)
+
+Implementato lo scope previsto senza toccare modelli, service, form,
+permessi, admin, migrazioni, partial applicabilità, demo o CSS.
+
+- `templates/ecn/ecn_dashboard.html`: badge applicabilità aggiunto dopo
+  il titolo nelle 5 liste richieste (`draft_no_ccb`, `draft_ccb_ready`,
+  `under_review_data` con `row.ecn`, `approved_no_exec`, `approved_exec`).
+- `templates/workspace/quality.html`: badge aggiunto nelle 3 liste
+  richieste (`ecn_to_review`, `pending_ccb` con
+  `ca.change_notice`, `ecn_to_close`).
+- `templates/ecn/ecn_configure_ccb.html`: badge aggiunto nel sottotitolo
+  header, accanto a documento e proponente.
+- `templates/documents/new_revision.html`: colonna `Applicabilità`
+  aggiunta alla tabella degli ECN approvati disponibili usando
+  `ecn_item`.
+- `templates/ecn/ecn_my.html`: colonna `Applicabilità` aggiunta alla
+  tabella "Le mie richieste".
+- `ecn/notifications.py`: le email `notify_ecn_submitted`,
+  `notify_ecn_approved` e `notify_ecn_closed(automatic=True)` includono
+  l'etichetta testuale completa dell'applicabilità; per la notifica CCB
+  viene incluso anche il dettaglio applicabilità quando presente, come da
+  spec.
+
+Verifiche:
+
+```bash
+python manage.py check
+python manage.py test ecn documents approvals notifications --keepdb -v1
+```
+
+Esito: `manage.py check` pulito; suite richiesta verde,
+**969/969 test PASS**.
 
 ---
 

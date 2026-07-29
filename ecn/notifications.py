@@ -38,8 +38,13 @@ def _notify_ccb_member(change_notice, user, is_first=False):
         f"Documento: {change_notice.document.code} — {change_notice.document.title}\n"
         f"Proponente: {change_notice.proposed_by.get_full_name() or change_notice.proposed_by.username}\n"
         f"Motivazione: {change_notice.get_motivation_display()}\n"
-        f"Policy CCB: {change_notice.get_ccb_policy_display()}\n\n"
-        f"Accedi al sistema per leggere il dossier istruttorio e esprimere la tua decisione."
+        f"Policy CCB: {change_notice.get_ccb_policy_display()}\n"
+        f"Applicabilità : {change_notice.applicability_display}\n"
+    )
+    if change_notice.applicability_detail:
+        body += f"Dettaglio applicabilità : {change_notice.applicability_detail}\n"
+    body += (
+        f"\nAccedi al sistema per leggere il dossier istruttorio e esprimere la tua decisione."
     )
     _send_and_log(user, subject, body)
 
@@ -199,7 +204,8 @@ def notify_ecn_approved(change_notice):
             f"l'ECN {change_notice.code} «{change_notice.title}» è stato approvato dalla CCB.\n\n"
             f"Documento      : {change_notice.document.code} — {change_notice.document.title}\n"
             f"Proponente     : {change_notice.proposed_by.get_full_name() or change_notice.proposed_by.username}\n"
-            f"Classe variante: {ccb_class_label}\n\n"
+            f"Classe variante: {ccb_class_label}\n"
+            f"Applicabilità : {change_notice.applicability_display}\n\n"
         )
         if is_proposer or is_doc_owner:
             body += (
@@ -314,13 +320,16 @@ def notify_ecn_closed(change_notice, automatic=False):
             f"Chiuso il               : {closed_at_label}\n"
             f"Chiuso da               : {closed_by_label}\n"
             f"Proponente              : {change_notice.proposed_by.get_full_name() or change_notice.proposed_by.username}\n"
-            f"Note chiusura           : {change_notice.close_notes or '—'}\n\n"
+            f"Note chiusura           : {change_notice.close_notes or '—'}\n"
         )
         if automatic:
             body += (
+                f"Applicabilità           : {change_notice.applicability_display}\n\n"
                 "La revisione di esecuzione è stata approvata e l'ECN è stato "
                 "chiuso automaticamente.\n\n"
             )
+        else:
+            body += "\n"
         body += (
             "Accedi al sistema documentale per i dettagli.\n\n"
             "Questo messaggio è generato automaticamente, non rispondere a questa email."

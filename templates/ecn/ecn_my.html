@@ -25,6 +25,7 @@
         <th>Titolo</th>
         <th>Documento</th>
         <th>Stato</th>
+        <th>Applicabilità</th>
         <th>Data</th>
         <th class="w-24"></th>
       </tr>
@@ -47,6 +48,7 @@
           {% else %}<span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
           {% endif %}
         </td>
+        <td>{% include "ecn/_applicability_badge.html" %}</td>
         <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
         <td>
           <a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="btn-secondary btn-sm">Dettaglio</a>

@@ -78,6 +78,7 @@
         <th>Codice</th>
         <th>Titolo</th>
         <th>Tipo</th>
+        <th>Applicabilità</th>
         <th>Classe</th>
         <th>Approvato il</th>
         <th class="w-32"></th>
@@ -92,6 +93,7 @@
             {% else %}<span class="meta">Standard</span>
             {% endif %}
           </td>
+          <td>{% include "ecn/_applicability_badge.html" with ecn=ecn_item %}</td>
           <td class="meta">{{ ecn_item.get_ccb_class_display|default:"—" }}</td>
           <td class="meta whitespace-nowrap">{{ ecn_item.ccb_reviewed_at|date:"d/m/Y"|default:"—" }}</td>
           <td>
