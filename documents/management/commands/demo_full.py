@@ -203,26 +203,28 @@ class Command(BaseCommand):
                         send_notifications=False)
         doc.refresh_from_db()
 
-        def _make_ecn(code, title, applicability_category=ChangeNotice.Applicability.GENERAL,
-                     applicability_detail=''):
+        def _make_ecn(code, title):
             return create_change_notice(
                 document=doc,
                 proposed_by=supervisor,
                 title=title,
                 motivation=ChangeNotice.Motivation.IMPROVEMENT,
-                applicability_category=applicability_category,
-                applicability_detail=applicability_detail,
                 description=f'Descrizione demo ECN {code}.',
                 motivation_detail='Adeguamento tecnico demo.',
                 code=code,
             )
 
-        def _setup_ccb(ecn):
+        def _setup_ccb(ecn, applicability_category=ChangeNotice.Applicability.GENERAL,
+                       applicability_detail=''):
             configure_ccb(ecn, actor=supervisor, users=[supervisor, ccb_member],
                           policy='any', coordinator=supervisor,
                           send_notifications=False)
+            # L'applicabilità è decisa dalla CCB nel dossier istruttorio, non
+            # dal proponente (TASK-037) — vive qui, non in _make_ecn.
             update_ccb_dossier(
                 ecn, actor=supervisor,
+                applicability_category=applicability_category,
+                applicability_detail=applicability_detail,
                 ccb_class='class2',
                 ccb_requirements='Conformità normativa verificata.',
                 ccb_technical_impact='Impatto limitato a sezione 3.',
@@ -233,16 +235,13 @@ class Command(BaseCommand):
                 ccb_notes='Demo automatico.',
             )
 
-        # ECN-S-01: DRAFT
+        # ECN-S-01: DRAFT (non ancora in istruttoria: applicabilità non ancora decisa)
         _make_ecn('ECN-S-01', 'Aggiornamento tolleranze sezione 2 (DRAFT)')
         self._step('ECN-S-01: stato DRAFT.')
 
         # ECN-S-02: CCB_PREPARATION
-        ecn_ccb = _make_ecn(
-            'ECN-S-02', 'Revisione criteri accettazione (CCB_PREPARATION)',
-            applicability_category=ChangeNotice.Applicability.FUTURE,
-        )
-        _setup_ccb(ecn_ccb)
+        ecn_ccb = _make_ecn('ECN-S-02', 'Revisione criteri accettazione (CCB_PREPARATION)')
+        _setup_ccb(ecn_ccb, applicability_category=ChangeNotice.Applicability.FUTURE)
         self._step('ECN-S-02: stato CCB_PREPARATION (dossier compilato).')
 
         # ECN-S-03: UNDER_REVIEW
@@ -252,15 +251,15 @@ class Command(BaseCommand):
         self._step('ECN-S-03: stato UNDER_REVIEW.')
 
         # ECN-S-04: APPROVED (policy='any' → basta un voto)
-        ecn_approved = _make_ecn(
-            'ECN-S-04', 'Nuova procedura testing (APPROVED)',
+        ecn_approved = _make_ecn('ECN-S-04', 'Nuova procedura testing (APPROVED)')
+        _setup_ccb(
+            ecn_approved,
             applicability_category=ChangeNotice.Applicability.LIMITED,
             applicability_detail=(
                 'Si applica solo alla linea di testing del reparto 3, non alle '
                 'altre linee di produzione.'
             ),
         )
-        _setup_ccb(ecn_approved)
         submit_change_notice(ecn_approved, supervisor, send_notifications=False)
         approve_change_notice(ecn_approved, supervisor,
                               ccb_class='class2',
@@ -353,11 +352,6 @@ class Command(BaseCommand):
             document=doc, proposed_by=author,
             title='Aggiornamento metodo calibrazione dinamometri',
             motivation=ChangeNotice.Motivation.NON_CONFORMITY,
-            applicability_category=ChangeNotice.Applicability.LIMITED,
-            applicability_detail=(
-                'Si applica solo agli strumenti di misura interessati dalla '
-                'non conformità NC-2026-017, non all\'intero parco dinamometri.'
-            ),
             description='Non conformità NC-2026-017: metodo calibrazione obsoleto.',
             motivation_detail='Adeguamento a norma ISO 9001:2015.',
             code='ECN-EXEC-001',
@@ -367,6 +361,11 @@ class Command(BaseCommand):
                       send_notifications=False)
         update_ccb_dossier(
             ecn, actor=supervisor,
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail=(
+                'Si applica solo agli strumenti di misura interessati dalla '
+                'non conformità NC-2026-017, non all\'intero parco dinamometri.'
+            ),
             ccb_class='class2',
             ccb_requirements='Conformità ISO 9001:2015 richiesta.',
             ccb_technical_impact='Aggiornamento metodo — nessun impatto hardware.',
@@ -454,12 +453,13 @@ class Command(BaseCommand):
             document=doc, proposed_by=author,
             title='Aggiornamento sezione 5 — procedura demo',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            applicability_category=ChangeNotice.Applicability.FUTURE,
             code='ECN-PENDING-001',
         )
         configure_ccb(ecn, actor=supervisor, users=[supervisor], policy='any',
                       coordinator=supervisor, send_notifications=False)
-        update_ccb_dossier(ecn, actor=supervisor, ccb_class='class2',
+        update_ccb_dossier(ecn, actor=supervisor,
+                           applicability_category=ChangeNotice.Applicability.FUTURE,
+                           ccb_class='class2',
                            ccb_requirements='Verificato.', ccb_technical_impact='Limitato.')
         submit_change_notice(ecn, supervisor, send_notifications=False)
         approve_change_notice(ecn, supervisor,
@@ -525,7 +525,6 @@ class Command(BaseCommand):
         # Dimostra il blocco esplicito: il tentativo di ECN semplice è rifiutato.
         try:
             create_simple_ecn(document=doc, proposed_by=author, title='Tentativo bloccato',
-                              applicability_category=ChangeNotice.Applicability.GENERAL,
                               send_notifications=False)
             blocked_ok = False
         except Exception:
@@ -536,12 +535,13 @@ class Command(BaseCommand):
             document=doc, proposed_by=author,
             title='Aggiornamento sezione 2 — solo standard consentito',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            applicability_category=ChangeNotice.Applicability.GENERAL,
             code='ECN-NOSIMPLE-001',
         )
         configure_ccb(ecn, actor=supervisor, users=[supervisor], policy='any',
                       coordinator=supervisor, send_notifications=False)
-        update_ccb_dossier(ecn, actor=supervisor, ccb_class='class2',
+        update_ccb_dossier(ecn, actor=supervisor,
+                           applicability_category=ChangeNotice.Applicability.GENERAL,
+                           ccb_class='class2',
                            ccb_requirements='Verificato.', ccb_technical_impact='Limitato.')
         submit_change_notice(ecn, supervisor, send_notifications=False)
         approve_change_notice(ecn, supervisor, ccb_class='class2', ccb_requirements='Approvato.',
@@ -576,7 +576,6 @@ class Command(BaseCommand):
         from documents.models import Document
         from documents.services import create_new_revision, submit_version_for_approval
         from approvals.services import approve_version
-        from ecn.models import ChangeNotice
         from ecn.services import create_simple_ecn
 
         CODE = 'DEMO-ECN-SIMPLE-001'
@@ -608,7 +607,6 @@ class Command(BaseCommand):
             document=doc,
             proposed_by=author,
             title='Aggiunta campo firma supervisore',
-            applicability_category=ChangeNotice.Applicability.GENERAL,
             description='Revisione rapida: aggiunto campo firma supervisore al modulo.',
             send_notifications=False,
         )

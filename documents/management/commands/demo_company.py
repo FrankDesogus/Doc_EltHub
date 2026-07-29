@@ -392,11 +392,6 @@ class Command(BaseCommand):
             proposed_by=supervisor,
             title='Aggiornamento requisiti tecnici sezione 4 — Demo',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            applicability_category=ChangeNotice.Applicability.LIMITED,
-            applicability_detail=(
-                'Si applica soltanto alla sezione 4 dello standard tecnico '
-                'interessata da questo aggiornamento normativo.'
-            ),
             description=(
                 'Aggiornamento dello standard tecnico per recepire le nuove '
                 'indicazioni normative. Impatto limitato alla sezione 4.'
@@ -412,9 +407,15 @@ class Command(BaseCommand):
             policy='any',
             coordinator=supervisor,
         )
-        # Pre-compila il dossier istruttorio per la demo
+        # Pre-compila il dossier istruttorio per la demo (applicabilità inclusa:
+        # è la CCB, non il proponente, a deciderla — TASK-037)
         update_ccb_dossier(
             ecn, actor=supervisor,
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail=(
+                'Si applica soltanto alla sezione 4 dello standard tecnico '
+                'interessata da questo aggiornamento normativo.'
+            ),
             ccb_class='class2',
             ccb_requirements='Conforme ai requisiti normativi vigenti.',
             ccb_technical_impact='Impatto limitato alla sezione 4 del documento.',

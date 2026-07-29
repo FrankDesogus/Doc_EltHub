@@ -287,8 +287,6 @@ def ecn_create(request):
                     proposed_by=request.user,
                     title=d['title'],
                     motivation=d['motivation'],
-                    applicability_category=d['applicability_category'],
-                    applicability_detail=d.get('applicability_detail', ''),
                     description=d.get('description', ''),
                     motivation_detail=d.get('motivation_detail', ''),
                     commessa=d.get('commessa', ''),
@@ -363,8 +361,6 @@ def ecn_create_simple(request):
                     document=document,
                     proposed_by=request.user,
                     title=d['title'],
-                    applicability_category=d['applicability_category'],
-                    applicability_detail=d.get('applicability_detail', ''),
                     description=d.get('description', ''),
                 )
                 messages.success(
@@ -540,6 +536,8 @@ def ecn_ccb_dossier(request, ecn_id):
                     update_ccb_dossier(
                         ecn,
                         actor=request.user,
+                        applicability_category=d.get('applicability_category') or None,
+                        applicability_detail=d.get('applicability_detail', ''),
                         ccb_class=d.get('ccb_class') or None,
                         ccb_requirements=d.get('ccb_requirements', ''),
                         ccb_technical_impact=d.get('ccb_technical_impact', ''),
@@ -578,6 +576,8 @@ def ecn_ccb_dossier(request, ecn_id):
         # Pre-popola con i dati esistenti
         form = ChangeNoticeDossierForm(
             initial={
+                'applicability_category': ecn.applicability_category or '',
+                'applicability_detail':   ecn.applicability_detail,
                 'ccb_class':           ecn.ccb_class or '',
                 'ccb_requirements':    ecn.ccb_requirements,
                 'ccb_technical_impact': ecn.ccb_technical_impact,
@@ -899,8 +899,6 @@ def ecn_edit(request, ecn_id):
                     actor=request.user,
                     title=d['title'],
                     motivation=d['motivation'],
-                    applicability_category=d['applicability_category'],
-                    applicability_detail=d.get('applicability_detail', ''),
                     description=d.get('description', ''),
                     motivation_detail=d.get('motivation_detail', ''),
                     commessa=d.get('commessa', ''),
@@ -919,8 +917,6 @@ def ecn_edit(request, ecn_id):
             'description': ecn.description,
             'commessa': ecn.commessa,
             'project': ecn.project,
-            'applicability_category': ecn.applicability_category,
-            'applicability_detail': ecn.applicability_detail,
         })
 
     return render(request, 'ecn/ecn_edit_form.html', {

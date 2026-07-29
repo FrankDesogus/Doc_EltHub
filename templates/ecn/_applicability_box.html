@@ -12,8 +12,15 @@
   <div class="text-sm whitespace-pre-wrap{% if cat == 'limited' %} font-medium{% endif %}" style="color: var(--text-primary);">{{ ecn.applicability_detail }}</div>
   {% elif not cat %}
   <p class="text-xs" style="color: var(--text-secondary);">
-    Nessuna informazione di applicabilità registrata: questo ECN è stato creato prima
-    dell'introduzione di questo campo.
+    {% if ecn.flow_type == 'simple' %}
+    Gli ECN a flusso semplice non hanno un'applicabilità: nessuna CCB si riunisce
+    per deciderla.
+    {% elif ecn.status == 'draft' or ecn.status == 'ccb_preparation' %}
+    Applicabilità non ancora decisa: sarà definita dalla CCB nel dossier istruttorio
+    prima dell'invio al voto.
+    {% else %}
+    Nessuna applicabilità registrata (ECN storico antecedente a questa funzionalità).
+    {% endif %}
   </p>
   {% endif %}
   {% if ecn.applicability_shows_scope_notice %}

@@ -42,7 +42,9 @@ class ChangeNotice(models.Model):
         SIMPLE   = 'simple',   'Semplice (automatico)'
 
     class Applicability(models.TextChoices):
-        """Campo di applicazione della modifica (obbligatorio per i nuovi ECN).
+        """Campo di applicazione della modifica, valutato dalla CCB nel
+        dossier istruttorio (obbligatorio prima dell'invio al voto per ogni
+        ECN standard) — non una dichiarazione del proponente.
 
         Informazione strutturata e dichiarativa: NON seleziona automaticamente
         quale DocumentVersion viene mostrata a un progetto (resta
@@ -107,18 +109,34 @@ class ChangeNotice(models.Model):
 
     # ------------------------------------------------------------------
     # Applicabilità — campo di applicazione della modifica.
-    # Nullable per compatibilità con gli ECN storici creati prima di questa
-    # funzionalità: NON va inventato retroattivamente. Obbligatorio invece
-    # per ogni nuovo ECN (applicativamente, in forms/services — vedi
-    # ChangeNotice.validate_applicability). Diventa immutabile appena l'ECN
-    # esce dallo stato DRAFT, stessa finestra di modifica di title/motivation
-    # (vedi ecn.services.update_change_notice / ecn.permissions.can_edit_ecn).
+    #
+    # È una valutazione della CCB, compilata nel dossier istruttorio
+    # (ecn.services.update_ccb_dossier) dal responsabile istruttoria —
+    # NON una dichiarazione del proponente al momento della richiesta
+    # (TASK-037, correzione rispetto all'impostazione iniziale TASK-036,
+    # che la chiedeva per errore già in create_change_notice/ChangeNoticeForm).
+    #
+    # Nullable perché resta senza valore per due motivi legittimi, non solo
+    # uno:
+    #   - ECN standard non ancora arrivato in istruttoria CCB (DRAFT/appena
+    #     creato), o storico antecedente a questa funzionalità — NON va
+    #     inventato retroattivamente;
+    #   - ECN a flusso semplice (TASK-022): nessuna CCB si riunisce mai in
+    #     quel flusso, quindi l'applicabilità non viene mai richiesta né
+    #     decisa (decisione esplicita, non un'omissione).
+    #
+    # Obbligatoria applicativamente solo per l'ECN standard, solo prima
+    # dell'invio al voto quando si parte da CCB_PREPARATION (vedi
+    # ecn.services.submit_change_notice) e di nuovo, in difesa, al momento
+    # dell'approvazione finale (ecn.services.approve_change_notice) — mai
+    # al momento della creazione. Diventa immutabile appena l'ECN lascia
+    # CCB_PREPARATION (update_ccb_dossier non è più chiamabile).
     #
     # Distinto da:
     #   - project/commessa: riferimento/contesto dell'ECN, non il suo campo
     #     di applicazione;
     #   - ccb_other_impact: impatti collaterali valutati in istruttoria CCB,
-    #     non l'ambito dichiarato dal proponente;
+    #     non l'ambito di applicazione della modifica;
     #   - description/motivation: cosa cambia e perché, non a chi si applica.
     # ------------------------------------------------------------------
     applicability_category = models.CharField(
@@ -128,8 +146,9 @@ class ChangeNotice(models.Model):
         blank=True,
         verbose_name='Applicabilità',
         help_text=(
-            'Ambito di applicazione della modifica. Obbligatorio per i nuovi ECN; '
-            'nullo solo per ECN storici antecedenti a questa funzionalità.'
+            'Ambito di applicazione della modifica, valutato dalla CCB nel dossier '
+            'istruttorio. Nullo prima dell\'istruttoria, per gli ECN a flusso semplice '
+            '(nessuna CCB) e per gli ECN storici antecedenti a questa funzionalità.'
         ),
     )
     applicability_detail = models.TextField(
@@ -354,14 +373,18 @@ class ChangeNotice(models.Model):
     # ------------------------------------------------------------------
     @property
     def applicability_is_registered(self):
-        """False per gli ECN storici antecedenti a questa funzionalità (valore nullo)."""
+        """
+        False quando il valore è nullo — non ancora deciso dalla CCB
+        (istruttoria non completata), ECN a flusso semplice (nessuna CCB
+        si riunisce mai), o ECN storico antecedente a questa funzionalità.
+        """
         return bool(self.applicability_category)
 
     @property
     def applicability_display(self):
-        """Etichetta leggibile, incluso il caso storico non registrato."""
+        """Etichetta leggibile, incluso il caso non ancora deciso/non applicabile."""
         if not self.applicability_category:
-            return 'Applicabilità non registrata — ECN storico'
+            return 'Applicabilità non specificata'
         return self.get_applicability_category_display()
 
     @property

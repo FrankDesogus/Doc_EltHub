@@ -34,8 +34,6 @@ def create_change_notice(
     proposed_by,
     title,
     motivation,
-    applicability_category,
-    applicability_detail='',
     description='',
     motivation_detail='',
     commessa='',
@@ -52,11 +50,11 @@ def create_change_notice(
     Se code è None, genera automaticamente un codice ECN-NNNN univoco.
     Se created_by è None, usa proposed_by.
 
-    applicability_category/applicability_detail sono obbligatori (stessa
-    finestra di obbligatorietà di motivation: già alla creazione, coerente
-    con il resto dei dati base dell'ECN standard) e validati centralmente
-    da ChangeNotice.validate_applicability — un ECN non può mai esistere
-    senza applicabilità valida, indipendentemente dall'endpoint chiamante.
+    L'ECN nasce senza applicabilità (applicability_category=None): non è
+    una dichiarazione del proponente, ma una valutazione della CCB fatta
+    nel dossier istruttorio (vedi update_ccb_dossier) — corretto in
+    TASK-037 rispetto all'impostazione iniziale (TASK-036), che la
+    richiedeva per errore già a questo punto.
     """
     from ecn.models import ChangeNotice
 
@@ -71,10 +69,6 @@ def create_change_notice(
             )
         document_version = document.current_version
 
-    applicability_category, applicability_detail = ChangeNotice.validate_applicability(
-        applicability_category, applicability_detail,
-    )
-
     if code is None:
         code = _generate_ecn_code()
 
@@ -85,8 +79,6 @@ def create_change_notice(
         motivation=motivation,
         motivation_detail=motivation_detail,
         commessa=commessa,
-        applicability_category=applicability_category,
-        applicability_detail=applicability_detail,
         document=document,
         document_version=document_version,
         project=project,
@@ -113,8 +105,7 @@ def create_change_notice(
     return ecn
 
 
-def create_simple_ecn(document, proposed_by, title, applicability_category,
-                      applicability_detail='', description='', created_by=None,
+def create_simple_ecn(document, proposed_by, title, description='', created_by=None,
                       send_notifications=True):
     """
     Crea ed autoapprova immediatamente un ECN a flusso semplice (TASK-022):
@@ -130,11 +121,10 @@ def create_simple_ecn(document, proposed_by, title, applicability_category,
     completato (ECN_CREATED + ECN_APPROVED), visibile in Archivio e nello
     storico documento.
 
-    applicability_category/applicability_detail sono obbligatori e validati
-    PRIMA di qualunque scrittura: un ECN semplice si autoapprova nello
-    stesso istante in cui viene creato, quindi l'applicabilità deve essere
-    già completa e valida — non può esistere una finestra "bozza semplice
-    senza applicabilità" da colmare dopo, a differenza dell'ECN standard.
+    Non ha applicabilità (applicability_category resta None): nel flusso
+    semplice nessuna CCB si riunisce mai, quindi non esiste un momento in
+    cui l'applicabilità venga decisa — resta non specificata, come per gli
+    ECN storici (decisione esplicita dell'operatore, TASK-037).
     """
     from ecn.models import ChangeNotice
 
@@ -150,10 +140,6 @@ def create_simple_ecn(document, proposed_by, title, applicability_category,
             "Usa l'ECN standard (con istruttoria e votazione CCB)."
         )
 
-    applicability_category, applicability_detail = ChangeNotice.validate_applicability(
-        applicability_category, applicability_detail,
-    )
-
     if created_by is None:
         created_by = proposed_by
 
@@ -165,8 +151,6 @@ def create_simple_ecn(document, proposed_by, title, applicability_category,
             title=title,
             description=description,
             motivation=ChangeNotice.Motivation.OTHER,
-            applicability_category=applicability_category,
-            applicability_detail=applicability_detail,
             document=document,
             document_version=document.current_version,
             proposed_by=proposed_by,
@@ -194,23 +178,20 @@ def create_simple_ecn(document, proposed_by, title, applicability_category,
     return ecn
 
 
-def update_change_notice(change_notice, actor, title, motivation, applicability_category,
-                         applicability_detail='', description='', motivation_detail='',
-                         commessa='', project=None):
+def update_change_notice(change_notice, actor, title, motivation,
+                         description='', motivation_detail='', commessa='', project=None):
     """
     Aggiorna i dati base di un ECN in stato DRAFT.
 
     Modificabili: title, motivation, motivation_detail, description, commessa,
-    project, applicability_category, applicability_detail. Lo stato deve
-    essere DRAFT (il service non verifica il permesso: lo fa la view) — la
-    stessa finestra è già la garanzia di immutabilità post-approvazione per
-    l'applicabilità: appena l'ECN lascia DRAFT (istruttoria, valutazione,
-    approvato, rifiutato, chiuso) questa funzione non è più chiamabile, quindi
-    né l'applicabilità né gli altri dati base possono più cambiare in modo
-    silenzioso (stesso meccanismo già in vigore per title/motivation/commessa).
+    project. Lo stato deve essere DRAFT (il service non verifica il
+    permesso: lo fa la view).
+
+    Non tocca l'applicabilità: è compilata dalla CCB nel dossier istruttorio
+    (vedi update_ccb_dossier), non un dato base del proponente (TASK-037).
 
     Raises:
-      ValidationError: se l'ECN non è in stato DRAFT, o l'applicabilità non è valida.
+      ValidationError: se l'ECN non è in stato DRAFT.
     """
     from ecn.models import ChangeNotice
 
@@ -219,10 +200,6 @@ def update_change_notice(change_notice, actor, title, motivation, applicability_
             "I dati base possono essere modificati solo su ECN in bozza."
         )
 
-    applicability_category, applicability_detail = ChangeNotice.validate_applicability(
-        applicability_category, applicability_detail,
-    )
-
     old_values = {
         'title': change_notice.title,
         'motivation': change_notice.motivation,
@@ -230,8 +207,6 @@ def update_change_notice(change_notice, actor, title, motivation, applicability_
         'motivation_detail': change_notice.motivation_detail,
         'commessa': change_notice.commessa,
         'project_id': change_notice.project_id,
-        'applicability_category': change_notice.applicability_category,
-        'applicability_detail': change_notice.applicability_detail,
     }
 
     change_notice.title = title
@@ -240,11 +215,8 @@ def update_change_notice(change_notice, actor, title, motivation, applicability_
     change_notice.motivation_detail = motivation_detail
     change_notice.commessa = commessa
     change_notice.project = project
-    change_notice.applicability_category = applicability_category
-    change_notice.applicability_detail = applicability_detail
     change_notice.save(update_fields=[
         'title', 'motivation', 'description', 'motivation_detail', 'commessa', 'project',
-        'applicability_category', 'applicability_detail',
     ])
 
     new_values = {
@@ -254,8 +226,6 @@ def update_change_notice(change_notice, actor, title, motivation, applicability_
         'motivation_detail': change_notice.motivation_detail,
         'commessa': change_notice.commessa,
         'project_id': change_notice.project_id,
-        'applicability_category': change_notice.applicability_category,
-        'applicability_detail': change_notice.applicability_detail,
     }
 
     try:
@@ -434,14 +404,6 @@ def submit_change_notice(change_notice, user, send_notifications=True):
     if not can_submit_ecn(user, change_notice):
         raise PermissionDenied("Non hai il permesso di inviare questo ECN alla CCB.")
 
-    # Difesa in profondità: l'applicabilità è già obbligatoria alla creazione
-    # (create_change_notice), quindi qui non dovrebbe mai mancare — ma un ECN
-    # standard non deve MAI poter entrare in valutazione CCB senza
-    # applicabilità valida, indipendentemente da come è stato creato.
-    ChangeNotice.validate_applicability(
-        change_notice.applicability_category, change_notice.applicability_detail,
-    )
-
     _allowed_submit = (ChangeNotice.Status.DRAFT, ChangeNotice.Status.CCB_PREPARATION)
     if change_notice.status not in _allowed_submit:
         raise ValidationError(
@@ -451,8 +413,14 @@ def submit_change_notice(change_notice, user, send_notifications=True):
 
     # Verifica campi obbligatori del dossier solo quando si parte da CCB_PREPARATION
     # (il percorso legacy DRAFT→UNDER_REVIEW non impone la validazione dossier
-    #  per retrocompatibilità con i test esistenti)
+    #  per retrocompatibilità con i test esistenti). L'applicabilità è una
+    # valutazione della CCB (dossier), non del proponente — vive qui insieme
+    # a ccb_class/ccb_requirements/ccb_technical_impact, non a monte in
+    # create_change_notice (TASK-037).
     if change_notice.status == ChangeNotice.Status.CCB_PREPARATION:
+        ChangeNotice.validate_applicability(
+            change_notice.applicability_category, change_notice.applicability_detail,
+        )
         if not change_notice.ccb_class:
             raise ValidationError(
                 "La classificazione variante è obbligatoria prima dell'invio alla CCB. "
@@ -614,6 +582,17 @@ def approve_change_notice(
                 raise ValidationError(
                     "La classe variante (Classe 1 / Classe 2) è obbligatoria per approvare l'ECN."
                 )
+            # NOTA (TASK-037): a differenza di ccb_class, l'applicabilità NON
+            # viene ri-verificata qui alla finalizzazione. Stesso trattamento
+            # già riservato a ccb_requirements/ccb_technical_impact: obbligatoria
+            # solo attraverso il percorso moderno del dossier istruttorio
+            # (submit_change_notice, quando si parte da CCB_PREPARATION), non
+            # sul percorso legacy DRAFT→UNDER_REVIEW mantenuto per
+            # retrocompatibilità con la suite di test preesistente. Duplicare
+            # qui lo stesso controllo rigido di ccb_class romperebbe ogni test
+            # di approvazione già esistente nel progetto, che non ha motivo di
+            # conoscere l'applicabilità (concetto introdotto solo con questa
+            # funzionalità, non presente quando quei test sono stati scritti).
             old_status = change_notice.status
             change_notice.status         = ChangeNotice.Status.APPROVED
             change_notice.ccb_reviewed_by = user
@@ -1033,6 +1012,8 @@ def configure_ccb(change_notice, actor, users, policy=None, coordinator=None, se
 def update_ccb_dossier(
     change_notice,
     actor,
+    applicability_category=None,
+    applicability_detail='',
     ccb_class=None,
     ccb_requirements='',
     ccb_technical_impact='',
@@ -1048,6 +1029,13 @@ def update_ccb_dossier(
     Dopo l'invio alla CCB (UNDER_REVIEW+) il dossier è congelato.
 
     - actor: utente che compie la modifica (per permessi e AuditLog).
+
+    applicability_category/applicability_detail seguono lo stesso pattern
+    di ccb_class: se applicability_category non è fornita (None/''), il
+    valore esistente non viene toccato — un salvataggio bozza del dossier
+    senza applicabilità ancora scelta non la azzera. Nessuna validazione
+    di completezza qui (è una bozza): la validazione piena avviene solo
+    all'invio (submit_change_notice, quando si parte da CCB_PREPARATION).
 
     Raises:
       PermissionDenied: se l'utente non ha can_compile_dossier.
@@ -1086,6 +1074,11 @@ def update_ccb_dossier(
         if ccb_class:
             change_notice.ccb_class = ccb_class
             update_fields_list.append('ccb_class')
+        if applicability_category:
+            change_notice.applicability_category = applicability_category
+            change_notice.applicability_detail = applicability_detail
+            update_fields_list.append('applicability_category')
+            update_fields_list.append('applicability_detail')
         change_notice.save(update_fields=update_fields_list)
 
     try:
@@ -1096,6 +1089,7 @@ def update_ccb_dossier(
             instance=change_notice,
             old_values=None,
             new_values={
+                'applicability_category': change_notice.applicability_category,
                 'ccb_class': change_notice.ccb_class,
                 'ccb_requirements': bool(ccb_requirements),
                 'ccb_technical_impact': bool(ccb_technical_impact),
@@ -1250,11 +1244,14 @@ def _write_audit(actor, action, ecn, old_status, new_status):
             metadata['old_status'] = old_status
         if ecn.project_id:
             metadata['project_id'] = ecn.project_id
-        # ECN_CREATED: registra la categoria scelta alla creazione.
         # ECN_APPROVED: congela nell'audit trail il valore che diventa
         # immutabile da questo momento in poi (nessun campo extra sul
-        # modello: la transizione di stato stessa è il "sigillo").
-        if action in ('ECN_CREATED', 'ECN_APPROVED') and ecn.applicability_category:
+        # modello: la transizione di stato stessa è il "sigillo"). La
+        # scelta della categoria è già tracciata separatamente
+        # dall'audit CCB_DOSSIER_UPDATED (update_ccb_dossier) — a
+        # ECN_CREATED l'applicabilità è sempre assente per design
+        # (TASK-037: decisa dalla CCB, non al momento della richiesta).
+        if action == 'ECN_APPROVED' and ecn.applicability_category:
             metadata['applicability_category'] = ecn.applicability_category
             if ecn.applicability_detail:
                 metadata['applicability_detail'] = ecn.applicability_detail

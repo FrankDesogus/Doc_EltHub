@@ -30,6 +30,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 
 | ID | Titolo | Priorità | Note |
 | -- | ------ | -------- | ---- |
+| TASK-037-2 | Applicabilità ECN — correzione strutturale (Fase 2: fix test suite) | Alta | Spec completa in Dettaglio task |
 
 ## Completati
 
@@ -74,6 +75,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-036-2 | Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) | — | 2026-07-29 |
 | TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | c18eeb4 | 2026-07-29 |
 | TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | b9a5797 | 2026-07-29 |
+| TASK-037 | Applicabilità ECN — correzione strutturale: decisa dalla CCB nel dossier, non dal proponente (Fase 1: modello, service, form, view, template, dati demo) | — | 2026-07-30 |
 
 ---
 
@@ -3336,6 +3338,387 @@ indicativi — puoi consolidare o aggiungere metodi di test purché la
 copertura descritta sia rispettata nella sostanza, non serve un metodo per
 punto elenco se un singolo test parametrizzato copre più casi in modo
 chiaro).
+
+---
+
+### TASK-037 — Applicabilità ECN: correzione strutturale (Fase 1) — Claude Code
+
+#### Errore corretto
+
+TASK-036 (Fase 1-4, completate e testate il 2026-07-29) aveva implementato
+l'applicabilità come un dato compilato dal **proponente** al momento della
+creazione dell'ECN (`ChangeNoticeForm`/`SimpleEcnForm`, obbligatorio già in
+`create_change_notice`/`create_simple_ecn`). L'operatore ha segnalato
+(2026-07-30) un errore concettuale reale: **l'applicabilità è una
+valutazione della CCB**, decisa quando la CCB si riunisce/istruisce la
+pratica — non una dichiarazione del richiedente. Chiarito con l'operatore
+(due domande dirette, non assunto):
+
+1. Nel flusso standard, l'applicabilità va compilata nel **dossier
+   istruttorio** (`ChangeNoticeDossierForm`/`update_ccb_dossier`), dal
+   responsabile istruttoria (ccb_coordinator) o Quality Manager — stesso
+   meccanismo già in uso per `ccb_class`/`ccb_requirements`/
+   `ccb_technical_impact`: opzionale al salvataggio bozza, obbligatoria
+   prima dell'invio al voto.
+2. L'ECN semplice (nessuna CCB, autoapprovazione immediata) **non ha
+   applicabilità**: nessuna CCB si riunisce mai in quel flusso, quindi
+   resta sempre nulla (come gli ECN storici), per decisione esplicita
+   dell'operatore — non un'omissione.
+
+#### Modifiche (tutte dirette, nessun ciclo Cursor/Codex per questa fase:
+correzione di un errore di design, non implementazione di funzionalità nuova)
+
+- **`ecn/models.py`**: nessuna modifica di schema (il campo era già
+  nullable). Aggiornati docstring/help_text di `Applicability`,
+  `applicability_category`/`applicability_detail` e delle proprietà
+  (`applicability_display`, `applicability_is_registered`) per riflettere
+  la nuova semantica: nullo per 3 motivi legittimi (non ancora istruito,
+  flusso semplice, storico), non solo "storico". Testo di
+  `applicability_display` per il caso nullo cambiato da "Applicabilità non
+  registrata — ECN storico" a "Applicabilità non specificata" (il vecchio
+  testo era fuorviante: ora un ECN standard appena creato, non ancora in
+  istruttoria, è anch'esso "non specificato" senza essere storico).
+  Migrazione `0007_alter_changenotice_applicability_category.py`
+  (solo help_text, nessun impatto reale su schema/dati).
+- **`ecn/services.py`**:
+  - `create_change_notice`/`create_simple_ecn`: **rimossi** i parametri
+    `applicability_category`/`applicability_detail` (non più accettati —
+    l'ECN nasce sempre senza applicabilità).
+  - `update_change_notice`: **rimossi** gli stessi parametri (il
+    proponente non modifica l'applicabilità nemmeno in bozza).
+  - `update_ccb_dossier`: **aggiunti** `applicability_category=None,
+    applicability_detail=''`, stesso pattern "preserva se non fornito" già
+    usato per `ccb_class`. Audit `CCB_DOSSIER_UPDATED` include ora
+    `applicability_category`.
+  - `submit_change_notice`: il controllo di applicabilità (già presente
+    da TASK-036) è stato **spostato** dentro il blocco
+    `if change_notice.status == CCB_PREPARATION:`, alla pari di
+    `ccb_class`/`ccb_requirements`/`ccb_technical_impact` — non più un
+    controllo incondizionato a monte. Stesso trattamento already
+    riservato agli altri campi dossier: il percorso legacy
+    DRAFT→UNDER_REVIEW resta esente, per retrocompatibilità con la suite
+    di test preesistente (la stessa eccezione già documentata per gli
+    altri campi, non una nuova).
+  - `approve_change_notice`: **valutato e scartato** un controllo
+    difensivo aggiuntivo alla finalizzazione (simmetrico a quello già
+    esistente per `ccb_class`) — avrebbe rotto ogni test di approvazione
+    preesistente nel progetto (decine di call site, nessuno a conoscenza
+    di un concetto introdotto solo da questa funzionalità). Lasciato un
+    commento esplicito nel codice che spiega la scelta e la asimmetria
+    intenzionale rispetto a `ccb_class`.
+- **`ecn/forms.py`**: rimosso `ApplicabilityFieldsMixin` (nessun
+  consumatore rimasto). `ChangeNoticeForm`/`ChangeNoticeEditForm`/
+  `SimpleEcnForm` non hanno più i campi applicabilità.
+  `ChangeNoticeDossierForm` li ha acquisiti come campi diretti (non
+  mixin — niente rischio del bug metaclass di TASK-036-2, dato che sono
+  dichiarati direttamente nel corpo della classe Form),
+  `required=False` come gli altri campi dossier, con
+  `validate_for_submit()` esteso per richiederli (categoria sempre,
+  dettaglio se "limitata") prima dell'invio.
+- **`ecn/views.py`**: `ecn_create`/`ecn_create_simple`/`ecn_edit` non
+  passano più applicabilità ai service. `ecn_ccb_dossier` la passa a
+  `update_ccb_dossier` e la pre-popola nel form GET.
+- **Template**: rimossa la sezione "Applicabilità" da `ecn_form.html`,
+  `ecn_edit_form.html`, `ecn_create_simple.html` (con nota nella UI che
+  spiega dove verrà decisa/perché non si applica). Aggiunta a
+  `ecn_ccb_dossier.html` (radio card nel form editabile + riga nel
+  riepilogo read-only "Contenuto dossier"). `_applicability_box.html`
+  aggiornato: testo del caso "non specificata" ora distingue flusso
+  semplice / bozza-o-istruttoria-in-corso / storico effettivo, invece di
+  assumere sempre "storico".
+- **Dati demo** (`demo_full.py`, `demo_company.py`): tutte le chiamate a
+  `create_change_notice`/`create_simple_ecn` non passano più
+  applicabilità; spostata nelle chiamate `update_ccb_dossier`/`_setup_ccb`
+  già esistenti per gli scenari che la richiedono. Verificato con
+  `demo_full --reset --no-email` eseguito realmente, esito pulito.
+
+#### Verifiche eseguite in questa fase
+
+`python manage.py check` pulito. `makemigrations --check --dry-run` pulito
+dopo aver generato la migrazione 0007. `demo_full --reset --no-email`
+eseguito con successo end-to-end.
+
+**Suite di test**: non ancora verde — rottura nota e circoscritta,
+interamente riconducibile al cambio di firma dei service (stesso pattern
+già visto in TASK-036-2, ma ora nella direzione opposta: i parametri
+aggiunti allora vanno ora rimossi). `ecn`: 378 test, 136 errori (tutti
+`TypeError`, parametro non più accettato) + 13 fallimenti (test TASK-036-4
+che verificavano il comportamento sbagliato — applicabilità in
+`ChangeNoticeForm`/`SimpleEcnForm`/`create_change_notice` invece che nel
+dossier). `documents`+`approvals`+`notifications`+`projects`: 1054 test,
+17 errori (stessi `TypeError`). **Zero effetti collaterali imprevisti**:
+nessun errore riconducibile al controllo `submit_change_notice` spostato
+dentro il blocco CCB_PREPARATION (verificato: i soli test che passano da
+quel percorso già chiamavano `update_ccb_dossier` per gli altri campi
+dossier, quindi il perimetro è lo stesso, non più ampio).
+
+Correzione della suite delegata a Codex — vedi TASK-037-2 (spec completa
+sotto), con analisi già fatta caso per caso per evitare che debba
+riscoprire da zero quali test siano rotti meccanicamente e quali abbiano
+invece un'aspettativa concettualmente sbagliata da riscrivere.
+
+#### File coinvolti
+
+`ecn/models.py`, `ecn/services.py`, `ecn/forms.py`, `ecn/views.py`,
+`ecn/migrations/0007_alter_changenotice_applicability_category.py`,
+`templates/ecn/ecn_form.html`, `ecn_edit_form.html`,
+`ecn_create_simple.html`, `ecn_ccb_dossier.html`,
+`templates/ecn/_applicability_box.html`, `_applicability_fields.html`,
+`documents/management/commands/demo_full.py`, `demo_company.py`.
+
+#### Guardrail rispettati
+
+Nessuna modifica a `Document.current_version`, baseline, resolver di
+permessi/progetto. Nessuna modifica al vincolo "una sola categoria
+selezionabile" né alla soglia minima dettaglio (10 caratteri). Nessun
+default retroattivo inventato per gli ECN storici. Nessun merge, nessun
+push.
+
+---
+
+### TASK-037-2 — Applicabilità ECN: correzione strutturale (Fase 2: fix suite di test) — Codex
+
+#### Obiettivo
+
+TASK-037 (Fase 1, committata) ha spostato l'applicabilità ECN dalla
+creazione (proponente) al dossier istruttorio CCB (responsabile
+istruttoria), correggendo un errore concettuale. Questo ha rotto la suite
+di test in due modi distinti, **non fare confusione tra i due**:
+
+1. **Rottura meccanica** (153 `TypeError`, ~90% dei casi): chiamate
+   esistenti a `create_change_notice`/`create_simple_ecn`/
+   `update_change_notice` che passano ancora
+   `applicability_category=`/`applicability_detail=` — questi parametri
+   non esistono più su queste tre funzioni. Fix: **rimuovi il parametro
+   dalla chiamata**, punto. Non serve altro.
+2. **Test concettualmente sbagliati** (13 fallimenti, tutti in
+   `ecn/tests.py`, classi `ApplicabilityFormTests`,
+   `ApplicabilityServiceLifecycleTests`, `SimpleEcnServiceTests`,
+   `ApplicabilityViewTests` — aggiunte in TASK-036-4): verificano un
+   comportamento che non è più quello corretto (es. "l'applicabilità è
+   obbligatoria nel form di creazione ECN standard" — ora è falso, è
+   obbligatoria nel dossier). Questi vanno **riscritti o rimossi**, non
+   semplicemente corretti nella sintassi della chiamata. Elenco preciso
+   sotto (Parte B) — analisi già fatta, non ripeterla da zero.
+
+**Non modificare** `ecn/models.py`, `ecn/services.py`, `ecn/forms.py`,
+`ecn/views.py`, `ecn/permissions.py`, `ecn/admin.py`, `ecn/notifications.py`,
+migrazioni, template, `demo_full.py`, `demo_company.py`: la Fase 1 è già
+completa e verificata (`manage.py check` pulito, `demo_full --reset`
+eseguito con successo).
+
+#### Riferimenti — comportamento corretto dopo TASK-037
+
+- `create_change_notice(document, proposed_by, title, motivation, description='', motivation_detail='', commessa='', project=None, document_version=None, code=None, created_by=None, send_notifications=True)`
+  — **nessun parametro applicabilità**. L'ECN nasce sempre con
+  `applicability_category=None`.
+- `create_simple_ecn(document, proposed_by, title, description='', created_by=None, send_notifications=True)`
+  — idem, **nessun parametro applicabilità**, mai.
+- `update_change_notice(change_notice, actor, title, motivation, description='', motivation_detail='', commessa='', project=None)`
+  — idem, **nessun parametro applicabilità**.
+- `update_ccb_dossier(change_notice, actor, applicability_category=None, applicability_detail='', ccb_class=None, ccb_requirements='', ...)`
+  — **qui** vive l'applicabilità ora. Se non fornita (None/''), il valore
+  esistente non viene toccato (stesso comportamento di `ccb_class`).
+  Nessuna validazione di completezza in questa funzione (è un salvataggio
+  bozza).
+- `submit_change_notice`: solleva `ValidationError` se
+  `change_notice.applicability_category` non è valida **solo quando**
+  `change_notice.status == ChangeNotice.Status.CCB_PREPARATION` (cioè
+  quando l'ECN è passato da `configure_ccb`/dossier moderno). Il percorso
+  legacy DRAFT→UNDER_REVIEW non la richiede (stessa eccezione già
+  esistente per `ccb_class`/`ccb_requirements`/`ccb_technical_impact`).
+- `ChangeNoticeDossierForm`: ha ora `applicability_category`
+  (`RadioSelect`, `required=False`) e `applicability_detail`
+  (`required=False`). `form.validate_for_submit()` li richiede (categoria
+  sempre; dettaglio se categoria è `'limited'`, minimo 10 caratteri dopo
+  strip) insieme agli altri campi dossier.
+- `ecn.models.ChangeNotice.applicability_display` per categoria nulla
+  ora ritorna `'Applicabilità non specificata'` (non più "— ECN
+  storico").
+
+#### Scope — Parte A: fix meccanico (rimuovi il parametro)
+
+Per ciascuno dei seguenti file, esegui
+`grep -n "create_change_notice(\|create_simple_ecn(\|update_change_notice(\|self.update_change_notice(" <file>`
+e per **ogni** chiamata trovata che passa `applicability_category=` e/o
+`applicability_detail=`, **rimuovi quegli argomenti dalla chiamata**
+(lascia invariati tutti gli altri argomenti, non toccare l'ordine né gli
+altri valori):
+
+1. `ecn/tests.py` (il grosso del volume)
+2. `documents/tests.py`
+3. `approvals/tests.py`
+4. `notifications/tests_workflow_emails.py`
+
+Non toccare le chiamate a `update_ccb_dossier(...)` che già passano
+`applicability_category=`/`applicability_detail=` (es. se presenti in
+test scritti per altre fasi) — quelle sono corrette, il parametro esiste
+davvero lì.
+
+Non toccare i due helper factory `_make_ecn` (uno in `ecn/tests.py`, uno
+in `notifications/tests_workflow_emails.py`) che creano `ChangeNotice`
+direttamente via `.objects.create(applicability_category=..., ...)`,
+bypassando il service: sono chiamate dirette al modello, non al service,
+e restano valide così come sono (il default `GENERAL` che impostano è
+innocuo e non richiede modifiche).
+
+#### Scope — Parte B: test da riscrivere o rimuovere (non solo correggere la sintassi)
+
+In `ecn/tests.py`:
+
+1. **`ApplicabilityFormTests.test_regression_mixin_fields_are_injected_and_required_on_all_forms`**
+   — **rimuovi interamente**. Verificava che `ChangeNoticeForm`/
+   `ChangeNoticeEditForm`/`SimpleEcnForm` avessero i campi applicabilità
+   (bug ora corretto tramite rimozione del mixin, non più applicabile:
+   quei form non hanno mai più questi campi, per design). Il rischio che
+   guardava (metaclass Django che ignora Field dichiarati in un mixin
+   plain) non può più verificarsi perché `ApplicabilityFieldsMixin` non
+   esiste più — i campi sono ora dichiarati direttamente nel corpo di
+   `ChangeNoticeDossierForm`, una vera sottoclasse di `forms.Form`.
+2. **`test_change_notice_form_validates_limited_detail`** — **rimuovi**
+   (testa un campo che `ChangeNoticeForm` non ha più).
+3. **`test_simple_and_edit_forms_validate_limited_detail`** — **rimuovi**
+   (stesso motivo, `SimpleEcnForm`/`ChangeNoticeEditForm`).
+4. **Aggiungi** un paio di test equivalenti per `ChangeNoticeDossierForm`
+   al loro posto: (a) form valido senza applicabilità (bozza, non
+   richiesta al salvataggio) → `form.is_valid()` `True`, ma
+   `form.validate_for_submit()` solleva errore su `applicability_category`;
+   (b) `applicability_category='limited'` con `applicability_detail=''`
+   → `validate_for_submit()` solleva errore su `applicability_detail`;
+   (c) `applicability_category='limited'` con dettaglio valido →
+   `validate_for_submit()` non solleva.
+
+In `ApplicabilityServiceLifecycleTests`:
+
+5. **`test_create_change_notice_rejects_invalid_applicability_without_writing`**
+   — **rimuovi** (`create_change_notice` non accetta più applicabilità,
+   non può più rifiutarla).
+6. **`test_update_change_notice_persists_applicability_and_writes_audit_old_new_values`**
+   — **rimuovi** (`update_change_notice` non tocca più l'applicabilità).
+7. **`test_update_change_notice_rejects_non_draft_states_and_keeps_applicability_unchanged`**
+   — **rimuovi** la parte applicabilità dalla chiamata `update_change_notice`
+   (il test verifica anche altro, cioè che lo stato non-DRAFT blocchi
+   l'update in generale — quella parte resta valida, aggiusta solo la
+   chiamata). **Aggiungi** un test nuovo equivalente ma per
+   `update_ccb_dossier`: chiamarlo su un ECN con stato diverso da
+   DRAFT/CCB_PREPARATION (es. UNDER_REVIEW) deve sollevare
+   `ValidationError`, applicabilità invariata.
+8. **`test_submit_change_notice_revalidates_historical_missing_applicability`**
+   — **riscrivi**: l'ECN creato da `_make_ecn(..., applicability_category=None)`
+   resta in `DRAFT` per default, e `submit_change_notice` NON controlla
+   più l'applicabilità sul percorso DRAFT legacy (solo su
+   CCB_PREPARATION). Per testare il controllo reale: imposta
+   esplicitamente `ecn.status = ChangeNotice.Status.CCB_PREPARATION`
+   (con `save(update_fields=['status'])`) prima di chiamare
+   `submit_change_notice` — a quel punto deve sollevare `ValidationError`
+   con `applicability_category` in `error_dict`, ECN invariato.
+9. **`test_standard_approval_audit_freezes_applicability_metadata`** —
+   **riscrivi** il setup: crea l'ECN con `create_change_notice` (senza
+   applicabilità), poi `configure_ccb(...)`, poi
+   `update_ccb_dossier(ecn, actor=..., applicability_category=ChangeNotice.Applicability.FUTURE, ccb_class=..., ccb_requirements=..., ccb_technical_impact=...)`,
+   poi `submit_change_notice`, poi `approve_change_notice`. L'asserzione
+   finale (metadata `ECN_APPROVED` contiene `applicability_category`
+   `'future'`) resta valida così com'è.
+10. **`test_reject_keeps_limited_applicability_unchanged`** e
+    **`test_auto_close_keeps_applicability_unchanged`** — usano
+    `_make_ecn(...)` direttamente (non il service), **non serve
+    modificarli**: verifica solo che passino così come sono.
+
+In `SimpleEcnServiceTests`:
+
+11. **`test_rejects_invalid_applicability_without_writing`** — **rimuovi**
+    (`create_simple_ecn` non accetta più applicabilità).
+12. **`test_persists_valid_applicability_on_autoapproved_ecn`** —
+    **riscrivi**: verifica invece che l'ECN semplice creato NON abbia
+    applicabilità (`ecn.applicability_category` è `None`) — è il
+    comportamento corretto ora, non un caso limite.
+13. **`test_autoapproved_simple_ecn_applicability_is_immediately_immutable`**
+    — **rimuovi** (testava l'immutabilità di un campo che l'ECN semplice
+    non ha più). Se vuoi, sostituiscilo con un test più generico che
+    verifica che `update_change_notice` su un ECN semplice (già
+    `APPROVED`) sollevi `ValidationError` per lo stato non-DRAFT — ma
+    senza menzionare applicabilità, dato che `update_change_notice` non
+    la tocca più.
+
+In `AutoCloseEcnTests` (cerca la chiamata `create_simple_ecn(...,
+applicability_category=ChangeNotice.Applicability.LIMITED,
+applicability_detail=...)` aggiunta in TASK-036-2): rimuovi i due
+parametri dalla chiamata (Parte A), e rimuovi anche le due asserzioni
+successive `self.assertEqual(ecn.applicability_category, LIMITED)` /
+`self.assertEqual(ecn.applicability_detail, ...)` — non sono più vere
+(l'ECN semplice non ha applicabilità).
+
+In `ApplicabilityViewTests`:
+
+14. **`test_ecn_create_get_renders_three_applicability_options`** —
+    **rimuovi** (la pagina di creazione ECN standard non mostra più le 3
+    opzioni). Se vuoi un test equivalente, spostalo sulla pagina dossier
+    (`GET /ecn/<pk>/ccb-dossier/` con un ECN in CCB_PREPARATION e utente
+    con `can_compile_dossier`) verificando `value="general"` ecc. lì.
+15. **`test_ecn_create_post_missing_or_invalid_limited_applicability_rerenders_without_create`**
+    — **rimuovi** (la creazione ECN standard non richiede più
+    applicabilità: un POST senza questi campi ora crea l'ECN normalmente,
+    con status 302, non 200).
+16. **`test_ecn_create_simple_post_missing_applicability_rerenders_without_create`**
+    — **rimuovi** (stesso motivo, l'ECN semplice non richiede mai
+    applicabilità: il POST del test esistente prima di TASK-036 già
+    funzionava, deve tornare a farlo).
+17. **`test_ecn_list_renders_badge_classes_for_all_categories`** e
+    **`test_ecn_detail_limited_shows_detail_and_scope_notice_general_does_not`**
+    — usano `_make_ecn(...)` direttamente, **non serve modificarli**:
+    verifica solo che passino.
+18. **`test_ecn_detail_historical_missing_applicability_does_not_500`** —
+    l'ECN creato da `_make_ecn(..., applicability_category=None)` resta
+    in `DRAFT` per default, e il testo mostrato ora per DRAFT/CCB_PREPARATION
+    è diverso da "Applicabilità non registrata" (vedi
+    `templates/ecn/_applicability_box.html`, che distingue i 3 casi).
+    **Aggiorna l'asserzione** al testo realmente mostrato per un ECN
+    DRAFT (leggi il template per il testo esatto), oppure imposta
+    esplicitamente `ecn.status` a un valore diverso da DRAFT/CCB_PREPARATION
+    (es. `REJECTED`) per esercitare il ramo "storico" del template e
+    mantenere l'assert originale — a tua scelta, purché il test verifichi
+    ancora concretamente "niente errore 500 su un ECN senza applicabilità".
+19. **`test_applicability_field_does_not_bypass_existing_permissions`** —
+    i payload includono ancora `applicability_category` nei dati POST:
+    innocuo (i form non hanno più quel campo, Django ignora le chiavi
+    sconosciute), ma non testa più nulla di specifico
+    sull'applicabilità. Puoi semplificarlo rimuovendo quelle chiavi dai
+    payload (resta comunque un test valido di permessi generali), oppure
+    lasciarlo — la scelta è tua, non è un problema di correttezza.
+
+In `documents/tests.py` e `projects/tests.py`: i test aggiunti in
+TASK-036-4 (`test_archive_detail_shows_ecn_applicability_badge`,
+`test_compact_detail_shows_latest_ecn_applicability_badge`,
+`ProjectEcnApplicabilityViewTests`) creano `ChangeNotice` **direttamente**
+via `.objects.create(applicability_category=..., ...)`, bypassando il
+service — **non richiedono modifiche**, verifica solo che passino.
+
+#### Non fare (guardrail)
+
+Vedi lista in Obiettivo. In più: non introdurre nuovi controlli di
+validazione, non modificare il comportamento di
+`update_ccb_dossier`/`submit_change_notice`/`ChangeNoticeDossierForm` se
+un test non torna verde come ti aspetti — probabilmente è il test che va
+adattato al comportamento (già corretto) della Fase 1, non il contrario.
+Se sei genuinamente convinto di un bug reale nella Fase 1, documentalo
+nell'Esito invece di correggerlo. Un solo commit locale a fine fase. Non
+fare push, merge, rebase. Non lanciare il server di sviluppo.
+
+#### Acceptance criteria
+
+- `python manage.py check` pulito.
+- `python manage.py test ecn documents approvals notifications projects --keepdb -v1`
+  verde (**0 errori, 0 fallimenti**).
+- Nessuna modifica fuori dai 4 file di test elencati nella Parte A (più
+  eventuali file di test nuovi se preferisci separare i test aggiunti per
+  `ChangeNoticeDossierForm`/`update_ccb_dossier` — non obbligatorio,
+  estendere le classi esistenti va bene).
+
+#### Test richiesti in questa fase
+
+Fix + adattamento dei test esistenti (Parti A-B sopra). Non serve
+ampliare la copertura oltre a colmare i buchi lasciati dalle rimozioni
+(punti 4 e 7 sopra già indicano dove aggiungere gli equivalenti corretti).
 
 ---
 

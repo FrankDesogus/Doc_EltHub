@@ -67,7 +67,6 @@
       <span class="detail-value whitespace-pre-wrap">{{ ecn.description }}</span>
     </div>
     {% endif %}
-    {% include "ecn/_applicability_summary.html" %}
   </div>
 </div>
 
@@ -97,6 +96,12 @@
 {% if dossier_editable %}
 <form method="post">
   {% csrf_token %}
+
+  <!-- Applicabilità -->
+  <div class="form-section">
+    <div class="form-section-title">Applicabilità <span class="text-red-500">*</span></div>
+    {% include "ecn/_applicability_fields.html" %}
+  </div>
 
   <!-- Classificazione variante -->
   <div class="form-section">
@@ -180,6 +185,15 @@
 <div class="form-section">
   <div class="form-section-title">Contenuto dossier</div>
   <div class="dl-grid">
+    {% if ecn.applicability_category %}
+    <dt>Applicabilità</dt>
+    <dd>
+      <span class="{{ ecn.applicability_badge_class }}">{{ ecn.applicability_display }}</span>
+      {% if ecn.applicability_detail %}
+      <span class="block mt-1 whitespace-pre-wrap">{{ ecn.applicability_detail }}</span>
+      {% endif %}
+    </dd>
+    {% endif %}
     {% if ecn.ccb_class %}
     <dt>Classificazione</dt>   <dd>{{ ecn.get_ccb_class_display }}</dd>
     {% endif %}
