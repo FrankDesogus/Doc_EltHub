@@ -73,7 +73,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-036 | Applicabilità ECN obbligatoria (Fase 1: modello, service, form, view, admin, template principali, CSS sorgente) | — | 2026-07-29 |
 | TASK-036-2 | Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) | — | 2026-07-29 |
 | TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | c18eeb4 | 2026-07-29 |
-| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | vedi commit locale più recente | 2026-07-29 |
+| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | b9a5797 | 2026-07-29 |
 
 ---
 
