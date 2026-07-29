@@ -18,6 +18,7 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
+| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | Codex |
 
 ## Backlog
 
@@ -30,7 +31,6 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 
 | ID | Titolo | Priorità | Note |
 | -- | ------ | -------- | ---- |
-| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | Alta | Dopo TASK-036-3, spec da scrivere |
 
 ## Completati
 
@@ -3071,6 +3071,244 @@ python manage.py test ecn documents approvals notifications --keepdb -v1
 
 Esito: `manage.py check` pulito; suite richiesta verde,
 **969/969 test PASS**.
+
+---
+
+### TASK-036-4 — Applicabilità ECN (Fase 4: test dedicati) — Codex
+
+#### Obiettivo
+
+Le Fasi 1-3 (TASK-036, TASK-036-2, TASK-036-3, tutte committate) hanno
+implementato e reso visibile ovunque l'applicabilità ECN obbligatoria. La
+suite esistente (969 test) è verde, ma **nessun test esistente verifica
+davvero il comportamento della funzionalità stessa** — tutte le chiamate
+preesistenti usano semplicemente `applicability_category=GENERAL` come
+valore di riempimento neutro (aggiunto in TASK-036-2 solo per non rompere
+test che riguardano altro). Questa fase colma quel vuoto: test mirati su
+validazione, obbligatorietà, immutabilità, resa UI, storico ed email.
+
+**Non modificare** `ecn/models.py`, `ecn/services.py`, `ecn/forms.py`,
+`ecn/views.py`, `ecn/permissions.py`, `ecn/admin.py`, `ecn/notifications.py`,
+migrazioni, template, CSS, `demo_full.py`, `demo_company.py`: se un test
+fallisce, il problema è quasi certamente nel test stesso (aspettativa
+sbagliata), non nell'implementazione già verificata in tre fasi precedenti
+— se sei genuinamente convinto di aver trovato un bug reale
+nell'implementazione, documentalo con dettaglio nell'Esito invece di
+correggerlo silenziosamente, e lascialo per revisione.
+
+#### Riferimenti — leggi prima di scrivere test
+
+- `ecn/models.py`: `ChangeNotice.Applicability` (`GENERAL`/`FUTURE`/
+  `LIMITED`), `APPLICABILITY_DETAIL_MIN_LENGTH = 10`,
+  `ChangeNotice.validate_applicability(category, detail)` (classmethod,
+  ritorna `(category, detail_pulito)` o solleva `ValidationError` con
+  `error_dict` su `applicability_category`/`applicability_detail`),
+  proprietà `applicability_display`, `applicability_badge_class`,
+  `applicability_short_description`, `applicability_shows_scope_notice`,
+  `applicability_is_registered`.
+- `ecn/services.py`: `create_change_notice`/`create_simple_ecn`/
+  `update_change_notice` validano `applicability_category`/`_detail`
+  PRIMA di scrivere sul DB (nessuna riga parziale in caso di errore).
+  `submit_change_notice` rivalida difensivamente. `_write_audit` include
+  `applicability_category`/`_detail` nel metadata per le azioni
+  `ECN_CREATED` e `ECN_APPROVED`.
+- `ecn/forms.py`: `ApplicabilityFieldsMixin` (campi iniettati in
+  `__init__`, non dichiarativi — vedi nota storica in TASK-036-2 sul bug
+  già corretto: un test di regressione esplicito su questo punto è parte
+  di questa fase, vedi Parte B).
+- Helper di test già esistenti in `ecn/tests.py`: `_make_user`,
+  `_make_folder`, `_make_document`, `_make_version`, `_make_ecn` (quest'ultimo
+  ora crea ECN con `applicability_category=GENERAL` di default, override
+  con `**kwargs`, es. `_make_ecn(doc, ver, user, applicability_category=None)`
+  per simulare un ECN storico).
+- Partial template: `_applicability_fields.html` (form, 3 radio con
+  `value="general"`/`"future"`/`"limited"`), `_applicability_badge.html`
+  (classi `badge-applicability-general`/`-future`/`-limited`/`-unset`),
+  `_applicability_box.html` (classi `applicability-box-general`/`-future`/
+  `-limited`/`-unset`, testo "Applicabilità non registrata — ECN storico"
+  per `None`, avviso "non assegna automaticamente revisioni differenti" per
+  future/limited).
+
+#### Scope — Parte A: modello e validazione (nuova classe in `ecn/tests.py`, es. `ApplicabilityValidationTests`)
+
+1. `validate_applicability('general', '')` → ok, ritorna `('general', '')`.
+2. `validate_applicability('future', '')` → ok.
+3. `validate_applicability('limited', 'x' * 15)` → ok, dettaglio pulito
+   (strippato) ritornato.
+4. `validate_applicability('limited', '')` → `ValidationError` con
+   `applicability_detail` in `error_dict`.
+5. `validate_applicability('limited', '   ')` → stesso errore (solo spazi).
+6. `validate_applicability('limited', 'corto')` → errore (sotto soglia
+   `APPLICABILITY_DETAIL_MIN_LENGTH`, testo < 10 caratteri dopo strip).
+7. `validate_applicability('non_esiste', '')` → errore su
+   `applicability_category`.
+8. `validate_applicability(None, '')` → errore su `applicability_category`.
+9. `validate_applicability('general', 'qualunque testo')` → ok (dettaglio
+   facoltativo per generale, nessun vincolo di lunghezza se fornito).
+10. Proprietà su un ECN con `applicability_category=None` (crea con
+    `_make_ecn(..., applicability_category=None)`): `applicability_display
+    == 'Applicabilità non registrata — ECN storico'`,
+    `applicability_badge_class == 'badge-applicability-unset'`,
+    `applicability_short_description == ''`,
+    `applicability_shows_scope_notice is False`,
+    `applicability_is_registered is False`. Nessuna eccezione sollevata
+    (l'obiettivo è proprio verificare che gli ECN storici restino leggibili).
+11. Proprietà per ciascuna delle 3 categorie valide: `applicability_display`
+    coincide con `get_applicability_category_display()`,
+    `applicability_badge_class` è la classe attesa,
+    `applicability_short_description` non vuota,
+    `applicability_shows_scope_notice` è `True` solo per `future`/`limited`.
+
+#### Scope — Parte B: form (nuova classe o estensione in `ecn/tests.py`)
+
+12. **Test di regressione esplicito** (bug reale corretto in TASK-036-2):
+    `ChangeNoticeForm`/`ChangeNoticeEditForm`/`SimpleEcnForm` istanziati
+    SENZA `applicability_category` nei dati → `is_valid()` deve essere
+    `False` con errore su quel campo. Questo test esiste per impedire che
+    il bug del mixin (campi dichiarati a livello di classe invece che in
+    `__init__`) si ripresenti inosservato in futuro — motiva il test con un
+    commento che rimanda a TASK-036-2.
+13. `ChangeNoticeForm` con `applicability_category='limited'` e
+    `applicability_detail=''` → invalido, errore sul campo dettaglio.
+14. `ChangeNoticeForm` con `applicability_category='limited'` e dettaglio
+    valido (≥10 caratteri) → valido.
+15. Stesse verifiche minime (12-14) anche per `SimpleEcnForm` e
+    `ChangeNoticeEditForm` (bastano 1-2 casi ciascuna, non l'intera
+    matrice — l'obiettivo è coprire i tre form, non triplicare tutto).
+
+#### Scope — Parte C: service e ciclo di vita ECN standard (`ecn/tests.py`)
+
+16. `create_change_notice(..., applicability_category='limited',
+    applicability_detail='')` → `ValidationError`, **nessun** `ChangeNotice`
+    creato (verifica il conteggio prima/dopo, non solo l'eccezione).
+17. `create_change_notice(..., applicability_category='bogus')` →
+    `ValidationError`, nessuna riga creata.
+18. `update_change_notice` su ECN in `DRAFT`: cambia categoria da
+    `general` a `limited` con dettaglio valido → riuscito, valori
+    persistiti; `AuditLog` con `action='ECN_UPDATED'` contiene
+    `applicability_category`/`applicability_detail` sia nei valori vecchi
+    che nuovi (verifica sui campi del record, non solo che l'audit esista).
+19. `update_change_notice` su ECN con stato diverso da `DRAFT` (es.
+    `UNDER_REVIEW`, `APPROVED`, `REJECTED`, `CLOSED`) → `ValidationError`
+    per ciascuno di questi 4 stati, applicabilità invariata nel DB dopo il
+    tentativo fallito (immutabilità post-DRAFT).
+20. `submit_change_notice` su un ECN con `applicability_category=None`
+    (creato via `_make_ecn` bypassando il service, per simulare un caso
+    anomalo/storico) → `ValidationError`, l'ECN resta in `DRAFT` (verifica
+    difensiva già presente nel service — questo test la esercita
+    esplicitamente).
+21. Ciclo completo standard: crea ECN con `future`, configura CCB, invia,
+    approva (`approve_change_notice`) → `AuditLog` con
+    `action='ECN_APPROVED'` contiene `applicability_category='future'` nel
+    metadata (congelamento nell'audit, TASK-036 §Audit).
+22. Rifiuto (`reject_change_notice`) di un ECN con applicabilità
+    `limited`+dettaglio → applicabilità invariata dopo il rifiuto (nessuna
+    logica di reset).
+23. Chiusura automatica (`auto_close_executed_ecn_if_ready`) di un ECN
+    approvato con applicabilità valida → applicabilità invariata dopo la
+    chiusura (regressione: la chiusura automatica non deve mai toccare
+    questi campi).
+
+#### Scope — Parte D: ECN semplice (`ecn/tests.py`, classe `SimpleEcnServiceTests`/`SimpleEcnViewTests` esistenti o nuova)
+
+24. `create_simple_ecn(..., applicability_category='limited',
+    applicability_detail='')` → `ValidationError`, nessun `ChangeNotice`
+    creato (l'autoapprovazione non deve mai bypassare la validazione —
+    verifica esplicita del requisito).
+25. `create_simple_ecn(..., applicability_category=None)` →
+    `ValidationError`.
+26. `create_simple_ecn` con dati validi (una qualunque delle 3 categorie)
+    → ECN creato con `status=APPROVED`, applicabilità persistita
+    correttamente.
+27. Immutabilità immediata: su un ECN semplice appena creato (già
+    `APPROVED`), `update_change_notice` → `ValidationError` (stato non
+    `DRAFT`) anche tentando di cambiare solo l'applicabilità.
+28. La revisione di esecuzione collegata a un ECN semplice
+    (`create_new_revision` con `ecn=...`) e la sua chiusura automatica
+    restano invariate (regressione — riusa uno scenario già esistente in
+    `ecn/tests.py` se disponibile, altrimenti costruiscine uno minimo).
+
+#### Scope — Parte E: UI/view (`ecn/tests.py`, estendi `ECNViewTests`/`ECNEditViewTests`/`SimpleEcnViewTests` o nuova classe)
+
+29. GET `ecn_create`: la risposta contiene le 3 opzioni
+    (`assertContains` su `value="general"`, `value="future"`,
+    `value="limited"`, case-sensitive sul valore esatto).
+30. POST `ecn_create` senza `applicability_category` → **200** (non 302),
+    nessun `ChangeNotice` creato, form ri-renderizzato con errore.
+31. POST `ecn_create` con `applicability_category=limited` e
+    `applicability_detail` vuoto → 200, nessun ECN creato.
+32. POST `ecn_create_simple` senza `applicability_category` → 200, nessun
+    ECN creato (stesso principio del punto 24, mai bypassabile da UI).
+33. `ecn_list`: per un ECN con ciascuna delle 3 categorie, la riga contiene
+    la classe badge corretta (`assertContains` su
+    `badge-applicability-general` ecc. — occhio a seedare almeno un ECN
+    per categoria nel test, non riusare sempre lo stesso).
+34. `ecn_detail`: per un ECN `limited` con dettaglio, la pagina contiene il
+    testo del dettaglio E il testo dell'avviso "non assegna
+    automaticamente revisioni differenti"; per un ECN `general`, l'avviso
+    NON è presente (`assertNotContains`).
+35. `ecn_detail` di un ECN storico (`applicability_category=None`):
+    nessun errore 500, la pagina contiene "Applicabilità non registrata".
+36. Utente `stranger` (senza permessi) che tenta GET/POST diretto su
+    `ecn_edit`/`ecn_create` di un ECN non suo → stesso comportamento già
+    verificato dai permessi esistenti (403/PermissionDenied) — un solo
+    test di conferma che il nuovo campo non introduce un varco, non
+    l'intera matrice di permessi (già coperta altrove).
+
+#### Scope — Parte F: documento/progetto/archivio (estendi test esistenti se già presenti, altrimenti aggiungi un caso minimo)
+
+37. `document_detail`: la sezione "Ultimo ECN" mostra il badge
+    applicabilità per `latest_ecn` (cerca test esistenti su questa sezione
+    in `documents/tests.py` ed estendili; se non esistono, aggiungi un
+    test minimo nuovo).
+38. `archive_document_detail`: la tabella ECN mostra la colonna
+    Applicabilità con badge corretto.
+39. `project_detail`/`archive_project_detail`: la tabella ECN collegati
+    mostra la colonna Applicabilità (se non esiste già una classe di test
+    per queste view in `projects/tests.py`, aggiungine una minima — non
+    serve coprire tutto il resto della pagina, solo questo aspetto).
+
+#### Scope — Parte G: email (`notifications/tests_workflow_emails.py`)
+
+40. `notify_ecn_submitted` (via invio a CCB): il corpo email
+    (`mail.outbox`) contiene l'etichetta applicabilità completa.
+41. `notify_ecn_approved`: stesso controllo.
+42. `notify_ecn_closed` con `automatic=True`: stesso controllo. Il percorso
+    `automatic=False` non deve necessariamente contenere l'etichetta (fuori
+    scope TASK-036-3) ma non deve sollevare eccezioni.
+
+#### Non fare (guardrail)
+
+Vedi lista in Obiettivo. In più: non ridurre/rimuovere test esistenti, non
+cambiare `_make_ecn`/altri helper condivisi in modo che rompa test già
+verdi (se estendi `_make_ecn`, verifica che i default restino
+retrocompatibili). Non fare commit multipli granulari: un solo commit
+locale a fine fase, come per TASK-036-3. Non fare push, merge, rebase. Non
+lanciare il server di sviluppo.
+
+#### Acceptance criteria
+
+- Tutti i nuovi test passano.
+- `python manage.py test ecn documents approvals notifications projects --keepdb -v1`
+  resta verde e il numero di test è **maggiore** di 969 (nuovi test
+  effettivamente aggiunti, non solo dichiarati).
+- `python manage.py check` pulito.
+- Nessuna modifica ai file applicativi elencati in "Non fare".
+- `docs/ai/TASKS.md` aggiornato: TASK-036-4 spostato in Completati con
+  l'hash del commit (verificabile solo dopo aver committato — vedi nota in
+  TASK-036-3 sulla stessa difficoltà, stessa soluzione: usa un
+  riferimento testuale tipo "vedi commit più recente" se non puoi
+  conoscere l'hash in anticipo, sarà corretto in un secondo momento) e con
+  un Esito che elenca quanti test sono stati aggiunti per ciascuna Parte
+  (A-G) e il conteggio finale della suite.
+
+#### Test richiesti in questa fase
+
+Questa fase **è** la scrittura dei test (Parti A-G sopra, 42 casi
+indicativi — puoi consolidare o aggiungere metodi di test purché la
+copertura descritta sia rispettata nella sostanza, non serve un metodo per
+punto elenco se un singolo test parametrizzato copre più casi in modo
+chiaro).
 
 ---
 
