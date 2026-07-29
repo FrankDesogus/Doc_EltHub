@@ -73,7 +73,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-035 | Matrice di test per la policy PDF opzionale (creazione, modifica, storico, workflow in corso) | — | 2026-07-27 |
 | TASK-036 | Applicabilità ECN obbligatoria (Fase 1: modello, service, form, view, admin, template principali, CSS sorgente) | — | 2026-07-29 |
 | TASK-036-2 | Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) | — | 2026-07-29 |
-| TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | questo commit locale | 2026-07-29 |
+| TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | c18eeb4 | 2026-07-29 |
 
 ---
 
@@ -2946,7 +2946,12 @@ Nessun merge, nessun push.
 
 ---
 
-### TASK-036-3 — Applicabilità ECN (Fase 3: template rimanenti + email) — Cursor Agent
+### TASK-036-3 — Applicabilità ECN (Fase 3: template rimanenti + email) — Codex
+
+Nota: spec scritta per Cursor Agent, eseguita invece da Codex (operatore ha
+scelto di provare Codex come agente operativo per questa fase). Diff
+verificato riga per riga da Claude Code dopo l'esecuzione, suite
+969/969 PASS riconfermata indipendentemente (non solo il report di Codex).
 
 #### Obiettivo
 
