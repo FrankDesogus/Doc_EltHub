@@ -287,6 +287,8 @@ def ecn_create(request):
                     proposed_by=request.user,
                     title=d['title'],
                     motivation=d['motivation'],
+                    applicability_category=d['applicability_category'],
+                    applicability_detail=d.get('applicability_detail', ''),
                     description=d.get('description', ''),
                     motivation_detail=d.get('motivation_detail', ''),
                     commessa=d.get('commessa', ''),
@@ -361,6 +363,8 @@ def ecn_create_simple(request):
                     document=document,
                     proposed_by=request.user,
                     title=d['title'],
+                    applicability_category=d['applicability_category'],
+                    applicability_detail=d.get('applicability_detail', ''),
                     description=d.get('description', ''),
                 )
                 messages.success(
@@ -895,6 +899,8 @@ def ecn_edit(request, ecn_id):
                     actor=request.user,
                     title=d['title'],
                     motivation=d['motivation'],
+                    applicability_category=d['applicability_category'],
+                    applicability_detail=d.get('applicability_detail', ''),
                     description=d.get('description', ''),
                     motivation_detail=d.get('motivation_detail', ''),
                     commessa=d.get('commessa', ''),
@@ -913,6 +919,8 @@ def ecn_edit(request, ecn_id):
             'description': ecn.description,
             'commessa': ecn.commessa,
             'project': ecn.project,
+            'applicability_category': ecn.applicability_category,
+            'applicability_detail': ecn.applicability_detail,
         })
 
     return render(request, 'ecn/ecn_edit_form.html', {

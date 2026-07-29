@@ -62,6 +62,7 @@
       <span class="detail-value whitespace-pre-wrap">{{ ecn.description }}</span>
     </div>
     {% endif %}
+    {% include "ecn/_applicability_summary.html" %}
     {% if ecn.ccb_requirements %}
     <div class="detail-item md:col-span-2">
       <span class="detail-label">Analisi requisiti</span>

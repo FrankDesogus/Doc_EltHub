@@ -1,0 +1,12 @@
+{# Riga compatta "Applicabilità" per pagine di sola lettura (dossier CCB,
+   decisione CCB, chiusura) inserita dentro un .detail-grid esistente.
+   Richiede `ecn`. #}
+<div class="detail-item md:col-span-2">
+  <span class="detail-label">Applicabilità</span>
+  <span class="detail-value">
+    <span class="{{ ecn.applicability_badge_class }}">{{ ecn.applicability_display }}</span>
+    {% if ecn.applicability_detail %}
+    <span class="block mt-1 text-sm whitespace-pre-wrap">{{ ecn.applicability_detail }}</span>
+    {% endif %}
+  </span>
+</div>

@@ -34,9 +34,13 @@ class ChangeNoticeAttachmentInline(admin.TabularInline):
 class ChangeNoticeAdmin(admin.ModelAdmin):
     list_display = (
         'code', 'title', 'document', 'status', 'ccb_policy', 'motivation',
-        'ccb_class', 'proposed_by', 'proposed_at', 'ccb_reviewed_at', 'closed_at',
+        'applicability_category', 'ccb_class', 'proposed_by', 'proposed_at',
+        'ccb_reviewed_at', 'closed_at',
     )
-    list_filter = ('status', 'ccb_policy', 'motivation', 'ccb_class', 'proposed_at')
+    list_filter = (
+        'status', 'ccb_policy', 'motivation', 'applicability_category',
+        'ccb_class', 'proposed_at',
+    )
     search_fields = (
         'code', 'title',
         'document__code', 'document__title',
@@ -56,6 +60,9 @@ class ChangeNoticeAdmin(admin.ModelAdmin):
         }),
         ('Proposta', {
             'fields': ('description', 'motivation', 'motivation_detail'),
+        }),
+        ('Applicabilità', {
+            'fields': ('applicability_category', 'applicability_detail'),
         }),
         ('Proponente', {
             'fields': ('proposed_by', 'proposed_at', 'submitted_at', 'created_by'),

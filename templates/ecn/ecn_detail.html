@@ -238,6 +238,9 @@
   </dl>
 </div>
 
+{# ── Applicabilità ── #}
+{% include "ecn/_applicability_box.html" %}
+
 {# ── Valutazione CCB ── #}
 {% if ecn.status == 'approved' or ecn.status == 'rejected' or ecn.status == 'closed' or ecn.ccb_reviewed_by %}
 <div class="card">

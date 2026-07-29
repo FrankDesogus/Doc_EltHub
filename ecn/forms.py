@@ -7,7 +7,76 @@ from auditlog.historical_forms import SanatoriaFieldsMixin
 from ecn.models import ChangeNotice
 
 
-class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
+class ApplicabilityFieldsMixin:
+    """
+    Campi comuni di applicabilità ECN (categoria obbligatoria + dettaglio),
+    riusati da ChangeNoticeForm, ChangeNoticeEditForm e SimpleEcnForm.
+
+    La UI rende il dettaglio dinamicamente obbligatorio solo per
+    "Applicazione limitata" (JS in ecn/_applicability_fields.html), ma la
+    validazione reale è server-side: ChangeNotice.validate_applicability è
+    l'unica fonte di verità, chiamata anche di nuovo nei service — un POST
+    diretto che aggira il form non basta a creare un'applicabilità incoerente.
+
+    IMPORTANTE: i due campi sono aggiunti in __init__ (non come attributi
+    dichiarativi di classe) di proposito. Questo mixin NON eredita da
+    forms.BaseForm — se i Field fossero dichiarati a livello di classe qui,
+    il metaclass di Django (DeclarativeFieldsMetaclass) non li raccoglie mai
+    in ChangeNoticeForm/ChangeNoticeEditForm/SimpleEcnForm.base_fields,
+    perché quel metaclass raccoglie i Field solo dagli attrs della classe
+    Form "vera" in costruzione e dai base che hanno già `declared_fields`
+    (impostato solo su classi già passate dal metaclass) — un mixin con
+    metaclass `type` normale non lo espone mai. Risultato silenzioso: i
+    campi sembravano presenti (accessibili come attributi Python), ma
+    `form.is_valid()` li ignorava completamente, quindi l'obbligatorietà
+    non era davvero applicata lato server. Stesso pattern già usato con
+    successo da SanatoriaFieldsMixin (auditlog/historical_forms.py) proprio
+    per questo motivo — riusato qui.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['applicability_category'] = forms.ChoiceField(
+            choices=ChangeNotice.Applicability.choices,
+            widget=forms.RadioSelect,
+            label='Applicabilità',
+            help_text=(
+                'Campo di applicazione della modifica (obbligatorio, una sola scelta).'
+            ),
+        )
+        self.fields['applicability_detail'] = forms.CharField(
+            widget=forms.Textarea(attrs={'rows': 3}),
+            required=False,
+            label="Dettaglio dell'applicabilità",
+            help_text=(
+                'Obbligatorio per "Applicazione limitata": specifica progetti, commesse, '
+                'configurazioni, prodotti, unità, condizioni o eccezioni interessate. '
+                'Facoltativo per le altre due categorie.'
+            ),
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        category = cleaned.get('applicability_category')
+        detail = cleaned.get('applicability_detail', '')
+        # Se la categoria non è valorizzata, ChoiceField.required ha già
+        # aggiunto l'errore "campo obbligatorio": non serve rivalidare qui.
+        if category:
+            try:
+                _, clean_detail = ChangeNotice.validate_applicability(category, detail)
+                cleaned['applicability_detail'] = clean_detail
+            except forms.ValidationError as exc:
+                error_dict = getattr(exc, 'error_dict', None)
+                if error_dict:
+                    for field_name, field_errors in error_dict.items():
+                        for error in field_errors:
+                            self.add_error(field_name, error)
+                else:
+                    raise
+        return cleaned
+
+
+class ChangeNoticeForm(SanatoriaFieldsMixin, ApplicabilityFieldsMixin, forms.Form):
     """Form per la creazione di un nuovo ECN da parte del proponente.
 
     Non include la selezione degli approvatori CCB: quella è responsabilità
@@ -46,9 +115,14 @@ class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
     )
 
 
-class SimpleEcnForm(forms.Form):
+class SimpleEcnForm(ApplicabilityFieldsMixin, forms.Form):
     """Form minimo per l'ECN a flusso semplice (TASK-022): pochi campi
-    essenziali, nessuna configurazione CCB (autoapprovato alla creazione)."""
+    essenziali, nessuna configurazione CCB (autoapprovato alla creazione).
+
+    L'applicabilità (ApplicabilityFieldsMixin) resta obbligatoria anche qui:
+    l'autoapprovazione non deve mai bypassare la validazione (l'ECN nasce
+    già APPROVED, quindi l'applicabilità deve essere completa e valida
+    PRIMA della creazione, non dopo)."""
 
     title = forms.CharField(
         max_length=255,
@@ -316,10 +390,12 @@ class ChangeNoticeCloseForm(SanatoriaFieldsMixin, forms.Form):
     )
 
 
-class ChangeNoticeEditForm(forms.Form):
+class ChangeNoticeEditForm(ApplicabilityFieldsMixin, forms.Form):
     """Form per la modifica dei dati base di un ECN in bozza.
 
-    Identici campi di ChangeNoticeForm, usato per la view /ecn/<pk>/edit/.
+    Identici campi di ChangeNoticeForm (incluso ApplicabilityFieldsMixin),
+    usato per la view /ecn/<pk>/edit/ — solo DRAFT (vedi can_edit_ecn), che
+    è anche la garanzia di immutabilità dell'applicabilità dopo l'approvazione.
     """
 
     title = forms.CharField(

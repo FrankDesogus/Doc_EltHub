@@ -272,6 +272,10 @@
       </span>
     </div>
     <div class="detail-item">
+      <span class="detail-label">Applicabilità</span>
+      <span class="detail-value">{% include "ecn/_applicability_badge.html" with ecn=latest_ecn %}</span>
+    </div>
+    <div class="detail-item">
       <span class="detail-label">Proponente</span>
       <span class="detail-value">{{ latest_ecn.proposed_by.get_full_name|default:latest_ecn.proposed_by.username }}</span>
     </div>
@@ -280,6 +284,11 @@
       <span class="detail-value">{{ latest_ecn.proposed_at|date:"d/m/Y" }}</span>
     </div>
   </div>
+  {% if latest_ecn.applicability_category == 'limited' and latest_ecn.applicability_detail %}
+  <p class="text-xs mt-2" style="color: var(--text-secondary);">
+    <strong>Dettaglio applicabilità:</strong> {{ latest_ecn.applicability_detail|truncatewords:30 }}
+  </p>
+  {% endif %}
   <div class="mt-4">
     <a href="{% url 'ecn:ecn_detail' latest_ecn.pk %}" class="btn-secondary btn-sm">Apri dettaglio</a>
   </div>

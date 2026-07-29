@@ -100,6 +100,55 @@
   .dark .badge-ecn-closed { @apply bg-slate-400/12 text-slate-300 border-white/10; }
   .dark .badge-ecn-ccb_prep { @apply bg-elt-cyan-500/13 text-elt-cyan-300 border-elt-cyan-300/20; }
 
+  /* Badge applicabilità ECN (categoria obbligatoria: generale/futura/limitata).
+     Centralizzati qui, mai duplicati come classi inline nei template — vedi
+     ecn.models.ChangeNotice.applicability_badge_class. "Limitata" usa un
+     arancione non allarmistico (non rosso: non è un errore, è una scelta
+     legittima quando le prime due categorie non si applicano). */
+  .badge-applicability-general { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200; }
+  .badge-applicability-future  { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-200; }
+  .badge-applicability-limited { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-800 border border-orange-200; }
+  .badge-applicability-unset   { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200; }
+
+  .dark .badge-applicability-general { @apply bg-emerald-400/14 text-emerald-200 border-emerald-300/20; }
+  .dark .badge-applicability-future  { @apply bg-blue-400/14 text-blue-200 border-blue-300/20; }
+  .dark .badge-applicability-limited { @apply bg-orange-400/14 text-orange-200 border-orange-300/20; }
+  .dark .badge-applicability-unset   { @apply bg-slate-400/12 text-slate-300 border-white/10; }
+
+  /* Riquadri "radio card" selezionabili per l'applicabilità ECN (3 opzioni
+     mutuamente esclusive sempre visibili insieme). Bordo + sfondo tenue
+     coerenti col badge della stessa categoria; lo stato selezionato è
+     marcato da bordo pieno + spunta, mai dal solo colore. */
+  .applicability-card {
+    @apply relative flex flex-col gap-1 rounded-lg p-3 cursor-pointer transition-colors border-2;
+    background-color: var(--panel-bg);
+    border-color: var(--border-soft);
+  }
+  .applicability-card:hover { background-color: var(--hover-soft); }
+  .applicability-card-title { @apply text-sm font-semibold flex items-center gap-1.5; color: var(--text-primary); }
+  .applicability-card-desc  { @apply text-xs; color: var(--text-secondary); }
+  .applicability-card-check { @apply absolute top-3 right-3 text-base leading-none opacity-0; }
+
+  .applicability-card.is-checked-general { @apply border-emerald-400 bg-emerald-50; }
+  .applicability-card.is-checked-general .applicability-card-check { @apply opacity-100 text-emerald-700; }
+  .applicability-card.is-checked-future  { @apply border-blue-400 bg-blue-50; }
+  .applicability-card.is-checked-future  .applicability-card-check { @apply opacity-100 text-blue-700; }
+  .applicability-card.is-checked-limited { @apply border-orange-400 bg-orange-50; }
+  .applicability-card.is-checked-limited .applicability-card-check { @apply opacity-100 text-orange-700; }
+
+  .dark .applicability-card.is-checked-general { @apply border-emerald-300/70; background-color: rgba(16,185,129,.12); }
+  .dark .applicability-card.is-checked-future  { @apply border-blue-300/70; background-color: rgba(59,130,246,.12); }
+  .dark .applicability-card.is-checked-limited { @apply border-orange-300/70; background-color: rgba(251,146,60,.14); }
+
+  /* Riquadro "Applicabilità" nel dettaglio ECN — bordo sinistro colorato
+     coerente col badge, mai il solo colore come unico indicatore (titolo +
+     badge + etichetta testuale sempre presenti). */
+  .applicability-box { @apply rounded-lg p-4 mb-4 border border-l-4; background-color: var(--panel-bg); border-color: var(--border-soft); }
+  .applicability-box.applicability-box-general { @apply border-l-emerald-400; }
+  .applicability-box.applicability-box-future  { @apply border-l-blue-400; }
+  .applicability-box.applicability-box-limited { @apply border-l-orange-400; }
+  .applicability-box.applicability-box-unset   { @apply border-l-slate-300; }
+
   /* Bottoni */
   .btn-primary   { @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-md text-sm font-semibold bg-elt-blue-600 text-white hover:bg-elt-cyan-500 focus:outline-none focus:ring-2 focus:ring-elt-cyan-500/50 shadow-sm transition-colors; }
   .btn-secondary { @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium focus:outline-none focus:ring-2 focus:ring-elt-cyan-500/40 transition-colors; background-color: var(--panel-bg); color: var(--text-primary); border: 1px solid var(--border-soft); }

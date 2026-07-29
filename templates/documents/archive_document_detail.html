@@ -164,6 +164,7 @@
         <th>Codice</th>
         <th>Titolo</th>
         <th>Stato</th>
+        <th>Applicabilità</th>
         <th>Proponente</th>
         <th>Data</th>
         <th class="w-20"></th>
@@ -183,6 +184,7 @@
             {% else %}<span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
             {% endif %}
           </td>
+          <td>{% include "ecn/_applicability_badge.html" %}</td>
           <td class="meta">{{ ecn.proposed_by.get_full_name|default:ecn.proposed_by.username }}</td>
           <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
           <td><a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="btn-secondary btn-sm">Apri</a></td>

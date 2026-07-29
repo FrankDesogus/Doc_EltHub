@@ -34,6 +34,8 @@ def create_change_notice(
     proposed_by,
     title,
     motivation,
+    applicability_category,
+    applicability_detail='',
     description='',
     motivation_detail='',
     commessa='',
@@ -49,6 +51,12 @@ def create_change_notice(
     Se document_version è None, usa document.current_version come snapshot.
     Se code è None, genera automaticamente un codice ECN-NNNN univoco.
     Se created_by è None, usa proposed_by.
+
+    applicability_category/applicability_detail sono obbligatori (stessa
+    finestra di obbligatorietà di motivation: già alla creazione, coerente
+    con il resto dei dati base dell'ECN standard) e validati centralmente
+    da ChangeNotice.validate_applicability — un ECN non può mai esistere
+    senza applicabilità valida, indipendentemente dall'endpoint chiamante.
     """
     from ecn.models import ChangeNotice
 
@@ -63,6 +71,10 @@ def create_change_notice(
             )
         document_version = document.current_version
 
+    applicability_category, applicability_detail = ChangeNotice.validate_applicability(
+        applicability_category, applicability_detail,
+    )
+
     if code is None:
         code = _generate_ecn_code()
 
@@ -73,6 +85,8 @@ def create_change_notice(
         motivation=motivation,
         motivation_detail=motivation_detail,
         commessa=commessa,
+        applicability_category=applicability_category,
+        applicability_detail=applicability_detail,
         document=document,
         document_version=document_version,
         project=project,
@@ -99,7 +113,8 @@ def create_change_notice(
     return ecn
 
 
-def create_simple_ecn(document, proposed_by, title, description='', created_by=None,
+def create_simple_ecn(document, proposed_by, title, applicability_category,
+                      applicability_detail='', description='', created_by=None,
                       send_notifications=True):
     """
     Crea ed autoapprova immediatamente un ECN a flusso semplice (TASK-022):
@@ -114,6 +129,12 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
     Lascia comunque una traccia audit equivalente a un ECN standard
     completato (ECN_CREATED + ECN_APPROVED), visibile in Archivio e nello
     storico documento.
+
+    applicability_category/applicability_detail sono obbligatori e validati
+    PRIMA di qualunque scrittura: un ECN semplice si autoapprova nello
+    stesso istante in cui viene creato, quindi l'applicabilità deve essere
+    già completa e valida — non può esistere una finestra "bozza semplice
+    senza applicabilità" da colmare dopo, a differenza dell'ECN standard.
     """
     from ecn.models import ChangeNotice
 
@@ -129,6 +150,10 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
             "Usa l'ECN standard (con istruttoria e votazione CCB)."
         )
 
+    applicability_category, applicability_detail = ChangeNotice.validate_applicability(
+        applicability_category, applicability_detail,
+    )
+
     if created_by is None:
         created_by = proposed_by
 
@@ -140,6 +165,8 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
             title=title,
             description=description,
             motivation=ChangeNotice.Motivation.OTHER,
+            applicability_category=applicability_category,
+            applicability_detail=applicability_detail,
             document=document,
             document_version=document.current_version,
             proposed_by=proposed_by,
@@ -167,16 +194,23 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
     return ecn
 
 
-def update_change_notice(change_notice, actor, title, motivation,
-                         description='', motivation_detail='', commessa='', project=None):
+def update_change_notice(change_notice, actor, title, motivation, applicability_category,
+                         applicability_detail='', description='', motivation_detail='',
+                         commessa='', project=None):
     """
     Aggiorna i dati base di un ECN in stato DRAFT.
 
-    Modificabili: title, motivation, motivation_detail, description, commessa, project.
-    Lo stato deve essere DRAFT (il service non verifica il permesso: lo fa la view).
+    Modificabili: title, motivation, motivation_detail, description, commessa,
+    project, applicability_category, applicability_detail. Lo stato deve
+    essere DRAFT (il service non verifica il permesso: lo fa la view) — la
+    stessa finestra è già la garanzia di immutabilità post-approvazione per
+    l'applicabilità: appena l'ECN lascia DRAFT (istruttoria, valutazione,
+    approvato, rifiutato, chiuso) questa funzione non è più chiamabile, quindi
+    né l'applicabilità né gli altri dati base possono più cambiare in modo
+    silenzioso (stesso meccanismo già in vigore per title/motivation/commessa).
 
     Raises:
-      ValidationError: se l'ECN non è in stato DRAFT.
+      ValidationError: se l'ECN non è in stato DRAFT, o l'applicabilità non è valida.
     """
     from ecn.models import ChangeNotice
 
@@ -185,6 +219,10 @@ def update_change_notice(change_notice, actor, title, motivation,
             "I dati base possono essere modificati solo su ECN in bozza."
         )
 
+    applicability_category, applicability_detail = ChangeNotice.validate_applicability(
+        applicability_category, applicability_detail,
+    )
+
     old_values = {
         'title': change_notice.title,
         'motivation': change_notice.motivation,
@@ -192,6 +230,8 @@ def update_change_notice(change_notice, actor, title, motivation,
         'motivation_detail': change_notice.motivation_detail,
         'commessa': change_notice.commessa,
         'project_id': change_notice.project_id,
+        'applicability_category': change_notice.applicability_category,
+        'applicability_detail': change_notice.applicability_detail,
     }
 
     change_notice.title = title
@@ -200,8 +240,11 @@ def update_change_notice(change_notice, actor, title, motivation,
     change_notice.motivation_detail = motivation_detail
     change_notice.commessa = commessa
     change_notice.project = project
+    change_notice.applicability_category = applicability_category
+    change_notice.applicability_detail = applicability_detail
     change_notice.save(update_fields=[
         'title', 'motivation', 'description', 'motivation_detail', 'commessa', 'project',
+        'applicability_category', 'applicability_detail',
     ])
 
     new_values = {
@@ -211,6 +254,8 @@ def update_change_notice(change_notice, actor, title, motivation,
         'motivation_detail': change_notice.motivation_detail,
         'commessa': change_notice.commessa,
         'project_id': change_notice.project_id,
+        'applicability_category': change_notice.applicability_category,
+        'applicability_detail': change_notice.applicability_detail,
     }
 
     try:
@@ -388,6 +433,14 @@ def submit_change_notice(change_notice, user, send_notifications=True):
 
     if not can_submit_ecn(user, change_notice):
         raise PermissionDenied("Non hai il permesso di inviare questo ECN alla CCB.")
+
+    # Difesa in profondità: l'applicabilità è già obbligatoria alla creazione
+    # (create_change_notice), quindi qui non dovrebbe mai mancare — ma un ECN
+    # standard non deve MAI poter entrare in valutazione CCB senza
+    # applicabilità valida, indipendentemente da come è stato creato.
+    ChangeNotice.validate_applicability(
+        change_notice.applicability_category, change_notice.applicability_detail,
+    )
 
     _allowed_submit = (ChangeNotice.Status.DRAFT, ChangeNotice.Status.CCB_PREPARATION)
     if change_notice.status not in _allowed_submit:
@@ -1197,6 +1250,14 @@ def _write_audit(actor, action, ecn, old_status, new_status):
             metadata['old_status'] = old_status
         if ecn.project_id:
             metadata['project_id'] = ecn.project_id
+        # ECN_CREATED: registra la categoria scelta alla creazione.
+        # ECN_APPROVED: congela nell'audit trail il valore che diventa
+        # immutabile da questo momento in poi (nessun campo extra sul
+        # modello: la transizione di stato stessa è il "sigillo").
+        if action in ('ECN_CREATED', 'ECN_APPROVED') and ecn.applicability_category:
+            metadata['applicability_category'] = ecn.applicability_category
+            if ecn.applicability_detail:
+                metadata['applicability_detail'] = ecn.applicability_detail
 
         create_audit_log(
             user=actor,

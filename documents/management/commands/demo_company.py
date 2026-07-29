@@ -392,6 +392,11 @@ class Command(BaseCommand):
             proposed_by=supervisor,
             title='Aggiornamento requisiti tecnici sezione 4 — Demo',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail=(
+                'Si applica soltanto alla sezione 4 dello standard tecnico '
+                'interessata da questo aggiornamento normativo.'
+            ),
             description=(
                 'Aggiornamento dello standard tecnico per recepire le nuove '
                 'indicazioni normative. Impatto limitato alla sezione 4.'

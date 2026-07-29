@@ -58,6 +58,7 @@
         <th>Titolo</th>
         <th>Documento</th>
         <th>Stato</th>
+        <th>Applicabilità</th>
         <th>Proponente</th>
         <th>Data</th>
       </tr>
@@ -89,6 +90,7 @@
           <span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
           {% endif %}
         </td>
+        <td>{% include "ecn/_applicability_badge.html" %}</td>
         <td class="meta">{{ ecn.proposed_by.get_full_name|default:ecn.proposed_by.username }}</td>
         <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
       </tr>

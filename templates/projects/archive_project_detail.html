@@ -161,6 +161,7 @@
       <th>Titolo</th>
       <th>Documento</th>
       <th>Stato</th>
+      <th>Applicabilità</th>
       <th>Proposto il</th>
     </tr></thead>
     <tbody>
@@ -170,6 +171,7 @@
         <td>{{ ecn.title }}</td>
         <td><a href="{% url 'document_detail' ecn.document_id %}" class="text-brand-600 hover:underline">{{ ecn.document.code }}</a></td>
         <td class="meta">{{ ecn.get_status_display }}</td>
+        <td>{% include "ecn/_applicability_badge.html" %}</td>
         <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
       </tr>
       {% endfor %}
