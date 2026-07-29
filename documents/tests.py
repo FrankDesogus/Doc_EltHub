@@ -2653,7 +2653,7 @@ class DemoSupervisorTests(TestCase):
 
         ecn = create_change_notice(
             document=doc, proposed_by=self.supervisor,
-            title='ECN test demo', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            title='ECN test demo', motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
         # Configura CCB con solo sé stesso
         set_change_notice_approvers(ecn, [self.supervisor], policy='any', actor=self.supervisor)
@@ -2696,7 +2696,7 @@ class DemoSupervisorTests(TestCase):
 
         ecn = create_change_notice(
             document=doc, proposed_by=self.supervisor,
-            title='ECN close demo', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            title='ECN close demo', motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
         set_change_notice_approvers(ecn, [self.supervisor], policy='any', actor=self.supervisor)
         submit_change_notice(ecn, self.supervisor)
@@ -2870,7 +2870,7 @@ class DemoSupervisorEndToEndTests(TestCase):
             document=doc, proposed_by=sup,
             title='Aggiornamento sezione 3',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            description='E2E test',
+            description='E2E test', applicability_category=ChangeNotice.Applicability.GENERAL,
         )
 
         # 5. Configura CCB: responsabile istruttoria = sup, unico componente = sup
@@ -5789,17 +5789,18 @@ class AllowSimpleEcnEnforcementTests(TestCase):
         return doc, ver
 
     def test_create_simple_ecn_raises_when_disallowed(self):
+        from ecn.models import ChangeNotice
         from ecn.services import create_simple_ecn
         doc, _ = self._published_doc('SIMPLEENF-001', allow_simple_ecn=False)
         with self.assertRaises(ValidationError) as ctx:
-            create_simple_ecn(document=doc, proposed_by=self.author, title='Tentativo', send_notifications=False)
+            create_simple_ecn(document=doc, proposed_by=self.author, title='Tentativo', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL)
         self.assertIn('non è consentito', str(ctx.exception))
 
     def test_create_simple_ecn_still_works_when_allowed(self):
         from ecn.models import ChangeNotice
         from ecn.services import create_simple_ecn
         doc, _ = self._published_doc('SIMPLEENF-002', allow_simple_ecn=True)
-        ecn = create_simple_ecn(document=doc, proposed_by=self.author, title='OK', send_notifications=False)
+        ecn = create_simple_ecn(document=doc, proposed_by=self.author, title='OK', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL)
         self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -5811,7 +5812,7 @@ class AllowSimpleEcnEnforcementTests(TestCase):
         ecn = create_change_notice(
             document=doc, proposed_by=self.author, title='Standard sempre ok',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            send_notifications=False,
+            send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
         self.assertIsNotNone(ecn.pk)
 
@@ -5849,7 +5850,7 @@ class AllowSimpleEcnEnforcementTests(TestCase):
         from ecn.models import ChangeNotice
         from ecn.services import create_simple_ecn
         doc, _ = self._published_doc('SIMPLEENF-008', allow_simple_ecn=True)
-        ecn = create_simple_ecn(document=doc, proposed_by=self.author, title='Prima del cambio', send_notifications=False)
+        ecn = create_simple_ecn(document=doc, proposed_by=self.author, title='Prima del cambio', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL)
 
         doc.allow_simple_ecn = False
         doc.save(update_fields=['allow_simple_ecn'])

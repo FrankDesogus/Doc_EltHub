@@ -67,6 +67,7 @@ def _make_ecn(document, version, proposed_by, code='ECN-T001'):
         title='Test ECN',
         description='Descrizione test',
         motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        applicability_category=ChangeNotice.Applicability.GENERAL,
         document=document,
         document_version=version,
         proposed_by=proposed_by,
@@ -247,7 +248,7 @@ class EcnCreatedEmailTest(TestCase):
             document=self.doc,
             proposed_by=self.proposer,
             title='Test ECN creation',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
 
         recipients = [m.to[0] for m in mail.outbox]
@@ -261,7 +262,7 @@ class EcnCreatedEmailTest(TestCase):
             document=self.doc,
             proposed_by=self.proposer,
             title='Test ECN QM',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
 
         recipients = [m.to[0] for m in mail.outbox]
@@ -275,7 +276,7 @@ class EcnCreatedEmailTest(TestCase):
             document=self.doc,
             proposed_by=self.proposer,
             title='Test ECN no self',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
 
         recipients = [m.to[0] for m in mail.outbox]
@@ -290,7 +291,7 @@ class EcnCreatedEmailTest(TestCase):
             document=doc,
             proposed_by=self.proposer,
             title='Test ECN owner eq proposer',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
 
         recipients = [m.to[0] for m in mail.outbox]

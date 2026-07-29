@@ -30,6 +30,8 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 
 | ID | Titolo | Priorità | Note |
 | -- | ------ | -------- | ---- |
+| TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | Alta | TASK-036-2 già completata (da Claude Code); spec pronta in Dettaglio task |
+| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | Alta | Dopo TASK-036-3, spec da scrivere |
 
 ## Completati
 
@@ -70,6 +72,8 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-033 | `Document.requires_approved_pdf`: l'intero flusso PDF diventa opzionale per documento | — | 2026-07-27 |
 | TASK-034 | Gate dell'intero flusso PDF dietro il flag opzionale (self-freezing senza campo dedicato) | — | 2026-07-27 |
 | TASK-035 | Matrice di test per la policy PDF opzionale (creazione, modifica, storico, workflow in corso) | — | 2026-07-27 |
+| TASK-036 | Applicabilità ECN obbligatoria (Fase 1: modello, service, form, view, admin, template principali, CSS sorgente) | — | 2026-07-29 |
+| TASK-036-2 | Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) | — | 2026-07-29 |
 
 ---
 
@@ -2702,6 +2706,332 @@ programmi esterni. Nessuna firma digitale dichiarata. Nessuna generazione
 retroattiva per revisioni storiche. Flusso ECN completo/semplice e
 revisione-senza-ECN non toccati (il gate PDF è ortogonale e disattivato di
 default). Nessun merge, nessun push.
+
+---
+
+### TASK-036 — Applicabilità ECN obbligatoria (Fase 1: modello, service, form, view, admin, template principali, CSS sorgente) — Claude Code
+
+#### Obiettivo
+
+Ogni ECN deve possedere obbligatoriamente una classificazione della propria
+applicabilità (Applicazione generale / futura / limitata), mutuamente
+esclusiva, ben visibile in tutte le schermate ECN. È un'informazione
+**dichiarativa e strutturata**, non un motore automatico: non tocca
+`Document.current_version`, il vincolo di unicità della revisione corrente,
+le baseline di progetto o i resolver di permessi/progetto.
+
+#### Analisi campi sovrapposti (fatta prima di implementare)
+
+`commessa`/`project` = riferimento/contesto dell'ECN, non il suo campo di
+applicazione. `ccb_other_impact` = impatti collaterali valutati in
+istruttoria CCB (compilato dopo, dal responsabile istruttoria), non l'ambito
+dichiarato dal proponente. `description`/`motivation` = cosa cambia e
+perché, non a chi si applica. Nessuna sovrapposizione reale: campo nuovo
+giustificato.
+
+#### Modello dati
+
+`ecn/models.py:ChangeNotice` — `Applicability` (`TextChoices`: `general`/
+`future`/`limited`), `applicability_category` (CharField, **nullable** per
+compatibilità storica — nessun default retroattivo inventato) e
+`applicability_detail` (TextField, blank). Centralizzati sul modello:
+`APPLICABILITY_DESCRIPTIONS`, `APPLICABILITY_BADGE_CLASSES`,
+`applicability_display` (etichetta o "Applicabilità non registrata — ECN
+storico" per i record legacy), `applicability_badge_class`,
+`applicability_short_description`, `applicability_shows_scope_notice`
+(True per futura/limitata: pilota l'avviso "non assegna automaticamente
+revisioni differenti ai singoli progetti"), e il validatore centralizzato
+`ChangeNotice.validate_applicability(category, detail)` — unica fonte di
+verità server-side, riusata da form E service (mai bypassabile con un POST
+diretto). Soglia minima dettaglio per "limitata": 10 caratteri dopo strip
+(`APPLICABILITY_DETAIL_MIN_LENGTH`) — euristica semplice e dichiarata,
+nessuna valutazione linguistica/AI.
+
+Migrazione `ecn/migrations/0006_applicability.py`: solo `AddField`
+nullable/blank, nessun backfill, nessuna modifica a ECN esistenti.
+
+#### Obbligatorietà e finestra di modifica
+
+Applicabilità richiesta **già alla creazione** (stessa finestra di
+`motivation`, già obbligatorio a creazione in questo progetto — scelta di
+coerenza, non la "conferma solo prima di CCB" lasciata come alternativa
+dalla spec). `create_change_notice`/`create_simple_ecn` la validano prima
+di qualunque scrittura. `submit_change_notice` la rivalida comunque in
+difesa (un ECN standard non deve mai entrare in CCB senza applicabilità
+valida, indipendentemente da come è stato creato). `update_change_notice`
+resta utilizzabile **solo in DRAFT** (identico a title/motivation/commessa):
+è proprio questa finestra già esistente il meccanismo di immutabilità
+post-approvazione — nessun nuovo campo/flag di "freeze" introdotto,
+coerente con l'indicazione di non duplicare meccanismi già presenti.
+ECN semplice: obbligatoria e validata **prima** della creazione, perché
+l'ECN nasce già `APPROVED` (l'autoapprovazione non bypassa mai la
+validazione).
+
+#### Audit
+
+Riusa `_write_audit`/`create_audit_log` esistenti (nessun secondo sistema):
+`ECN_CREATED` registra la categoria scelta; `ECN_UPDATED` (da
+`update_change_notice`) registra old/new per categoria e dettaglio come gli
+altri campi base; `ECN_APPROVED` congela nell'audit trail il valore che
+diventa immutabile da quel momento. Nessun log per tentativi non
+autorizzati (il progetto non lo fa già per gli altri campi ECN).
+
+#### Design visuale (centralizzato)
+
+`src/css/main.css`: `badge-applicability-{general,future,limited,unset}`
+(verde/blu/arancione non allarmistico/grigio storico, light+dark, stesso
+pattern di `badge-ecn-*`), `.applicability-card` (riquadri radio
+selezionabili, 3 sempre visibili, distinzione anche per testo/etichetta/
+radio nativo — mai solo colore) e `.applicability-box` (riquadro dettaglio
+con bordo sinistro colorato). Nessuna classe duplicata nei template: sempre
+`ecn.applicability_badge_class`/i 4 template partial dedicati.
+
+#### Partial riutilizzabili (`templates/ecn/`)
+
+`_applicability_fields.html` (3 radio-card + textarea dettaglio, JS
+progressive-enhancement per required dinamico — la validazione vera resta
+server-side), `_applicability_badge.html` (badge compatto per liste),
+`_applicability_box.html` (riquadro esteso per il dettaglio ECN),
+`_applicability_summary.html` (riga compatta per pagine sola-lettura CCB).
+
+#### File coinvolti in questa Fase
+
+Modificati: `ecn/models.py`, `ecn/services.py`, `ecn/forms.py`,
+`ecn/views.py`, `ecn/admin.py`, `src/css/main.css`,
+`templates/ecn/ecn_form.html`, `ecn_edit_form.html`, `ecn_create_simple.html`,
+`ecn_detail.html`, `ecn_ccb_dossier.html`, `ecn_review_form.html`,
+`ecn_close_form.html`, `ecn_list.html`,
+`templates/documents/document_detail.html`,
+`templates/documents/archive_document_detail.html`,
+`templates/projects/project_detail.html`,
+`templates/projects/archive_project_detail.html`,
+`templates/workspace/my_work.html`.
+Nuovi: `ecn/migrations/0006_applicability.py`, i 4 partial
+`templates/ecn/_applicability_*.html`.
+
+#### Verifiche eseguite in questa fase
+
+`python manage.py check` OK, `makemigrations --check --dry-run` pulito
+(nessuna migrazione mancante dopo `0006_applicability`).
+
+#### Cosa NON è ancora fatto (Fasi successive)
+
+`npm install`/`npm run build` per compilare `static/css/tailwind.css` dalle
+nuove classi sorgente: **già eseguito da Claude Code** in questa stessa
+sessione (azione di tooling autorizzata per iscritto dall'operatore),
+incluso nel commit di questa Fase 1. `demo_full.py`/`demo_company.py`:
+**già aggiornati da Claude Code** (verificati con `demo_full --reset
+--no-email` reale), inclusi in questo commit.
+
+**TASK-036-2 completata** (da Claude Code, non da Cursor Agent — vedi
+sezione dedicata: durante la verifica pre-Cursor è emerso un bug critico
+in `ApplicabilityFieldsMixin` che rendeva l'obbligatorietà non realmente
+applicata lato form, corretto insieme alla correzione meccanica delle
+~66 chiamate esistenti rotte dal nuovo parametro obbligatorio). Suite
+`ecn` + `documents`/`approvals`/`notifications`: tutte verdi dopo questa
+fase.
+
+Restano da fare, delegabili a Cursor Agent (Fase 1 e 2 già committate come
+base stabile):
+- **TASK-036-3**: template rimanenti (`ecn_dashboard.html`,
+  `workspace/quality.html`, `ecn_configure_ccb.html`, `new_revision.html`,
+  `ecn_my.html`) + 3 email (`ecn/notifications.py`). Spec completa già
+  scritta in Dettaglio task.
+- **TASK-036-4**: test dedicati alla funzionalità applicabilità (modello,
+  form, service, view) — pianificato dopo TASK-036-3, spec da scrivere.
+
+---
+
+### TASK-036-2 — Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) — Claude Code
+
+#### Nota — pianificata per Cursor Agent, eseguita direttamente da Claude Code
+
+Questa fase era stata scritta come spec per Cursor Agent (correggere le
+chiamate esistenti rotte dal nuovo parametro obbligatorio). Prima di
+lanciare il ciclo Cursor, verificando manualmente il comportamento reale
+dei form appena scritti, è stato scoperto un **bug critico** in
+`ecn/forms.py` che rendeva la Fase 1 di fatto non funzionante lato UI:
+corretto immediatamente e direttamente da Claude Code, insieme alla
+correzione meccanica delle chiamate esistenti (che a quel punto era più
+efficiente fare con uno script Python mirato che delegare). Nessun ciclo
+Cursor Agent è stato eseguito per questa fase.
+
+#### Bug critico scoperto: `ApplicabilityFieldsMixin` non registrava i campi nel form
+
+`ApplicabilityFieldsMixin` (Fase 1) dichiarava `applicability_category` e
+`applicability_detail` come attributi Field a **livello di classe** del
+mixin. Il mixin non eredita da `forms.BaseForm` (per evitare conflitti
+MRO, stesso principio di `SanatoriaFieldsMixin`). Il metaclass di Django
+(`DeclarativeFieldsMetaclass`) però raccoglie i Field **solo** dagli attrs
+della classe Form "vera" in costruzione e dai base che hanno già
+l'attributo `declared_fields` (impostato solo su classi già passate dal
+metaclass in precedenza) — un mixin con metaclass `type` normale non viene
+mai considerato. Risultato: i due campi non finivano mai in
+`ChangeNoticeForm.base_fields` / `ChangeNoticeEditForm.base_fields` /
+`SimpleEcnForm.base_fields`. Erano visibili come attributi Python (quindi
+il codice non sollevava `AttributeError` da nessuna parte, il bug era
+silenzioso), ma **completamente assenti da `form.fields`**:
+`form.is_valid()` li ignorava del tutto, quindi un POST privo di
+`applicability_category` veniva accettato come valido — l'obbligatorietà
+lato server, requisito centrale della funzionalità, **non era realmente
+applicata** per nessuna delle tre form (create standard, edit, create
+semplice), nonostante `ecn.services.*` la validasse correttamente lato
+service. Riprodotto isolatamente in shell Django prima di intervenire
+(`ChangeNoticeEditForm(data_senza_applicability).is_valid()` → `True`,
+`cleaned_data` privo della chiave).
+
+**Fix**: i due campi sono ora aggiunti in `__init__` (assegnati a
+`self.fields[...]` dopo `super().__init__()`), esattamente lo stesso
+pattern già usato con successo da `SanatoriaFieldsMixin` — che infatti non
+soffriva di questo problema proprio perché inietta i campi a runtime,
+non dichiarativamente. Riverificato in shell: form senza categoria →
+`is_valid() == False` con errore "Questo campo è obbligatorio."; categoria
+`limited` senza dettaglio → errore dedicato sul campo dettaglio; categoria
+valida → form valido. Comportamento ora conforme al requisito.
+
+#### Correzione chiamate esistenti rotte dal nuovo parametro obbligatorio
+
+`applicability_category` obbligatorio (nessun default) su
+`create_change_notice`/`create_simple_ecn`/`update_change_notice` rompeva
+tutte le chiamate preesistenti nei test. Suite `ecn` prima della
+correzione: 352 test, 131 errori (quasi tutti `TypeError: ...() missing 1
+required positional argument: 'applicability_category'`) + 1 fallimento a
+cascata. Corretto con uno script Python dedicato (paren-matching sicuro,
+non regex ingenua — necessario perché diverse chiamate passano i primi
+argomenti posizionalmente, es. `self.update_change_notice(self.ecn,
+actor=...)`, quindi l'inserimento del nuovo kwarg doveva avvenire sempre
+come **ultimo** argomento della chiamata, mai subito dopo la parentesi
+aperta) su:
+- `ecn/tests.py` (49 chiamate)
+- `documents/tests.py` (7 chiamate + 1 import locale mancante aggiunto)
+- `approvals/tests.py` (6 chiamate)
+- `notifications/tests_workflow_emails.py` (4 chiamate)
+
+Più correzioni mirate non coperte dallo script: due helper factory
+`_make_ecn` (`ecn/tests.py` e `notifications/tests_workflow_emails.py`)
+che creano `ChangeNotice` direttamente via `.objects.create(...)`
+bypassando il service — aggiunto `applicability_category=GENERAL` nei
+default, altrimenti un ECN creato così e poi passato a
+`submit_change_notice` veniva bloccato dalla validazione difensiva
+(comportamento nuovo corretto, ma il test factory doveva produrre ECN
+validi di default). E 4 test a livello di vista (`ecn_create`,
+`ecn_create_simple` x2, `ecn_edit`) i cui payload POST non includevano
+`applicability_category` — corretti aggiungendo il campo al dizionario
+POST, non modificando gli assert.
+
+#### Verifica finale
+
+`python manage.py test ecn --keepdb -v1` → **352/352 OK**.
+`python manage.py test documents approvals notifications --keepdb -v1` →
+**617/617 OK**. `manage.py check` pulito. Nessuna modifica ad
+`accounts`/`projects` (non referenziano i service ECN, verificato via
+grep su tutto il repo prima di questa fase — non ri-eseguiti per motivi di
+tempo, ma strutturalmente non impattati).
+
+#### File coinvolti
+
+Bugfix: `ecn/forms.py` (`ApplicabilityFieldsMixin`, incluso nel commit di
+TASK-036 — non un commit separato, corregge codice non ancora pubblicato
+di questa stessa feature). Chiamate esistenti: `ecn/tests.py`,
+`documents/tests.py`, `approvals/tests.py`,
+`notifications/tests_workflow_emails.py` — commit separato (questa Fase 2).
+
+#### Guardrail rispettati
+
+Nessuna modifica alla logica/agli assert dei test esistenti, solo
+aggiunta del nuovo parametro obbligatorio nei punti in cui mancava.
+Nessuna modifica a `ecn/services.py`, `ecn/permissions.py`, template,
+migrazioni, `demo_full.py`/`demo_company.py` (già corretti in Fase 1).
+Nessun merge, nessun push.
+
+---
+
+### TASK-036-3 — Applicabilità ECN (Fase 3: template rimanenti + email) — Cursor Agent
+
+#### Obiettivo
+
+Completare la visibilità dell'applicabilità ECN (TASK-036) nei template e
+nelle email ancora privi del badge/riquadro. Da avviare solo dopo che
+TASK-036-2 è verde. **Non toccare** `ecn/models.py`, `ecn/services.py`,
+`ecn/forms.py`, `ecn/permissions.py`, `ecn/admin.py`, migrazioni, i 4
+partial `templates/ecn/_applicability_*.html`, `demo_full.py`,
+`demo_company.py`, CSS.
+
+#### Riferimenti da leggere prima di iniziare
+
+- `ecn/models.py`: proprietà `applicability_display`,
+  `applicability_badge_class`, `applicability_short_description`,
+  `applicability_shows_scope_notice`.
+- `templates/ecn/_applicability_badge.html` — badge compatto, richiede
+  `ecn` nel context: `{% include "ecn/_applicability_badge.html" with ecn=<var> %}`
+  (se la variabile di loop si chiama già `ecn`, basta
+  `{% include "ecn/_applicability_badge.html" %}`).
+- `templates/ecn/ecn_list.html` e `templates/projects/project_detail.html`
+  — esempio già fatto di colonna "Applicabilità" in una tabella
+  `data-table` esistente (stessa struttura `<th>`/`<td>` da replicare).
+
+#### Scope — Parte A: template rimanenti
+
+1. `templates/ecn/ecn_dashboard.html` — 5 liste (`draft_no_ccb`,
+   `draft_ccb_ready`, `under_review_data` con `row.ecn`, `approved_no_exec`,
+   `approved_exec`): aggiungi
+   `{% include "ecn/_applicability_badge.html" with ecn=ecn %}` (per
+   `under_review_data`: `with ecn=row.ecn`) subito dopo `{{ ecn.title }}`
+   nella colonna Titolo di ciascuna tabella (non serve una colonna nuova).
+2. `templates/workspace/quality.html` — 3 liste: `ecn_to_review` (loop
+   `ecn`), `pending_ccb` (loop `ca`, usa `with ecn=ca.change_notice`),
+   `ecn_to_close` (loop `ecn`) — stesso pattern, badge dopo il titolo.
+3. `templates/ecn/ecn_configure_ccb.html` — nel `<p class="page-header-sub">`
+   che mostra "Documento: ... · Proposto da: ...", aggiungi
+   `· Applicabilità: {% include "ecn/_applicability_badge.html" %}`
+   (variabile di contesto `ecn` già disponibile nel template).
+4. `templates/documents/new_revision.html` — tabella "ECN approvati
+   disponibili" (loop `ecn_item`, non `ecn`): aggiungi colonna
+   `<th>Applicabilità</th>` / `<td>{% include "ecn/_applicability_badge.html" with ecn=ecn_item %}</td>`.
+5. `templates/ecn/ecn_my.html` — tabella "Le mie richieste" (sezione 1,
+   loop `ecn`): aggiungi colonna Applicabilità con lo stesso pattern di
+   `ecn_list.html` (`<th>Applicabilità</th>` dopo `<th>Stato</th>`, cella
+   con l'include).
+
+#### Scope — Parte B: email (`ecn/notifications.py`)
+
+Aggiungi l'applicabilità (etichetta completa via
+`change_notice.applicability_display`, MAI il colore — email di solo
+testo) dove è rilevante capire la portata della modifica:
+
+- `notify_ecn_submitted` → dentro `_notify_ccb_member`: aggiungi
+  `f"Applicabilità : {change_notice.applicability_display}\n"` dopo la
+  riga `Policy CCB`. Se `change_notice.applicability_detail`, aggiungi
+  anche quella riga (nessun troncamento necessario per i corpi email di
+  questo progetto, sono già testo libero senza limite).
+- `notify_ecn_approved` → stessa riga, dopo `Classe variante`.
+- `notify_ecn_closed` quando `automatic=True` → stessa riga, dopo
+  `Note chiusura`.
+
+Non toccare `notify_ecn_created`, `notify_ecn_rejected`,
+`notify_ecn_coordinator_assigned`, `notify_ecn_vote_cast`,
+`notify_ecn_executed` — fuori scope.
+
+#### Non fare (guardrail)
+
+Vedi lista "Non toccare" nell'Obiettivo. In più: non scrivere test in
+questa fase (TASK-036-4). Non fare commit, push o merge. Non lanciare il
+server di sviluppo. Non introdurre nuove classi CSS.
+
+#### Acceptance criteria
+
+- `python manage.py check` pulito.
+- `python manage.py test ecn documents approvals notifications --keepdb -v1`
+  resta verde come dopo TASK-036-2 (nessuna regressione da questa fase).
+- Ogni file della Parte A mostra il badge/riquadro applicabilità nei punti
+  indicati, sempre tramite i partial esistenti (mai badge scritti a mano).
+- Le 3 email della Parte B mostrano l'etichetta completa
+  dell'applicabilità.
+
+#### Test richiesti in questa fase
+
+Nessuno di nuovo. Solo la suite esistente (comando sopra) deve restare
+verde.
 
 ---
 
