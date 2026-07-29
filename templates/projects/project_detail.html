@@ -224,46 +224,45 @@
 </div>
 {% endif %}
 
-<!-- Storico progetto (riepilogo — TASK 2, 2026-07-28: dettaglio completo spostato in Storico) -->
-<div class="flex items-center justify-between mb-2 mt-8 gap-4 flex-wrap">
-  <h2 class="section-title mb-0">Storico progetto</h2>
-  <a href="{% url 'project_history' project.pk %}" class="btn-secondary btn-sm">Visualizza storico completo</a>
+<!-- Ultima revisione salvata (riepilogo compatto — storico completo in Archivio progetti) -->
+<div class="card mb-6 mt-8">
+  <div class="card-header flex items-center justify-between flex-wrap gap-2">
+    <h2 class="section-title mb-0">Ultima revisione salvata</h2>
+    {% if can_view_project_archive %}
+    <a href="{% url 'archive_project_detail' project.pk %}" class="btn-secondary btn-sm">Vedi storico completo</a>
+    {% endif %}
+  </div>
+  {% if current_baseline %}
+  <div class="detail-grid mb-0">
+    <div class="detail-item">
+      <span class="detail-label">Revisione</span>
+      <span class="detail-value font-mono font-semibold">{{ current_baseline.revision_label }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Stato</span>
+      <span class="detail-value">
+        {% if current_baseline.status == 'draft' %}<span class="badge-status-draft">Bozza</span>
+        {% elif current_baseline.status == 'issued' %}<span class="badge-status-approved">Emessa</span>
+        {% elif current_baseline.status == 'superseded' %}<span class="badge-status-superseded">Superata</span>
+        {% elif current_baseline.status == 'archived' %}<span class="badge-status-archived">Archiviata</span>
+        {% else %}<span>{{ current_baseline.status }}</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Emessa il</span>
+      <span class="detail-value">{{ current_baseline.issued_at|date:"d/m/Y"|default:"—" }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Emessa da</span>
+      <span class="detail-value">{{ current_baseline.issued_by.get_full_name|default:current_baseline.issued_by.username|default:"—" }}</span>
+    </div>
+  </div>
+  {% else %}
+  <p class="meta mb-0">
+    Nessuna revisione salvata per questo progetto.
+    {% if can_view_project_archive %}<a href="{% url 'archive_project_detail' project.pk %}" class="text-brand-600 hover:underline">Apri Archivio progetti</a> per crearne una.{% endif %}
+  </p>
+  {% endif %}
 </div>
-{% if latest_snapshot %}
-<p class="meta mb-5">
-  {{ snapshot_count }} snapshot salvat{{ snapshot_count|pluralize:"o,i" }} — l'ultimo:
-  <strong>{{ latest_snapshot.revision_label }}</strong> — {{ latest_snapshot.title }}
-  {% if latest_snapshot.issued_at %}({{ latest_snapshot.issued_at|date:"d/m/Y" }}){% endif %}.
-</p>
-{% else %}
-<p class="meta mb-5">Nessuno snapshot salvato per questo progetto.</p>
-{% endif %}
-
-{% if show_audit %}
-<h2 class="section-title mt-8">Storico eventi</h2>
-{% if audit_logs %}
-<div class="table-container">
-  <table class="data-table">
-    <thead><tr>
-      <th>Data/ora</th>
-      <th>Utente</th>
-      <th>Azione</th>
-      <th>Oggetto</th>
-    </tr></thead>
-    <tbody>
-      {% for entry in audit_logs %}
-      <tr>
-        <td class="meta whitespace-nowrap">{{ entry.timestamp|date:"d/m/Y H:i" }}</td>
-        <td>{% if entry.user %}{{ entry.user.get_full_name|default:entry.user.username }}{% else %}—{% endif %}</td>
-        <td><code class="text-xs px-1.5 py-0.5 rounded">{{ entry.action }}</code></td>
-        <td class="meta text-xs">{{ entry.object_repr }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% else %}
-<p class="meta">Nessun evento registrato per questo progetto.</p>
-{% endif %}
-{% endif %}
 {% endblock %}

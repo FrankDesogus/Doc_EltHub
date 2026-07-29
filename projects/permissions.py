@@ -205,6 +205,18 @@ def get_project_visible_folder_ids(user) -> list:
     return [pk for pk, allowed in results.items() if allowed]
 
 
+def can_view_archived_project(user, project):
+    """
+    True se l'utente può vedere lo storico completo di un progetto in
+    Archivio progetti (TASK-026): snapshot versione/revisione, confronto
+    con baseline corrente, storico eventi. Stessa regola di can_view_audit:
+    Manager/Auditor/Quality Manager globali, oppure view_history sulla
+    cartella radice del progetto.
+    """
+    from documents.permissions import can_view_audit
+    return can_view_audit(user, folder=project.root_folder)
+
+
 def get_history_visible_folder_ids(user) -> list:
     """
     Restituisce i pk delle cartelle dove l'utente ha view_history (TASK-021,

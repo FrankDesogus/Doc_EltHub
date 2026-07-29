@@ -1,23 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Archivio Progetti{% endblock %}
+{% block title %}Archivio progetti — Documentale{% endblock %}
 
 {% block content %}
 <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-  <h1 class="text-2xl font-bold text-brand-900">Archivio Progetti</h1>
+  <h1 class="text-2xl font-bold text-brand-900">Archivio progetti</h1>
   {% if total_count is not None %}
   <span class="meta">{{ total_count }} progett{% if total_count == 1 %}o{% else %}i{% endif %}</span>
   {% endif %}
 </div>
 <p class="text-sm text-gray-500 mb-4">
-  Punto d'ingresso allo storico di ciascun progetto (versioni e revisioni salvate,
-  confronto con la baseline, ECN e audit collegati). Apri un progetto per vederne lo storico completo.
+  Storico completo dei progetti: snapshot versione/revisione, confronto con la baseline corrente, storico eventi.
+  Apri un progetto per vederne il dettaglio completo.
 </p>
 
-<!-- Filtri -->
+<!-- Ricerca -->
 <form method="get" class="filter-bar">
   <div class="filter-group">
     <label class="form-label">Ricerca</label>
-    <input type="text" name="q" value="{{ q }}" placeholder="Codice, nome…" class="min-w-[200px]">
+    <input type="text" name="q" value="{{ q }}" placeholder="Codice o nome…" class="min-w-[200px]">
   </div>
   <div class="filter-actions">
     <button type="submit" class="btn-primary btn-sm">🔍 Cerca</button>
@@ -28,28 +28,29 @@
 </form>
 
 {% if projects %}
-<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden mb-4">
+<div class="table-container">
   <table class="data-table">
-    <thead>
-      <tr>
-        <th>Codice</th>
-        <th>Nome</th>
-        <th>Responsabile</th>
-        <th>Cartella</th>
-        <th class="w-32"></th>
-      </tr>
-    </thead>
+    <thead><tr>
+      <th>Codice</th>
+      <th>Nome</th>
+      <th>Versione</th>
+      <th>Revisione</th>
+      <th>Cartella</th>
+      <th>Responsabile</th>
+      <th class="w-20"></th>
+    </tr></thead>
     <tbody>
       {% for project in projects %}
-      <tr class="cursor-pointer hover:bg-gray-50" onclick="window.location='{% url 'project_history' project.pk %}'">
-        <td><a href="{% url 'project_history' project.pk %}" class="font-semibold text-brand-800 font-mono hover:underline" onclick="event.stopPropagation()">{{ project.code }}</a></td>
+      <tr class="cursor-pointer hover:bg-gray-50" onclick="window.location='{% url 'archive_project_detail' project.pk %}'">
+        <td class="font-mono font-semibold text-brand-800"><a href="{% url 'archive_project_detail' project.pk %}" class="hover:underline" onclick="event.stopPropagation()">{{ project.code }}</a></td>
         <td>{{ project.name }}</td>
-        <td class="meta">{{ project.manager.get_full_name|default:project.manager.username|default:"—" }}</td>
-        <td class="meta">{{ project.root_folder.code|default:"—" }}</td>
-        <td onclick="event.stopPropagation()">
-          <a href="{% url 'project_detail' project.pk %}" class="btn-secondary btn-sm">Progetto</a>
-          <a href="{% url 'project_history' project.pk %}" class="btn-secondary btn-sm">Storico</a>
+        <td class="meta font-mono">{{ project.version }} <span class="text-xs text-slate-400">({{ project.get_version_scheme_display }})</span></td>
+        <td class="meta font-mono">{{ project.revision }} <span class="text-xs text-slate-400">({{ project.get_revision_scheme_display }})</span></td>
+        <td class="meta">
+          {% if project.root_folder %}<span>{{ project.root_folder.code }}</span>{% else %}—{% endif %}
         </td>
+        <td class="meta">{% if project.manager %}{{ project.manager.get_full_name|default:project.manager.username }}{% else %}—{% endif %}</td>
+        <td onclick="event.stopPropagation()"><a href="{% url 'archive_project_detail' project.pk %}" class="btn-secondary btn-sm">Apri</a></td>
       </tr>
       {% endfor %}
     </tbody>

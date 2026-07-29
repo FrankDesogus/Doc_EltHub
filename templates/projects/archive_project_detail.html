@@ -1,40 +1,39 @@
 {% extends "base.html" %}
-{% block title %}{{ project.code }} — Storico — Documentale{% endblock %}
+{% block title %}{{ project.code }} — Archivio progetti — Documentale{% endblock %}
 
 {% block content %}
 <!-- Breadcrumb -->
 <nav class="breadcrumb">
-  <a href="{% url 'project_list' %}">Progetti</a>
+  <a href="{% url 'archive_project_list' %}">Archivio progetti</a>
   <span class="breadcrumb-sep">›</span>
-  <a href="{% url 'project_detail' project.pk %}">{{ project.code }}</a>
-  <span class="breadcrumb-sep">›</span>
-  <span>Storico</span>
+  <span>{{ project.code }}</span>
 </nav>
 
-<div class="page-header flex items-center justify-between flex-wrap gap-2">
+<!-- Header progetto -->
+<div class="flex items-start justify-between mb-6 gap-4 flex-wrap">
   <div>
-    <h1 class="flex items-center gap-2">
-      {{ project.code }} — {{ project.name }}
-      <span class="text-xs text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-semibold">📜 Storico completo</span>
-    </h1>
+    <div class="flex items-center gap-3 mb-1 flex-wrap">
+      <span class="text-2xl font-bold text-brand-900 font-mono">{{ project.code }}</span>
+      <span class="badge badge-project">Progetto</span>
+      <span class="meta text-xs">{{ project.get_project_type_display }}</span>
+    </div>
+    <h1 class="text-xl font-semibold text-gray-800">{{ project.name }}</h1>
+    <div class="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
+      {% if project.manager %}<span>👤 {{ project.manager.get_full_name|default:project.manager.username }}</span>{% endif %}
+      <span class="meta">Ver. {{ project.version }} ({{ project.get_version_scheme_display }}) · Rev. {{ project.revision }} ({{ project.get_revision_scheme_display }})</span>
+    </div>
   </div>
-  <a href="{% url 'project_detail' project.pk %}" class="btn-secondary btn-sm">Vista semplificata</a>
-</div>
-
-<!-- Snapshot: versioni e revisioni salvate -->
-<div class="flex items-center justify-between mb-2 mt-4 gap-4 flex-wrap">
-  <h2 class="section-title mb-0">Snapshot salvati</h2>
-  {% if can_manage %}
-  <div class="flex gap-2 flex-wrap">
+  <div class="flex items-center gap-2 flex-wrap flex-shrink-0">
+    <a href="{% url 'project_detail' project.pk %}" class="btn-secondary btn-sm">Vista semplificata</a>
+    {% if can_manage %}
     <a href="{{ save_version_url }}" class="btn-primary btn-sm">Salva versione</a>
     <a href="{{ save_revision_url }}" class="btn-secondary btn-sm">Salva revisione</a>
+    {% endif %}
   </div>
-  {% endif %}
 </div>
-<p class="meta mb-5">Fotografia documentale in un momento specifico. Le modifiche successive non aggiornano gli snapshot salvati.</p>
 
 <!-- Versioni salvate -->
-<h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-2">Versioni salvate</h3>
+<h2 class="section-title mt-4">Versioni salvate</h2>
 {% if version_snapshots %}
 <div class="table-container mb-6">
   <table class="data-table">
@@ -72,7 +71,7 @@
 {% endif %}
 
 <!-- Revisioni salvate -->
-<h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-2">Revisioni salvate</h3>
+<h2 class="section-title">Revisioni salvate</h2>
 {% if revision_snapshots %}
 <div class="table-container mb-6">
   <table class="data-table">
@@ -116,7 +115,7 @@
   Revisione corrente: <strong>{{ current_baseline.revision_label }}</strong> — {{ current_baseline.title }}{% if current_baseline.issued_at %} ({{ current_baseline.issued_at|date:"d/m/Y" }}){% endif %}
 </div>
 {% if comparison_rows %}
-<div class="table-container">
+<div class="table-container mb-6">
   <table class="data-table">
     <thead><tr>
       <th>Documento</th>
@@ -148,14 +147,14 @@
   </table>
 </div>
 {% else %}
-<p class="meta">Nessun documento approvato trovato nelle cartelle del progetto.</p>
+<p class="meta mb-6">Nessun documento approvato trovato nelle cartelle del progetto.</p>
 {% endif %}
 {% endif %}
 
 <!-- ECN / Varianti collegate (elenco completo) -->
 {% if project_ecns %}
 <h2 class="section-title mt-8">ECN / Varianti collegate</h2>
-<div class="table-container">
+<div class="table-container mb-6">
   <table class="data-table">
     <thead><tr>
       <th>Codice</th>
@@ -179,9 +178,8 @@
 </div>
 {% endif %}
 
-<!-- Storico eventi (audit completo) -->
-{% if show_audit %}
-<h2 class="section-title mt-8">Storico eventi</h2>
+<!-- Storico eventi -->
+<h2 class="section-title mt-4">Storico eventi</h2>
 {% if audit_logs %}
 <div class="table-container">
   <table class="data-table">
@@ -205,6 +203,5 @@
 </div>
 {% else %}
 <p class="meta">Nessun evento registrato per questo progetto.</p>
-{% endif %}
 {% endif %}
 {% endblock %}

@@ -142,11 +142,11 @@
            class="sidebar-link {% if p|slice:':9' == '/archivio' %}sidebar-link-active{% endif %}">
           <span>📦</span> Archivio documenti
         </a>
-        {% endif %}
         <a href="{% url 'archive_project_list' %}"
            class="sidebar-link {% if p|slice:':17' == '/archivio-progett' %}sidebar-link-active{% endif %}">
           <span>🗂️</span> Archivio progetti
         </a>
+        {% endif %}
       </div>
 
     </nav>

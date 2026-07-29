@@ -769,19 +769,21 @@ class ProjectRevisionViewTests(TestCase):
 
     def test_project_detail_shows_revisions(self):
         """
-        TASK 2 (2026-07-28): l'elenco snapshot completo si è spostato in
-        project_history — project_detail mostra solo un riepilogo compatto.
+        TASK-026 (2026-07-28): l'elenco snapshot completo è in
+        archive_project_detail — project_detail mostra solo un riepilogo
+        compatto (ultima revisione emessa corrente).
         """
-        from projects.services import create_project_revision
-        create_project_revision(self.project, self.manager, 'A', 0, 'Baseline A')
+        from projects.services import create_project_revision, issue_project_revision
+        rev = create_project_revision(self.project, self.manager, 'A', 0, 'Baseline A')
+        issue_project_revision(rev, self.manager)
         self.client.login(username='rv_mgr', password='pw')
-        response = self.client.get(reverse('project_history', args=[self.project.pk]))
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
         revisions = list(response.context['revision_snapshots'])
         self.assertEqual(len(revisions), 1)
 
         detail_response = self.client.get(reverse('project_detail', args=[self.project.pk]))
-        self.assertEqual(detail_response.context['snapshot_count'], 1)
+        self.assertEqual(detail_response.context['current_baseline'].pk, rev.pk)
 
 
 class DemoWorkflowBaselineTests(TestCase):
@@ -1157,12 +1159,12 @@ class BaselineComparisonTests(TestCase):
         self.assertIsNone(baseline)
         self.assertEqual(rows, [])
 
-    # 6. Project history mostra la sezione confronto (TASK 2: spostata da project_detail)
+    # 6. Archive project detail mostra la sezione confronto (TASK-026: spostata da project_detail)
     def test_project_detail_shows_comparison_section(self):
         self._make_approved_version('BC-DOC-005')
         self._make_baseline('00', 0)
         self.client.login(username='bc_mgr', password='pw')
-        response = self.client.get(reverse('project_history', args=[self.project.pk]))
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Confronto con revisione corrente')
         self.assertIn('comparison_rows', response.context)
@@ -1286,7 +1288,9 @@ class NewDocumentFromProjectTests(TestCase):
 
 @override_settings(EMAIL_BACKEND=EMAIL_LOCMEM)
 class AuditUIProjectDetailTests(TestCase):
-    """Sezione 'Storico eventi' nel dettaglio progetto."""
+    """Link 'Vedi storico completo' nel dettaglio progetto (TASK-026: lo
+    storico eventi vero e proprio è confinato in Archivio progetti, qui
+    resta solo il link condizionato da can_view_project_archive)."""
 
     def setUp(self):
         from django.contrib.auth.models import Group
@@ -1303,44 +1307,40 @@ class AuditUIProjectDetailTests(TestCase):
         self.project, self.folder = make_project_with_folder(code='APD-PRJ-001', owner=self.manager_staff)
         ProjectFolderMembership.objects.create(folder=self.folder, user=self.reader, role='reader')
 
-    # 1. Manager (staff) vede "Storico eventi"
-    def test_manager_sees_storico_eventi_progetto(self):
+    # 1. Manager (staff) vede il link "Vedi storico completo"
+    def test_manager_sees_storico_completo_link(self):
         self.client.login(username='apd_mgr', password='pw')
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context['show_audit'])
-        self.assertContains(response, 'Storico eventi')
+        self.assertTrue(response.context['can_view_project_archive'])
+        self.assertContains(response, 'Vedi storico completo')
 
-    # 2. Auditor globale vede "Storico eventi"
-    def test_global_auditor_sees_storico_eventi_progetto(self):
+    # 2. Auditor globale vede il link
+    def test_global_auditor_sees_storico_completo_link(self):
         self.client.login(username='apd_auditor', password='pw')
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context['show_audit'])
-        self.assertContains(response, 'Storico eventi')
+        self.assertTrue(response.context['can_view_project_archive'])
+        self.assertContains(response, 'Vedi storico completo')
 
-    # 3. Reader normale NON vede "Storico eventi"
-    def test_reader_does_not_see_storico_eventi_progetto(self):
+    # 3. Reader normale NON vede il link
+    def test_reader_does_not_see_storico_completo_link(self):
         self.client.login(username='apd_reader', password='pw')
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context['show_audit'])
-        self.assertNotContains(response, 'Storico eventi')
-        self.assertIsNone(response.context['audit_logs'])
+        self.assertFalse(response.context['can_view_project_archive'])
+        self.assertNotContains(response, 'Vedi storico completo')
 
-    # 4. Pagina funziona anche senza AuditLog
-    def test_detail_works_without_audit_logs(self):
-        from auditlog.models import AuditLog
-        AuditLog.objects.all().delete()
-
+    # 4. Pagina funziona anche senza revisioni salvate
+    def test_detail_works_without_saved_revisions(self):
         self.client.login(username='apd_mgr', password='pw')
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(list(response.context['audit_logs'])), 0)
-        self.assertContains(response, 'Nessun evento registrato per questo progetto.')
+        self.assertIsNone(response.context['current_baseline'])
+        self.assertContains(response, 'Nessuna revisione salvata per questo progetto.')
 
-    # 5. Folder-auditor (membership cartella) vede "Storico eventi"
-    def test_folder_auditor_sees_storico_eventi_progetto(self):
+    # 5. Folder-auditor (membership cartella) vede il link
+    def test_folder_auditor_sees_storico_completo_link(self):
         folder_auditor = User.objects.create_user('apd_foldaud', password='pw')
         ProjectFolderMembership.objects.create(
             folder=self.folder, user=folder_auditor, role='auditor'
@@ -1348,8 +1348,8 @@ class AuditUIProjectDetailTests(TestCase):
         self.client.login(username='apd_foldaud', password='pw')
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context['show_audit'])
-        self.assertContains(response, 'Storico eventi')
+        self.assertTrue(response.context['can_view_project_archive'])
+        self.assertContains(response, 'Vedi storico completo')
 
 
 # ---------------------------------------------------------------------------
@@ -3272,14 +3272,38 @@ class StepFProjectIntegrationTests(TestCase):
         resp = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(resp.status_code, 403)
 
-    # 5bis. project_history applica la STESSA regola (TASK 2, 2026-07-28):
-    # non deve essere raggiungibile con un URL diretto da chi non potrebbe
-    # già vedere il progetto stesso — mai solo un pulsante nascosto.
-    def test_project_history_403_without_view_projects(self):
+    # 5bis. archive_project_detail applica un permesso PIÙ ALTO (TASK-026:
+    # can_view_archived_project, non semplicemente view_projects) — un utente
+    # con solo read_published (senza view_history/gruppo privilegiato) non
+    # deve raggiungerlo nemmeno via URL diretto. 404 (non 403): l'esistenza
+    # dello storico non va rivelata a chi non ha accesso, come in Archivio
+    # documenti.
+    def test_archive_project_detail_404_without_view_history(self):
         self._grant_user('read_published')
         self.client.login(username='sfp_user', password='pw')
-        resp = self.client.get(reverse('project_history', args=[self.project.pk]))
+        resp = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
+        self.assertEqual(resp.status_code, 404)
+
+    # 5ter. project_revision_detail applica la STESSA regola più alta di
+    # can_view_archived_project (TASK-026): view_projects da solo non basta
+    # più a raggiungere un singolo snapshot via URL diretto, nemmeno se
+    # l'utente vede il progetto e la lista in project_list/project_detail.
+    def test_project_revision_detail_403_with_only_view_projects(self):
+        from projects.services import create_project_revision
+        rev = create_project_revision(self.project, self.owner, 'A', 0, 'Baseline A')
+        self._grant_user('view_projects')
+        self.client.login(username='sfp_user', password='pw')
+        resp = self.client.get(reverse('project_revision_detail', args=[rev.pk]))
         self.assertEqual(resp.status_code, 403)
+
+    # 5quater. Con view_history invece l'accesso allo snapshot è consentito.
+    def test_project_revision_detail_200_with_view_history(self):
+        from projects.services import create_project_revision
+        rev = create_project_revision(self.project, self.owner, 'A', 0, 'Baseline A')
+        self._grant_user('view_history')
+        self.client.login(username='sfp_user', password='pw')
+        resp = self.client.get(reverse('project_revision_detail', args=[rev.pk]))
+        self.assertEqual(resp.status_code, 200)
 
     # 6. Navigation-only non espone progetto in folder_detail
     def test_navigation_only_no_project_in_folder_detail(self):
@@ -4933,18 +4957,18 @@ class ProjectSnapshotViewTests(TestCase):
         self.assertIsNotNone(snap)
         self.assertEqual(snap.snapshot_type, 'revision')
 
-    # 6. project_history mostra due sezioni separate (TASK 2: spostate da project_detail)
+    # 6. archive_project_detail mostra due sezioni separate (TASK-026: spostate da project_detail)
     def test_project_detail_shows_two_sections(self):
         self.client.login(username='vh3_manager', password='pw')
-        resp = self.client.get(reverse('project_history', kwargs={'project_id': self.project.pk}))
+        resp = self.client.get(reverse('archive_project_detail', kwargs={'project_id': self.project.pk}))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Versioni salvate')
         self.assertContains(resp, 'Revisioni salvate')
 
-    # 7. project_history ha i pulsanti Salva versione / Salva revisione per manager
+    # 7. archive_project_detail ha i pulsanti Salva versione / Salva revisione per manager
     def test_project_detail_has_snapshot_buttons(self):
         self.client.login(username='vh3_manager', password='pw')
-        resp = self.client.get(reverse('project_history', kwargs={'project_id': self.project.pk}))
+        resp = self.client.get(reverse('archive_project_detail', kwargs={'project_id': self.project.pk}))
         self.assertContains(resp, 'Salva versione')
         self.assertContains(resp, 'Salva revisione')
 
@@ -5372,8 +5396,9 @@ class ProjectSanatoriaTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TASK 2 (2026-07-28) — vista operativa vs storica per progetti:
-# project_history + Archivio Progetti.
+# TASK-026 (2026-07-29) — vista operativa vs storica per progetti:
+# archive_project_detail + Archivio Progetti (allineato al modello di
+# permesso più alto di can_view_audit, non più view_projects/_can_manage_project).
 # ---------------------------------------------------------------------------
 
 class ProjectHistoryViewTests(TestCase):
@@ -5392,35 +5417,44 @@ class ProjectHistoryViewTests(TestCase):
         self.assertNotContains(response, 'Revisioni salvate')
 
     def test_project_detail_shows_history_link_and_summary(self):
-        from projects.services import create_project_revision
-        create_project_revision(self.project, self.supervisor, 'A', 0, 'Baseline A')
+        from projects.services import create_project_revision, issue_project_revision
+        rev = create_project_revision(self.project, self.supervisor, 'A', 0, 'Baseline A')
+        issue_project_revision(rev, self.supervisor)
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
-        self.assertContains(response, 'Visualizza storico completo')
-        self.assertContains(response, reverse('project_history', args=[self.project.pk]))
-        self.assertEqual(response.context['snapshot_count'], 1)
+        self.assertContains(response, 'Vedi storico completo')
+        self.assertContains(response, reverse('archive_project_detail', args=[self.project.pk]))
+        self.assertEqual(response.context['current_baseline'].pk, rev.pk)
 
     def test_project_detail_empty_state_no_snapshots(self):
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
-        self.assertContains(response, 'Nessuno snapshot salvato')
+        self.assertContains(response, 'Nessuna revisione salvata per questo progetto')
 
-    def test_project_history_breadcrumb(self):
-        response = self.client.get(reverse('project_history', args=[self.project.pk]))
+    def test_archive_project_detail_breadcrumb(self):
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Storico completo')
+        self.assertContains(response, 'Archivio progetti')
         self.assertContains(response, reverse('project_detail', args=[self.project.pk]))
 
-    def test_project_history_shows_full_snapshot_list(self):
+    def test_archive_project_detail_shows_full_snapshot_list(self):
         from projects.services import create_project_revision
         create_project_revision(self.project, self.supervisor, 'A', 0, 'Baseline A')
         create_project_revision(self.project, self.supervisor, '01', 0, 'Ver 01', snapshot_type='version')
-        response = self.client.get(reverse('project_history', args=[self.project.pk]))
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
         self.assertEqual(len(response.context['revision_snapshots']), 1)
         self.assertEqual(len(response.context['version_snapshots']), 1)
 
-    def test_project_history_empty_state(self):
-        response = self.client.get(reverse('project_history', args=[self.project.pk]))
+    def test_archive_project_detail_empty_state(self):
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
         self.assertContains(response, 'Nessuna versione salvata')
         self.assertContains(response, 'Nessuna revisione salvata')
+
+    def test_archive_project_detail_404_for_ordinary_user(self):
+        """Un utente autenticato qualsiasi (senza gruppo/grant view_history) prende 404."""
+        User.objects.create_user('projhist_plain', password='pw')
+        self.client.logout()
+        self.client.login(username='projhist_plain', password='pw')
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
+        self.assertEqual(response.status_code, 404)
 
 
 class ArchiveProjectListViewTests(TestCase):
@@ -5448,10 +5482,17 @@ class ArchiveProjectListViewTests(TestCase):
         codes = [p.code for p in response.context['projects']]
         self.assertEqual(codes, ['ARCHPRJ-FINDME'])
 
-    def test_row_links_to_project_history(self):
+    def test_row_links_to_archive_project_detail(self):
         project = make_project(code='ARCHPRJ-LINK', name='Link test', owner=self.supervisor)
         response = self.client.get(reverse('archive_project_list'))
-        self.assertContains(response, reverse('project_history', args=[project.pk]))
+        self.assertContains(response, reverse('archive_project_detail', args=[project.pk]))
+
+    def test_404_for_ordinary_user(self):
+        User.objects.create_user('archprj_plain', password='pw')
+        self.client.logout()
+        self.client.login(username='archprj_plain', password='pw')
+        response = self.client.get(reverse('archive_project_list'))
+        self.assertEqual(response.status_code, 404)
 
     def test_nav_link_present_for_authenticated_user(self):
         response = self.client.get(reverse('dashboard'))
