@@ -3,6 +3,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from ecn.models import ChangeNotice
 from projects.models import FolderPermissionGrant, Project, ProjectFolder, ProjectFolderMembership, ProjectRevision, ProjectRevisionItem
 
 EMAIL_LOCMEM = 'django.core.mail.backends.locmem.EmailBackend'
@@ -5455,6 +5456,70 @@ class ProjectHistoryViewTests(TestCase):
         self.client.login(username='projhist_plain', password='pw')
         response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 404)
+
+
+class ProjectEcnApplicabilityViewTests(TestCase):
+    """TASK-036-4 Parte F: badge applicabilità nelle viste progetto."""
+
+    def setUp(self):
+        from documents.models import Document, DocumentVersion
+
+        self.supervisor = User.objects.create_superuser('projecn_super', 'x@example.com', 'pw')
+        self.folder = make_folder(
+            code='PROJECN-FOLD',
+            name='Root progetto',
+            kind=ProjectFolder.FolderKind.PROJECT,
+            owner=self.supervisor,
+        )
+        self.project = make_project(
+            code='PROJECN-001',
+            name='Progetto con ECN',
+            owner=self.supervisor,
+            root_folder=self.folder,
+        )
+        self.document = Document.objects.create(
+            code='PROJECN-DOC-001',
+            title='Documento progetto con ECN',
+            category=Document.Category.PROJECT,
+            document_type='MCHD',
+            project_folder=self.folder,
+            owner=self.supervisor,
+            created_by=self.supervisor,
+        )
+        self.version = DocumentVersion.objects.create(
+            document=self.document,
+            revision_label='00',
+            revision_number=0,
+            status=DocumentVersion.Status.APPROVED,
+            is_current=True,
+            created_by=self.supervisor,
+        )
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+        ChangeNotice.objects.create(
+            code='PROJECN-APPL-001',
+            title='ECN progetto con applicabilità',
+            description='Descrizione',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+            document=self.document,
+            document_version=self.version,
+            proposed_by=self.supervisor,
+            created_by=self.supervisor,
+        )
+        self.client.force_login(self.supervisor)
+
+    def test_project_detail_shows_ecn_applicability_badge(self):
+        response = self.client.get(reverse('project_detail', args=[self.project.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Applicabilità')
+        self.assertContains(response, 'badge-applicability-future')
+
+    def test_archive_project_detail_shows_ecn_applicability_badge(self):
+        response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Applicabilità')
+        self.assertContains(response, 'badge-applicability-future')
 
 
 class ArchiveProjectListViewTests(TestCase):

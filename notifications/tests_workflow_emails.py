@@ -15,6 +15,7 @@ from approvals.services import approve_version
 from ecn.models import ChangeNotice, ChangeNoticeApprover
 from ecn.services import (
     approve_change_notice,
+    auto_close_executed_ecn_if_ready,
     configure_ccb,
     create_change_notice,
     reject_change_notice,
@@ -424,3 +425,72 @@ class EcnApprovedEmailTest(TestCase):
         proposer_mails = [m for m in mail.outbox if self.proposer.email in m.to]
         self.assertTrue(proposer_mails)
         self.assertIn('revisione', proposer_mails[0].body.lower())
+
+    def test_approved_message_contains_applicability_label(self):
+        """TASK-036-4 Parte G: email approvazione ECN include l'applicabilità."""
+        mail.outbox.clear()
+        approve_change_notice(self.ecn, self.member1, ccb_class='class1')
+
+        self.assertTrue(mail.outbox)
+        self.assertIn('Applicabilità : Applicazione generale', mail.outbox[0].body)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class EcnApplicabilityWorkflowEmailTest(TestCase):
+    """TASK-036-4 Parte G: applicabilità nei corpi email ECN."""
+
+    def setUp(self):
+        self.proposer = _user('ecn_appl_mail_proposer')
+        self.proposer.groups.add(_qm_group())
+        self.doc_owner = _user('ecn_appl_mail_owner')
+        self.member = _user('ecn_appl_mail_member')
+        self.doc = _make_document(owner=self.doc_owner, code='D-ECN-APPL-MAIL')
+        self.version = _make_version_approved(self.doc, self.doc_owner, '00', 0)
+
+    def test_submitted_message_contains_applicability_label_and_detail(self):
+        ecn = _make_ecn(self.doc, self.version, self.proposer, code='ECN-APPL-MAIL-SUB')
+        ecn.applicability_category = ChangeNotice.Applicability.LIMITED
+        ecn.applicability_detail = 'Solo commessa ABC'
+        ecn.save(update_fields=['applicability_category', 'applicability_detail'])
+        set_change_notice_approvers(ecn, [self.member], policy=ChangeNotice.CCBPolicy.ANY)
+
+        mail.outbox.clear()
+        submit_change_notice(ecn, self.proposer)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('Applicabilità : Applicazione limitata', mail.outbox[0].body)
+        self.assertIn('Dettaglio applicabilità : Solo commessa ABC', mail.outbox[0].body)
+
+    def test_auto_closed_message_contains_applicability_label(self):
+        ecn = _make_ecn(self.doc, self.version, self.proposer, code='ECN-APPL-MAIL-CLOSE')
+        ecn.status = ChangeNotice.Status.APPROVED
+        ecn.applicability_category = ChangeNotice.Applicability.FUTURE
+        ecn.save(update_fields=['status', 'applicability_category'])
+        new_version = create_new_revision(
+            self.doc, self.proposer, '01', 1, ecn=ecn,
+            change_summary='Esecuzione ECN',
+        )
+        DocumentVersion.objects.filter(pk=self.version.pk).update(
+            status=DocumentVersion.Status.SUPERSEDED,
+            is_current=False,
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.is_current = True
+        new_version.save(update_fields=['status', 'is_current'])
+        self.doc.current_version = new_version
+        self.doc.save(update_fields=['current_version'])
+
+        mail.outbox.clear()
+        auto_close_executed_ecn_if_ready(new_version, self.proposer)
+
+        self.assertTrue(mail.outbox)
+        bodies = '\n'.join(message.body for message in mail.outbox)
+        self.assertIn('Applicabilità           : Applicazione futura', bodies)
+
+    def test_manual_closed_message_does_not_raise(self):
+        from ecn.notifications import notify_ecn_closed
+
+        ecn = _make_ecn(self.doc, self.version, self.proposer, code='ECN-APPL-MAIL-MAN')
+        mail.outbox.clear()
+        notify_ecn_closed(ecn, automatic=False)
+        self.assertTrue(mail.outbox)

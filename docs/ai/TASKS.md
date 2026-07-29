@@ -18,7 +18,6 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
-| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | Codex |
 
 ## Backlog
 
@@ -74,6 +73,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-036 | Applicabilità ECN obbligatoria (Fase 1: modello, service, form, view, admin, template principali, CSS sorgente) | — | 2026-07-29 |
 | TASK-036-2 | Applicabilità ECN (Fase 2: bugfix critico ApplicabilityFieldsMixin + correzione chiamate esistenti) | — | 2026-07-29 |
 | TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | c18eeb4 | 2026-07-29 |
+| TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | vedi commit locale più recente | 2026-07-29 |
 
 ---
 
@@ -3301,6 +3301,33 @@ lanciare il server di sviluppo.
   conoscere l'hash in anticipo, sarà corretto in un secondo momento) e con
   un Esito che elenca quanti test sono stati aggiunti per ciascuna Parte
   (A-G) e il conteggio finale della suite.
+
+#### Esito (2026-07-29)
+
+Implementati 34 nuovi metodi di test dedicati e 1 test esistente esteso:
+
+- Parte A: 6 nuovi test modello/validazione in `ecn/tests.py`.
+- Parte B: 3 nuovi test form in `ecn/tests.py`, incluso il test di
+  regressione esplicito per `ApplicabilityFieldsMixin`/TASK-036-2.
+- Parte C: 7 nuovi test service/ciclo di vita ECN standard in
+  `ecn/tests.py`.
+- Parte D: 3 nuovi test ECN semplice in `ecn/tests.py` e 1 test esistente
+  esteso per confermare che revisione di esecuzione e chiusura automatica
+  non modificano l'applicabilità.
+- Parte E: 7 nuovi test UI/view in `ecn/tests.py`.
+- Parte F: 4 nuovi test integrazione documento/progetto/archivio in
+  `documents/tests.py` e `projects/tests.py`.
+- Parte G: 4 nuovi test email in `notifications/tests_workflow_emails.py`.
+
+Verifiche eseguite:
+
+- `python manage.py check` pulito.
+- Target mirato dei nuovi test: 62/62 PASS.
+- `python manage.py test ecn documents approvals notifications projects --keepdb -v1`
+  verde: **1432/1432 test PASS**.
+
+Nessuna modifica ai file applicativi fuori scope; modificati solo test e
+questo documento.
 
 #### Test richiesti in questa fase
 

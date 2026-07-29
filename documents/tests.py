@@ -10,6 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from documents.permissions import can_download_version_file
+from ecn.models import ChangeNotice
 from ecn.permissions import GROUP_CCB
 
 from documents.models import Document, DocumentVersion
@@ -4328,6 +4329,24 @@ class ArchiveDocumentDetailTests(TestCase):
         r = self.client.get(reverse('archive_document_detail', args=[self.doc.pk]))
         self.assertContains(r, 'Storico eventi')
 
+    def test_archive_detail_shows_ecn_applicability_badge(self):
+        ChangeNotice.objects.create(
+            code='ARCD-ECN-APPL',
+            title='ECN archivio con applicabilità',
+            description='Descrizione',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='Solo commessa ABC',
+            document=self.doc,
+            document_version=self.ver,
+            proposed_by=self.manager,
+            created_by=self.manager,
+        )
+        self.client.force_login(self.manager)
+        r = self.client.get(reverse('archive_document_detail', args=[self.doc.pk]))
+        self.assertContains(r, 'Applicabilità')
+        self.assertContains(r, 'badge-applicability-limited')
+
 
 class DocumentDetailCompactHistoryTests(TestCase):
     """document_detail fuori da Archivio non mostra più lo storico completo (TASK-021)."""
@@ -4355,6 +4374,23 @@ class DocumentDetailCompactHistoryTests(TestCase):
         r = self.client.get(reverse('document_detail', args=[self.doc.pk]))
         self.assertContains(r, 'Ultimo ECN / Variante')
         self.assertNotContains(r, 'ECN / Varianti collegate')
+
+    def test_compact_detail_shows_latest_ecn_applicability_badge(self):
+        ChangeNotice.objects.create(
+            code='CMP-ECN-APPL',
+            title='ECN compatta con applicabilità',
+            description='Descrizione',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+            document=self.doc,
+            document_version=self.ver,
+            proposed_by=self.manager,
+            created_by=self.manager,
+        )
+        self.client.force_login(self.manager)
+        r = self.client.get(reverse('document_detail', args=[self.doc.pk]))
+        self.assertContains(r, 'Ultimo ECN / Variante')
+        self.assertContains(r, 'badge-applicability-future')
 
     def test_compact_detail_shows_archive_link_for_privileged_user(self):
         self.client.force_login(self.manager)

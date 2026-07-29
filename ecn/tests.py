@@ -23,6 +23,7 @@ from ecn.services import (
     reject_change_notice,
     set_change_notice_approvers,
     submit_change_notice,
+    update_change_notice,
 )
 from projects.models import FolderPermissionGrant, ProjectFolder, ProjectFolderMembership
 
@@ -480,6 +481,169 @@ class ChangeNoticeDecisionModelTests(TestCase):
 
     def test_meta_verbose_name(self):
         self.assertEqual(ChangeNoticeDecision._meta.verbose_name, 'Decisione CCB')
+
+
+class ApplicabilityValidationTests(TestCase):
+    """TASK-036-4 Parte A: validazione e proprietà applicabilità ECN."""
+
+    def setUp(self):
+        self.user = _make_user('appl_model_user')
+        self.folder = _make_folder(self.user, code='APPL-MODEL-FOLD')
+        self.document = _make_document(self.user, self.folder, code='APPL-MODEL-DOC')
+        self.version = _make_version(self.document, self.user)
+
+    def test_validate_accepts_general_future_limited_and_strips_detail(self):
+        self.assertEqual(
+            ChangeNotice.validate_applicability(ChangeNotice.Applicability.GENERAL, ''),
+            (ChangeNotice.Applicability.GENERAL, ''),
+        )
+        self.assertEqual(
+            ChangeNotice.validate_applicability(ChangeNotice.Applicability.FUTURE, ''),
+            (ChangeNotice.Applicability.FUTURE, ''),
+        )
+        self.assertEqual(
+            ChangeNotice.validate_applicability(ChangeNotice.Applicability.LIMITED, '  commessa 12345  '),
+            (ChangeNotice.Applicability.LIMITED, 'commessa 12345'),
+        )
+
+    def test_validate_rejects_limited_missing_blank_or_too_short_detail(self):
+        for detail in ['', '   ', 'corto']:
+            with self.subTest(detail=repr(detail)):
+                with self.assertRaises(ValidationError) as cm:
+                    ChangeNotice.validate_applicability(ChangeNotice.Applicability.LIMITED, detail)
+                self.assertIn('applicability_detail', cm.exception.error_dict)
+
+    def test_validate_rejects_invalid_or_missing_category(self):
+        for category in ['non_esiste', None]:
+            with self.subTest(category=category):
+                with self.assertRaises(ValidationError) as cm:
+                    ChangeNotice.validate_applicability(category, '')
+                self.assertIn('applicability_category', cm.exception.error_dict)
+
+    def test_general_accepts_optional_detail_without_length_constraint(self):
+        self.assertEqual(
+            ChangeNotice.validate_applicability(ChangeNotice.Applicability.GENERAL, 'qualunque testo'),
+            (ChangeNotice.Applicability.GENERAL, 'qualunque testo'),
+        )
+
+    def test_historical_ecn_without_applicability_remains_readable(self):
+        ecn = _make_ecn(
+            self.document, self.version, self.user,
+            code='APPL-HIST-001',
+            applicability_category=None,
+        )
+        self.assertEqual(ecn.applicability_display, 'Applicabilità non registrata — ECN storico')
+        self.assertEqual(ecn.applicability_badge_class, 'badge-applicability-unset')
+        self.assertEqual(ecn.applicability_short_description, '')
+        self.assertFalse(ecn.applicability_shows_scope_notice)
+        self.assertFalse(ecn.applicability_is_registered)
+
+    def test_valid_categories_expose_expected_display_badge_and_scope_notice(self):
+        expected_classes = {
+            ChangeNotice.Applicability.GENERAL: 'badge-applicability-general',
+            ChangeNotice.Applicability.FUTURE: 'badge-applicability-future',
+            ChangeNotice.Applicability.LIMITED: 'badge-applicability-limited',
+        }
+        for category, expected_class in expected_classes.items():
+            with self.subTest(category=category):
+                ecn = _make_ecn(
+                    self.document, self.version, self.user,
+                    code=f'APPL-PROP-{category}',
+                    applicability_category=category,
+                    applicability_detail='Dettaglio valido' if category == ChangeNotice.Applicability.LIMITED else '',
+                )
+                self.assertEqual(ecn.applicability_display, ecn.get_applicability_category_display())
+                self.assertEqual(ecn.applicability_badge_class, expected_class)
+                self.assertTrue(ecn.applicability_short_description)
+                self.assertEqual(
+                    ecn.applicability_shows_scope_notice,
+                    category in (ChangeNotice.Applicability.FUTURE, ChangeNotice.Applicability.LIMITED),
+                )
+
+
+class ApplicabilityFormTests(TestCase):
+    """TASK-036-4 Parte B: i tre form registrano e validano i campi del mixin."""
+
+    def _standard_form_data(self, **overrides):
+        data = {
+            'title': 'ECN form test',
+            'motivation': ChangeNotice.Motivation.IMPROVEMENT,
+            'motivation_detail': '',
+            'description': 'Descrizione',
+            'commessa': '',
+            'applicability_category': ChangeNotice.Applicability.GENERAL,
+            'applicability_detail': '',
+        }
+        data.update(overrides)
+        return data
+
+    def _simple_form_data(self, **overrides):
+        data = {
+            'title': 'ECN semplice form test',
+            'description': 'Descrizione',
+            'applicability_category': ChangeNotice.Applicability.GENERAL,
+            'applicability_detail': '',
+        }
+        data.update(overrides)
+        return data
+
+    def test_regression_mixin_fields_are_injected_and_required_on_all_forms(self):
+        # Regressione TASK-036-2: i Field nel mixin devono essere in self.fields;
+        # se tornassero dichiarativi a livello di classe, Django li ignorerebbe.
+        from ecn.forms import ChangeNoticeEditForm, ChangeNoticeForm, SimpleEcnForm
+
+        cases = [
+            (ChangeNoticeForm, self._standard_form_data()),
+            (ChangeNoticeEditForm, self._standard_form_data()),
+            (SimpleEcnForm, self._simple_form_data()),
+        ]
+        for form_class, data in cases:
+            with self.subTest(form=form_class.__name__):
+                data.pop('applicability_category')
+                form = form_class(data=data)
+                self.assertIn('applicability_category', form.fields)
+                self.assertIn('applicability_detail', form.fields)
+                self.assertFalse(form.is_valid())
+                self.assertIn('applicability_category', form.errors)
+
+    def test_change_notice_form_validates_limited_detail(self):
+        from ecn.forms import ChangeNoticeForm
+
+        form = ChangeNoticeForm(data=self._standard_form_data(
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='',
+        ))
+        self.assertFalse(form.is_valid())
+        self.assertIn('applicability_detail', form.errors)
+
+        form = ChangeNoticeForm(data=self._standard_form_data(
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='  Progetto ABC  ',
+        ))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['applicability_detail'], 'Progetto ABC')
+
+    def test_simple_and_edit_forms_validate_limited_detail(self):
+        from ecn.forms import ChangeNoticeEditForm, SimpleEcnForm
+
+        cases = [
+            (SimpleEcnForm, self._simple_form_data),
+            (ChangeNoticeEditForm, self._standard_form_data),
+        ]
+        for form_class, factory in cases:
+            with self.subTest(form=form_class.__name__, valid=False):
+                form = form_class(data=factory(
+                    applicability_category=ChangeNotice.Applicability.LIMITED,
+                    applicability_detail='',
+                ))
+                self.assertFalse(form.is_valid())
+                self.assertIn('applicability_detail', form.errors)
+            with self.subTest(form=form_class.__name__, valid=True):
+                form = form_class(data=factory(
+                    applicability_category=ChangeNotice.Applicability.LIMITED,
+                    applicability_detail='Commessa 12345',
+                ))
+                self.assertTrue(form.is_valid(), form.errors)
 
 
 # ===========================================================================
@@ -3597,6 +3761,326 @@ class ECNCoordinatorViewTests(TestCase):
 # TASK-022 — Flusso ECN semplice (autoapprovato, nessuna CCB)
 # ---------------------------------------------------------------------------
 
+class ApplicabilityServiceLifecycleTests(TestCase):
+    """TASK-036-4 Parte C: service ECN standard e ciclo di vita applicabilità."""
+
+    def setUp(self):
+        self.manager = _make_user('appl_svc_mgr')
+        self.manager.groups.add(Group.objects.get_or_create(name='Quality Manager')[0])
+        self.ccb = _make_user('appl_svc_ccb')
+        self.folder = _make_folder(self.manager, code='APPL-SVC-FOLD')
+        self.document = _make_document(self.manager, self.folder, code='APPL-SVC-DOC')
+        self.version = _make_version(self.document, self.manager)
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+
+    def test_create_change_notice_rejects_invalid_applicability_without_writing(self):
+        invalid_cases = [
+            (ChangeNotice.Applicability.LIMITED, ''),
+            ('bogus', ''),
+        ]
+        for idx, (category, detail) in enumerate(invalid_cases, start=1):
+            with self.subTest(category=category):
+                before = ChangeNotice.objects.count()
+                with self.assertRaises(ValidationError):
+                    create_change_notice(
+                        document=self.document,
+                        proposed_by=self.manager,
+                        title=f'Invalid applicability {idx}',
+                        motivation=ChangeNotice.Motivation.IMPROVEMENT,
+                        applicability_category=category,
+                        applicability_detail=detail,
+                        send_notifications=False,
+                    )
+                self.assertEqual(ChangeNotice.objects.count(), before)
+
+    def test_update_change_notice_persists_applicability_and_writes_audit_old_new_values(self):
+        ecn = _make_ecn(self.document, self.version, self.manager, code='APPL-UPD-001')
+        AuditLog.objects.all().delete()
+
+        update_change_notice(
+            ecn,
+            actor=self.manager,
+            title='Titolo aggiornato',
+            motivation=ChangeNotice.Motivation.CUSTOMER,
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='Solo commessa ABC',
+            description='Descrizione aggiornata',
+        )
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
+        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
+        log = AuditLog.objects.get(action='ECN_UPDATED')
+        self.assertEqual(
+            log.changes['old_values']['applicability_category'],
+            ChangeNotice.Applicability.GENERAL,
+        )
+        self.assertEqual(log.changes['old_values']['applicability_detail'], '')
+        self.assertEqual(
+            log.changes['new_values']['applicability_category'],
+            ChangeNotice.Applicability.LIMITED,
+        )
+        self.assertEqual(log.changes['new_values']['applicability_detail'], 'Solo commessa ABC')
+
+    def test_update_change_notice_rejects_non_draft_states_and_keeps_applicability_unchanged(self):
+        states = [
+            ChangeNotice.Status.UNDER_REVIEW,
+            ChangeNotice.Status.APPROVED,
+            ChangeNotice.Status.REJECTED,
+            ChangeNotice.Status.CLOSED,
+        ]
+        for state in states:
+            with self.subTest(state=state):
+                ecn = _make_ecn(
+                    self.document, self.version, self.manager,
+                    code=f'APPL-IMM-{state}',
+                    applicability_category=ChangeNotice.Applicability.FUTURE,
+                )
+                ecn.status = state
+                ecn.save(update_fields=['status'])
+
+                with self.assertRaises(ValidationError):
+                    update_change_notice(
+                        ecn,
+                        actor=self.manager,
+                        title='Tentativo modifica',
+                        motivation=ChangeNotice.Motivation.CUSTOMER,
+                        applicability_category=ChangeNotice.Applicability.LIMITED,
+                        applicability_detail='Solo commessa ABC',
+                    )
+
+                ecn.refresh_from_db()
+                self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.FUTURE)
+                self.assertEqual(ecn.applicability_detail, '')
+
+    def test_submit_change_notice_revalidates_historical_missing_applicability(self):
+        ecn = _make_ecn(
+            self.document, self.version, self.manager,
+            code='APPL-SUB-HIST',
+            applicability_category=None,
+        )
+        ChangeNoticeApprover.objects.create(change_notice=ecn, user=self.ccb, order=1)
+
+        with self.assertRaises(ValidationError) as cm:
+            submit_change_notice(ecn, self.manager, send_notifications=False)
+
+        self.assertIn('applicability_category', cm.exception.error_dict)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
+
+    def test_standard_approval_audit_freezes_applicability_metadata(self):
+        ecn = create_change_notice(
+            document=self.document,
+            proposed_by=self.manager,
+            title='Future applicability',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+            send_notifications=False,
+        )
+        set_change_notice_approvers(
+            ecn, [self.ccb], policy=ChangeNotice.CCBPolicy.ANY,
+        )
+        submit_change_notice(ecn, self.manager, send_notifications=False)
+        AuditLog.objects.all().delete()
+
+        approve_change_notice(
+            ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1,
+            send_notifications=False,
+        )
+
+        log = AuditLog.objects.get(action='ECN_APPROVED')
+        self.assertEqual(
+            log.changes['metadata']['applicability_category'],
+            ChangeNotice.Applicability.FUTURE,
+        )
+
+    def test_reject_keeps_limited_applicability_unchanged(self):
+        ecn = _make_ecn(
+            self.document, self.version, self.manager,
+            code='APPL-REJ-001',
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='Solo commessa ABC',
+            status=ChangeNotice.Status.UNDER_REVIEW,
+        )
+        ChangeNoticeApprover.objects.create(change_notice=ecn, user=self.ccb, order=1)
+
+        reject_change_notice(
+            ecn, self.ccb, reason='Non approvabile', send_notifications=False,
+        )
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.REJECTED)
+        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
+        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
+
+    def test_auto_close_keeps_applicability_unchanged(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready
+
+        ecn = _make_ecn(
+            self.document, self.version, self.manager,
+            code='APPL-CLOSE-001',
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+            status=ChangeNotice.Status.APPROVED,
+        )
+        new_version = create_new_revision(
+            self.document, self.manager, '01', 1, ecn=ecn,
+            change_summary='Esecuzione ECN',
+        )
+        DocumentVersion.objects.filter(pk=self.version.pk).update(
+            status=DocumentVersion.Status.SUPERSEDED,
+            is_current=False,
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.is_current = True
+        new_version.save(update_fields=['status', 'is_current'])
+        self.document.current_version = new_version
+        self.document.save(update_fields=['current_version'])
+
+        auto_close_executed_ecn_if_ready(new_version, self.manager)
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
+        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.FUTURE)
+
+
+class ApplicabilityViewTests(TestCase):
+    """TASK-036-4 Parte E: resa UI e validazione view per applicabilità."""
+
+    def setUp(self):
+        self.manager = _make_user('appl_view_mgr')
+        self.manager.groups.add(
+            Group.objects.get_or_create(name='Document Managers')[0],
+            Group.objects.get_or_create(name='Quality Manager')[0],
+        )
+        self.stranger = _make_user('appl_view_stranger')
+        self.folder = _make_folder(self.manager, code='APPL-VIEW-FOLD')
+        self.document = _make_document(self.manager, self.folder, code='APPL-VIEW-DOC')
+        self.version = _make_version(self.document, self.manager)
+        self.document.current_version = self.version
+        self.document.save(update_fields=['current_version'])
+
+    def _create_payload(self, **overrides):
+        data = {
+            'document': self.document.pk,
+            'title': 'Variante UI applicabilità',
+            'motivation': ChangeNotice.Motivation.IMPROVEMENT,
+            'motivation_detail': '',
+            'description': '',
+            'commessa': '',
+            'applicability_category': ChangeNotice.Applicability.GENERAL,
+            'applicability_detail': '',
+        }
+        data.update(overrides)
+        return data
+
+    def test_ecn_create_get_renders_three_applicability_options(self):
+        self.client.force_login(self.manager)
+        response = self.client.get(f'/ecn/new/?document={self.document.pk}')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'value="general"')
+        self.assertContains(response, 'value="future"')
+        self.assertContains(response, 'value="limited"')
+
+    def test_ecn_create_post_missing_or_invalid_limited_applicability_rerenders_without_create(self):
+        self.client.force_login(self.manager)
+        cases = [
+            self._create_payload(applicability_category=None),
+            self._create_payload(
+                applicability_category=ChangeNotice.Applicability.LIMITED,
+                applicability_detail='',
+            ),
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                payload = {k: v for k, v in payload.items() if v is not None}
+                before = ChangeNotice.objects.count()
+                response = self.client.post(f'/ecn/new/?document={self.document.pk}', payload)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(ChangeNotice.objects.count(), before)
+                self.assertContains(response, 'applicability_category')
+
+    def test_ecn_create_simple_post_missing_applicability_rerenders_without_create(self):
+        self.client.force_login(self.manager)
+        before = ChangeNotice.objects.count()
+        response = self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Semplice senza applicabilità',
+            'description': '',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ChangeNotice.objects.count(), before)
+        self.assertContains(response, 'applicability_category')
+
+    def test_ecn_list_renders_badge_classes_for_all_categories(self):
+        for category in ChangeNotice.Applicability:
+            _make_ecn(
+                self.document, self.version, self.manager,
+                code=f'APPL-LIST-{category.value}',
+                applicability_category=category,
+                applicability_detail='Solo commessa ABC' if category == ChangeNotice.Applicability.LIMITED else '',
+            )
+
+        self.client.force_login(self.manager)
+        response = self.client.get('/ecn/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'badge-applicability-general')
+        self.assertContains(response, 'badge-applicability-future')
+        self.assertContains(response, 'badge-applicability-limited')
+
+    def test_ecn_detail_limited_shows_detail_and_scope_notice_general_does_not(self):
+        limited = _make_ecn(
+            self.document, self.version, self.manager,
+            code='APPL-DETAIL-LIMITED',
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='Solo commessa ABC',
+        )
+        general = _make_ecn(
+            self.document, self.version, self.manager,
+            code='APPL-DETAIL-GENERAL',
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+        )
+
+        self.client.force_login(self.manager)
+        limited_response = self.client.get(f'/ecn/{limited.pk}/')
+        self.assertContains(limited_response, 'Solo commessa ABC')
+        self.assertContains(limited_response, 'non assegna automaticamente')
+        self.assertContains(limited_response, 'revisioni differenti')
+
+        general_response = self.client.get(f'/ecn/{general.pk}/')
+        self.assertNotContains(general_response, 'non assegna automaticamente')
+
+    def test_ecn_detail_historical_missing_applicability_does_not_500(self):
+        historical = _make_ecn(
+            self.document, self.version, self.manager,
+            code='APPL-DETAIL-HIST',
+            applicability_category=None,
+        )
+
+        self.client.force_login(self.manager)
+        response = self.client.get(f'/ecn/{historical.pk}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Applicabilità non registrata')
+
+    def test_applicability_field_does_not_bypass_existing_permissions(self):
+        ecn = _make_ecn(self.document, self.version, self.manager, code='APPL-PERM-001')
+        self.client.force_login(self.stranger)
+
+        edit_response = self.client.post(f'/ecn/{ecn.pk}/edit/', self._create_payload(
+            title='Tentativo non autorizzato',
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+        ))
+        create_response = self.client.post(f'/ecn/new/?document={self.document.pk}', self._create_payload(
+            title='Creazione non autorizzata',
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+        ))
+
+        self.assertEqual(edit_response.status_code, 403)
+        self.assertEqual(create_response.status_code, 403)
+        self.assertFalse(ChangeNotice.objects.filter(title='Creazione non autorizzata').exists())
+
+
 class SimpleEcnServiceTests(TestCase):
     """create_simple_ecn: codice automatico, autoapprovazione, nessuna CCB."""
 
@@ -3615,6 +4099,67 @@ class SimpleEcnServiceTests(TestCase):
             title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
         )
         self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
+
+    def test_rejects_invalid_applicability_without_writing(self):
+        from ecn.services import create_simple_ecn
+
+        invalid_cases = [
+            (ChangeNotice.Applicability.LIMITED, ''),
+            (None, ''),
+        ]
+        for category, detail in invalid_cases:
+            with self.subTest(category=category):
+                before = ChangeNotice.objects.count()
+                with self.assertRaises(ValidationError):
+                    create_simple_ecn(
+                        document=self.document,
+                        proposed_by=self.author,
+                        title='Revisione rapida invalida',
+                        applicability_category=category,
+                        applicability_detail=detail,
+                        send_notifications=False,
+                    )
+                self.assertEqual(ChangeNotice.objects.count(), before)
+
+    def test_persists_valid_applicability_on_autoapproved_ecn(self):
+        from ecn.services import create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document,
+            proposed_by=self.author,
+            title='Revisione rapida limitata',
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='Solo commessa ABC',
+            send_notifications=False,
+        )
+
+        self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
+        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
+        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
+
+    def test_autoapproved_simple_ecn_applicability_is_immediately_immutable(self):
+        from ecn.services import create_simple_ecn
+
+        ecn = create_simple_ecn(
+            document=self.document,
+            proposed_by=self.author,
+            title='Revisione rapida futura',
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+            send_notifications=False,
+        )
+
+        with self.assertRaises(ValidationError):
+            update_change_notice(
+                ecn,
+                actor=self.author,
+                title='Tentativo modifica',
+                motivation=ChangeNotice.Motivation.IMPROVEMENT,
+                applicability_category=ChangeNotice.Applicability.LIMITED,
+                applicability_detail='Solo commessa ABC',
+            )
+
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.FUTURE)
 
     def test_code_matches_simple_convention(self):
         from datetime import date
@@ -3745,7 +4290,9 @@ class AutoCloseEcnTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
+            applicability_category=ChangeNotice.Applicability.LIMITED,
+            applicability_detail='Solo commessa ABC',
         )
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
@@ -3756,6 +4303,8 @@ class AutoCloseEcnTests(TestCase):
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
         self.assertEqual(ecn.closed_by_id, self.approver.pk)
+        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
+        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
 
     def test_standard_ecn_auto_closes_when_execution_approved(self):
         from documents.services import create_new_revision
