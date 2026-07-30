@@ -18,6 +18,7 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
+| TASK-040 | Posizionamento libero firma su PDF approvazione (Fase 1: modello, service, endpoint PDF inline) | Cursor Agent |
 
 ## Backlog
 
@@ -4226,6 +4227,258 @@ Verifiche: `python manage.py check` pulito;
 `makemigrations --check --dry-run` pulito;
 `python manage.py test ecn approvals auditlog --settings=config.test_settings -v2`
 → **523/523 PASS**.
+
+---
+
+### TASK-040 — Posizionamento libero firma su PDF approvazione (Fase 1: fondamenta backend) — Cursor Agent
+
+#### Obiettivo
+
+Prima fase di una funzionalità più ampia: permettere a un approvatore di
+posizionare manualmente la propria firma visiva su un punto libero
+(pagina + coordinate) del PDF di rappresentazione, in alternativa alla
+firma automatica impilata nel registro "in calce" (comportamento attuale,
+invariato). Questa fase è **solo backend**: nuovi campi dati, estensione
+del service, nuovo endpoint per servire il PDF in modo "inline"
+(necessario alle fasi successive per il rendering client-side con
+pdf.js, autorizzato esplicitamente dall'operatore). **Nessuna UI di
+disegno/trascinamento in questa fase** — quella è la Fase 2, task
+separato, non ancora scritto.
+
+Riguarda **solo il flusso di approvazione documento**
+(`approvals`/`documents`), non l'ECN/CCB — l'operatore ha chiarito che
+la richiesta originale ("firma automatica del documento") si riferisce
+specificamente a questo flusso.
+
+#### Scope
+
+Consentito modificare **solo**:
+- `approvals/models.py` (nuovi campi su `ApprovalDecision`)
+- `approvals/migrations/` (nuova migrazione)
+- `approvals/services.py` (solo la funzione `approve_version`)
+- `documents/views.py` (nuova vista)
+- `config/urls.py` (nuova route)
+- `approvals/tests.py`, `documents/tests.py` (nuovi test, in coda)
+
+**Non toccare**: nessun template, nessun file CSS/JS, nessun file
+`static/`, `documents/pdf_generation.py`, `reject_version`,
+`documents/permissions.py` (riusa `can_download_representation_pdf`
+esistente, non crearne una nuova), `accounts/models.py`. Non aggiungere
+`pdfjs-dist` o altre dipendenze in questa fase (verrà fatto nella Fase
+2, insieme al vendoring dei file statici).
+
+#### 1. Nuovi campi su `ApprovalDecision` (`approvals/models.py`)
+
+Aggiungi subito dopo il campo `snapshot_signature_image` (cerca
+`snapshot_signature_image = models.ImageField(...)`, poco prima di
+`class Meta:` dentro `ApprovalDecision`):
+
+```python
+    signature_page = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='Pagina firma (posizionamento libero)',
+        help_text=(
+            'Numero di pagina (1-based) dove è stata posizionata '
+            'manualmente la firma. Nullo = firma automatica in calce '
+            '(comportamento invariato).'
+        ),
+    )
+    signature_x = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name='Posizione firma X',
+        help_text='Coordinata X normalizzata (0.0-1.0, da sinistra) del centro della firma.',
+    )
+    signature_y = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name='Posizione firma Y',
+        help_text='Coordinata Y normalizzata (0.0-1.0, dall\'alto) del centro della firma.',
+    )
+```
+
+Genera la migrazione con `python manage.py makemigrations approvals`
+(nome auto-generato atteso `approvals/migrations/0008_...py`, non
+scriverla a mano).
+
+#### 2. Estensione `approve_version` (`approvals/services.py`, righe 85-224 nella versione attuale)
+
+Cambia la firma da:
+```python
+def approve_version(approval_request, approved_by, comment="", send_notifications=True):
+```
+a:
+```python
+def approve_version(
+    approval_request, approved_by, comment="", send_notifications=True,
+    signature_page=None, signature_x=None, signature_y=None,
+):
+```
+
+Aggiungi una validazione **prima** del blocco `with transaction.atomic():`
+esistente (dopo il controllo 5, policy SEQUENTIAL):
+
+```python
+    # 6. Posizionamento libero firma: o tutti e 3 i valori sono forniti
+    #    (firma manuale), o nessuno (firma automatica in calce, comportamento
+    #    invariato) — nessuno stato intermedio ammesso.
+    placement_fields = (signature_page, signature_x, signature_y)
+    if any(f is not None for f in placement_fields) and not all(f is not None for f in placement_fields):
+        raise ValidationError(
+            "Per posizionare manualmente la firma servono pagina, X e Y insieme."
+        )
+    if signature_page is not None:
+        if signature_page < 1:
+            raise ValidationError("La pagina della firma deve essere >= 1.")
+        if not (0.0 <= signature_x <= 1.0) or not (0.0 <= signature_y <= 1.0):
+            raise ValidationError("Le coordinate della firma devono essere comprese tra 0.0 e 1.0.")
+```
+
+Nel blocco `with transaction.atomic():`, modifica la creazione di
+`ApprovalDecision` (attualmente):
+```python
+        decision = ApprovalDecision.objects.create(
+            approval_request=approval_request,
+            approver=approved_by,
+            decision=ApprovalDecision.Decision.APPROVED,
+            notes=comment,
+        )
+```
+aggiungendo i 3 nuovi campi:
+```python
+        decision = ApprovalDecision.objects.create(
+            approval_request=approval_request,
+            approver=approved_by,
+            decision=ApprovalDecision.Decision.APPROVED,
+            notes=comment,
+            signature_page=signature_page,
+            signature_x=signature_x,
+            signature_y=signature_y,
+        )
+```
+
+Non toccare `_build_decision_snapshot` né `reject_version`: il
+posizionamento riguarda solo le approvazioni.
+
+#### 3. Nuovo endpoint "vista inline" del PDF di rappresentazione
+
+Il download esistente (`documents/views.py`, funzione
+`download_representation_pdf`) forza `as_attachment=True`: il browser
+scarica il file invece di poterlo caricare via JS (necessario in Fase 2
+per pdf.js). Aggiungi una **nuova vista separata**, subito dopo
+`download_representation_pdf` nello stesso file, senza modificare
+quella esistente:
+
+```python
+@login_required
+def view_representation_pdf_inline(request, version_id):
+    """
+    Come download_representation_pdf, ma senza forzare il download: serve
+    per il rendering client-side (pdf.js) nel posizionamento libero della
+    firma. Stessa identica autorizzazione della vista di download.
+    """
+    from documents.permissions import can_download_representation_pdf
+
+    version = get_object_or_404(DocumentVersion, pk=version_id)
+    rep = version.representation_pdf
+
+    if rep is None or not rep.file:
+        raise Http404
+
+    if not can_download_representation_pdf(request.user, version):
+        raise PermissionDenied
+
+    file_path = rep.file.path
+    if not os.path.exists(file_path):
+        raise Http404
+
+    return FileResponse(
+        open(file_path, 'rb'),
+        content_type='application/pdf',
+    )
+```
+
+Aggiungi la route in `config/urls.py`, subito dopo la riga della route
+`version_representation_pdf_download`:
+```python
+    path('versions/<int:version_id>/pdf/representation/view/', view_representation_pdf_inline, name='version_representation_pdf_view'),
+```
+(ricorda di importare `view_representation_pdf_inline` insieme alle
+altre view di `documents.views` già importate in cima al file, stesso
+punto in cui è importata `download_representation_pdf`).
+
+#### Acceptance criteria
+
+- [ ] `python manage.py check` pulito.
+- [ ] `python manage.py makemigrations --check --dry-run` pulito (la
+      migrazione è già stata generata e committata).
+- [ ] `approve_version` senza i 3 nuovi parametri (comportamento
+      esistente, tutti i call site attuali) funziona esattamente come
+      prima: nessuna regressione sui test esistenti.
+- [ ] `approve_version` con i 3 parametri validi crea una
+      `ApprovalDecision` con `signature_page`/`signature_x`/`signature_y`
+      valorizzati.
+- [ ] `approve_version` con solo 1 o 2 dei 3 parametri (non tutti e 3, e
+      non nessuno) solleva `ValidationError`.
+- [ ] `approve_version` con `signature_page < 1`, o `signature_x`/`signature_y`
+      fuori da `[0.0, 1.0]`, solleva `ValidationError`.
+- [ ] La nuova vista `view_representation_pdf_inline` restituisce lo
+      stesso identico PDF di `download_representation_pdf` per lo stesso
+      utente/versione, ma **senza** header che forzino il download (il
+      test verifica che la risposta non contenga
+      `Content-Disposition: attachment` — non serve verificare l'header
+      esatto, basta che il comportamento `as_attachment` non sia
+      presente).
+- [ ] Stessa autorizzazione della vista di download esistente: un
+      utente che non può scaricare il PDF di rappresentazione riceve
+      `PermissionDenied`/404 anche dalla nuova vista inline, con gli
+      stessi identici casi già coperti dai test esistenti di
+      `download_representation_pdf` (replica quei casi per la nuova
+      vista, non serve inventarne di nuovi).
+
+#### Test richiesti
+
+- `approvals/tests.py`: estendi/aggiungi test per `approve_version` —
+  chiamata senza i nuovi parametri (invariata), con i 3 validi, con 1-2
+  forniti e gli altri mancanti (errore), con valori fuori range
+  (errore). Verifica che `ApprovalDecision` salvi correttamente i 3
+  campi quando forniti.
+- `documents/tests.py`: nuova classe di test per
+  `view_representation_pdf_inline`, che ripete (non necessariamente
+  copia riga per riga, ma copre gli stessi scenari) i casi già testati
+  per `download_representation_pdf` nello stesso file — cercali per
+  nome (`download_representation_pdf`) per trovare i test esistenti da
+  cui prendere spunto per gli scenari di permesso.
+
+Comando di verifica finale:
+```bash
+python manage.py test approvals documents --keepdb -v1
+```
+
+#### Guardrail
+
+- Non toccare `documents/pdf_generation.py`: il posizionamento salvato
+  in questa fase non viene ancora usato nella generazione del PDF
+  finale (Fase 3, task futuro).
+- Non toccare `reject_version`, `documents/permissions.py`,
+  `accounts/models.py`.
+- Non introdurre `pdfjs-dist` o altre dipendenze npm/pip in questa
+  fase.
+- Non toccare alcun template.
+- Nessun commit, push, merge, rebase da parte dell'implementatore.
+- Non lanciare il server di sviluppo.
+
+#### Note operative
+
+Verifica preliminare già fatta da Claude Code: la vista
+`download_representation_pdf` (righe 1110-1132 di `documents/views.py`
+nella versione attuale) e `can_download_representation_pdf`
+(`documents/permissions.py`, riga 456) sono state lette per intero.
+`approve_version` (righe 85-224 di `approvals/services.py`) è stata
+letta per intero: il punto di creazione di `ApprovalDecision` è alle
+righe 134-139 circa. Usa i numeri di riga come riferimento
+approssimativo, cerca sempre per contenuto.
 
 ---
 
