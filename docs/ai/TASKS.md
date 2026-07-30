@@ -81,6 +81,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-040 | Posizionamento libero firma su PDF approvazione (Fase 1: modello, service, endpoint PDF inline) | — | 2026-07-30 |
 | TASK-040-2 | Posizionamento libero firma (Fase 2: UI drag&drop con pdf.js, nuova dipendenza autorizzata) | — | 2026-07-30 |
 | TASK-041 | Fix UI Istruttoria CCB: sezione Applicabilità spostata in fondo, prima della sanatoria | — | 2026-07-30 |
+| TASK-042 | Fix UX gate PDF di rappresentazione: distinguere "PDF mancante" da "PDF caricato, da confermare" | — | 2026-07-30 |
 
 ---
 
@@ -4752,6 +4753,94 @@ sezioni, solo all'ordine nel template.
 ordine, "Applicabilità" ora immediatamente sopra "Sanatoria storica".
 Suite `ecn` completa: **381/381 PASS** (nessuna regressione, atteso —
 nessun test verifica l'ordine visivo delle sezioni).
+
+---
+
+### TASK-042 — Fix UX gate PDF di rappresentazione: distinguere "PDF mancante" da "PDF caricato, da confermare" — Claude Code
+
+Eseguito direttamente da Claude Code, su segnalazione diretta
+dell'operatore: dopo aver caricato manualmente il PDF di
+rappresentazione (es. per un sorgente `.docx`), il sistema continuava
+a sembrare bloccato "come se il PDF mancasse ancora".
+
+#### Difetto segnalato
+
+Il gate di invio in approvazione (`documents/pdf_gate.py`, TASK-026,
+invariato in questo task) prevede due passaggi distinti per un formato
+a caricamento manuale: 1) caricare il PDF, 2) confermare esplicitamente
+che rappresenta il sorgente. Prima di questo fix, sia
+`submit_for_approval.html` sia `version_detail.html` mostravano lo
+stesso riquadro rosso/errore identico sia per "PDF davvero assente"
+sia per "PDF caricato, manca solo la conferma" — nessuna distinzione
+visiva, e il messaggio di successo dopo l'upload ("Ricordarsi di
+confermarlo...") era un avviso passivo, facile da non notare.
+**Analisi del backend** (`documents/pdf_pipeline.py`,
+`documents/pdf_gate.py`): nessun bug logico trovato, il gate calcola
+correttamente lo stato — il problema era esclusivamente di
+presentazione/UX. L'operatore ha scelto esplicitamente di mantenere i
+due passaggi separati (upload + conferma), non di unificarli in un
+solo click.
+
+#### Modifica
+
+- `documents/views.py` (`upload_representation_pdf_view`): messaggio
+  dopo l'upload cambiato da `messages.success` (passivo) a
+  `messages.warning`, testo esplicito sul passaggio mancante ("Manca
+  ancora un passaggio: clicca sul pulsante «Confermo...» qui sotto").
+- `templates/documents/submit_for_approval.html`: nuovo ramo
+  `{% elif representation_pdf.status == 'ready' or ... == 'manual_uploaded' %}`
+  con riquadro ambra (`alert-warning`) dedicato al caso "caricato, da
+  confermare", distinto dal riquadro rosso (`alert-danger`) riservato
+  ai casi realmente bloccanti (assente, scaduto, conversione fallita,
+  caricamento manuale mai avviato). Testo mantiene la parola
+  "Confermare" per continuità con il messaggio del gate.
+- `templates/documents/version_detail.html`: stesso principio, nuovo
+  riquadro ambra mostrato solo quando `rep.status` è `ready` o
+  `manual_uploaded` (stessa condizione già usata per mostrare il
+  pulsante "Conferma" esistente), posizionato subito sopra i pulsanti
+  di azione.
+
+**Bug introdotto e corretto durante la verifica**: la prima versione
+usava la condizione `rep.requires_confirmation and not rep.confirmed_at`
+per decidere quando mostrare il riquadro ambra — troppo ampia,
+risultava vera anche per "conversione fallita" e "caricamento manuale
+mai avviato" (che hanno anch'essi `requires_confirmation=True` ma
+nessun file da confermare), nascondendo il vero errore dietro un
+messaggio rassicurante. Corretto restringendo la condizione agli stati
+effettivamente confermabili (`status in ('ready', 'manual_uploaded')`),
+la stessa già usata per mostrare il pulsante "Conferma".
+
+#### File coinvolti
+
+`documents/views.py`, `templates/documents/submit_for_approval.html`,
+`templates/documents/version_detail.html`. Nessuna modifica a
+`documents/pdf_gate.py`/`documents/pdf_pipeline.py` (il gate stesso è
+corretto, solo la presentazione cambia).
+
+#### Verifiche eseguite
+
+`python manage.py check` pulito. Suite `documents approvals` completa:
+**608/608 PASS** (un fallimento intermedio durante lo sviluppo, dovuto
+al bug di condizione descritto sopra, individuato e corretto prima del
+commit). Verifica visiva nel browser non eseguita in questa sessione
+(estensione Chrome non connessa) — verificato invece con l'esecuzione
+reale della suite di test (Django test client, richieste HTTP reali,
+non solo lettura di codice).
+
+#### Nota separata (non implementata in questo task)
+
+L'operatore ha chiesto anche una valutazione di fattibilità per la
+conversione automatica `.docx → PDF` (oggi richiede sempre upload
+manuale, per scelta di design in `documents/pdf_strategy.py`: nessuna
+libreria Python pura affidabile per questa conversione). Verificato che
+`LibreOffice` (`/usr/bin/soffice`, v25.8.7.3) è già installato su
+questa macchina di sviluppo e una conversione headless reale
+`.docx → .pdf` in una directory temporanea isolata ha funzionato in
+meno di 1 secondo. Nessuna modifica al codice applicativo:
+resta un task futuro separato, da specificare in dettaglio se
+l'operatore decide di procedere (dipendenza di sistema, non pip —
+richiede autorizzazione esplicita per l'installazione in ogni
+ambiente di deploy).
 
 ---
 

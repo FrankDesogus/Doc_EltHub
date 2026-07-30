@@ -62,6 +62,12 @@
     {% if representation_pdf.file %}
     <a href="{% url 'version_representation_pdf_download' version.pk %}" class="btn-secondary btn-sm">⬇ Scarica PDF di rappresentazione</a>
     {% endif %}
+  {% elif representation_pdf.status == 'ready' or representation_pdf.status == 'manual_uploaded' %}
+    <div class="alert-warning mb-3">
+      <strong>Ultimo passaggio:</strong> Confermare che il PDF di
+      rappresentazione rappresenta correttamente il file sorgente,
+      usando il pulsante qui sotto, prima di poter inviare in approvazione.
+    </div>
   {% else %}
     <div class="alert-danger mb-3">
       <strong>Non puoi ancora inviare in approvazione:</strong> {{ pdf_reason }}

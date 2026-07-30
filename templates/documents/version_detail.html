@@ -155,6 +155,17 @@
     </div>
     {% endif %}
   </div>
+  {% with rep=version.representation_pdf %}
+  {% if show_edit and rep.status == 'ready' or show_edit and rep.status == 'manual_uploaded' %}
+  <div class="px-4 pt-1">
+    <p class="alert-warning">
+      <strong>Ultimo passaggio:</strong> il PDF è stato caricato ma non è
+      ancora confermato. Clicca su «Conferma» qui sotto per poter inviare
+      la revisione in approvazione.
+    </p>
+  </div>
+  {% endif %}
+  {% endwith %}
   {% if version.representation_pdf.file or show_edit %}
   <div class="px-4 pb-4 flex flex-wrap items-center gap-2">
     {% if version.representation_pdf.file %}

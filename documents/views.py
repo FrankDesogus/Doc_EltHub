@@ -1241,7 +1241,12 @@ def upload_representation_pdf_view(request, version_id):
     from documents.pdf_pipeline import upload_manual_representation_pdf
     try:
         upload_manual_representation_pdf(version, uploaded, request.user)
-        messages.success(request, "PDF di rappresentazione caricato. Ricordarsi di confermarlo prima dell'invio in approvazione.")
+        messages.warning(
+            request,
+            "PDF caricato. Manca ancora un passaggio: clicca sul pulsante "
+            "«Confermo che il PDF rappresenta correttamente il sorgente» "
+            "qui sotto per poter inviare in approvazione.",
+        )
     except ValidationError as e:
         messages.error(request, str(e))
 
