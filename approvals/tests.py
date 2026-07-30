@@ -1498,3 +1498,59 @@ class ApprovalDetailLockTests(TestCase):
         self.assertEqual(r.status_code, 200)
         req.refresh_from_db()
         self.assertEqual(req.locked_by, self.approver2)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class ApproveVersionSignaturePlacementTests(TestCase):
+    """TASK-040 — posizionamento libero firma su approve_version (Fase 1)."""
+
+    def setUp(self):
+        self.author = User.objects.create_user('sigpl-author', password='pw')
+        self.approver = User.objects.create_user('sigpl-approver', password='pw')
+        self.document = make_document(owner=self.author)
+
+    def _make_in_approval(self):
+        version = create_new_revision(
+            self.document, self.author, 'A', 1, _bypass_ecn_check=True,
+        )
+        req = submit_version_for_approval(version, self.author, [self.approver])
+        return version, req
+
+    def test_approve_without_placement_unchanged(self):
+        _, req = self._make_in_approval()
+        approve_version(req, self.approver)
+        from approvals.models import ApprovalDecision
+        decision = ApprovalDecision.objects.get(approval_request=req, approver=self.approver)
+        self.assertIsNone(decision.signature_page)
+        self.assertIsNone(decision.signature_x)
+        self.assertIsNone(decision.signature_y)
+
+    def test_approve_with_valid_placement_saves_fields(self):
+        _, req = self._make_in_approval()
+        approve_version(req, self.approver, signature_page=2, signature_x=0.25, signature_y=0.75)
+        from approvals.models import ApprovalDecision
+        decision = ApprovalDecision.objects.get(approval_request=req, approver=self.approver)
+        self.assertEqual(decision.signature_page, 2)
+        self.assertEqual(decision.signature_x, 0.25)
+        self.assertEqual(decision.signature_y, 0.75)
+
+    def test_partial_placement_raises_validation_error(self):
+        _, req = self._make_in_approval()
+        with self.assertRaises(ValidationError):
+            approve_version(req, self.approver, signature_page=1)
+        with self.assertRaises(ValidationError):
+            approve_version(req, self.approver, signature_page=1, signature_x=0.5)
+        with self.assertRaises(ValidationError):
+            approve_version(req, self.approver, signature_x=0.5, signature_y=0.5)
+
+    def test_invalid_page_raises_validation_error(self):
+        _, req = self._make_in_approval()
+        with self.assertRaises(ValidationError):
+            approve_version(req, self.approver, signature_page=0, signature_x=0.5, signature_y=0.5)
+
+    def test_out_of_range_coordinates_raise_validation_error(self):
+        _, req = self._make_in_approval()
+        with self.assertRaises(ValidationError):
+            approve_version(req, self.approver, signature_page=1, signature_x=-0.1, signature_y=0.5)
+        with self.assertRaises(ValidationError):
+            approve_version(req, self.approver, signature_page=1, signature_x=0.5, signature_y=1.1)

@@ -5096,6 +5096,60 @@ class RepresentationPDFDownloadTests(TestCase):
 
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
+class RepresentationPDFInlineViewTests(TestCase):
+    """TASK-040 — vista inline del PDF di rappresentazione (stessi permessi del download)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.author = User.objects.create_user('repview-author', password='pw')
+        self.stranger = User.objects.create_user('repview-stranger', password='pw')
+        self.document = make_document(code='REPVIEW-001', owner=self.author, requires_approved_pdf=True)
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'sorgente.pdf', b'%PDF-1.4 vero', content_type='application/pdf')
+            self.version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+
+    def test_author_can_view_inline_representation(self):
+        self.client.login(username='repview-author', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.get(reverse('version_representation_pdf_view', args=[self.version.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertNotIn('attachment', response.get('Content-Disposition', ''))
+
+    def test_stranger_forbidden_on_inline_representation(self):
+        self.client.login(username='repview-stranger', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.get(reverse('version_representation_pdf_view', args=[self.version.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_missing_representation_inline_returns_404(self):
+        self.client.login(username='repview-author', password='pw')
+        version = create_new_revision(self.document, self.author, 'B', 2)
+        response = self.client.get(reverse('version_representation_pdf_view', args=[version.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_inline_serves_same_pdf_as_download(self):
+        self.client.login(username='repview-author', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            download = self.client.get(reverse('version_representation_pdf_download', args=[self.version.pk]))
+            inline = self.client.get(reverse('version_representation_pdf_view', args=[self.version.pk]))
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(inline.status_code, 200)
+        download_bytes = b''.join(download.streaming_content)
+        inline_bytes = b''.join(inline.streaming_content)
+        self.assertEqual(download_bytes, inline_bytes)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
 class ApprovedPDFUIAndRegenerateTests(TestCase):
     """TASK-031 — PDF approvato primario in UI, banner storico, permessi rigenerazione."""
 

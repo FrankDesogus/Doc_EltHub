@@ -198,6 +198,28 @@ class ApprovalDecision(models.Model):
         blank=True,
         verbose_name='Immagine firma (storico)',
     )
+    signature_page = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        verbose_name='Pagina firma (posizionamento libero)',
+        help_text=(
+            'Numero di pagina (1-based) dove è stata posizionata '
+            'manualmente la firma. Nullo = firma automatica in calce '
+            '(comportamento invariato).'
+        ),
+    )
+    signature_x = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name='Posizione firma X',
+        help_text='Coordinata X normalizzata (0.0-1.0, da sinistra) del centro della firma.',
+    )
+    signature_y = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name='Posizione firma Y',
+        help_text='Coordinata Y normalizzata (0.0-1.0, dall\'alto) del centro della firma.',
+    )
 
     class Meta:
         verbose_name = 'Decisione di approvazione'

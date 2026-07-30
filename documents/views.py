@@ -1133,6 +1133,34 @@ def download_representation_pdf(request, version_id):
 
 
 @login_required
+def view_representation_pdf_inline(request, version_id):
+    """
+    Come download_representation_pdf, ma senza forzare il download: serve
+    per il rendering client-side (pdf.js) nel posizionamento libero della
+    firma. Stessa identica autorizzazione della vista di download.
+    """
+    from documents.permissions import can_download_representation_pdf
+
+    version = get_object_or_404(DocumentVersion, pk=version_id)
+    rep = version.representation_pdf
+
+    if rep is None or not rep.file:
+        raise Http404
+
+    if not can_download_representation_pdf(request.user, version):
+        raise PermissionDenied
+
+    file_path = rep.file.path
+    if not os.path.exists(file_path):
+        raise Http404
+
+    return FileResponse(
+        open(file_path, 'rb'),
+        content_type='application/pdf',
+    )
+
+
+@login_required
 def download_approved_pdf(request, version_id):
     from documents.permissions import can_download_approved_pdf
 

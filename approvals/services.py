@@ -84,7 +84,10 @@ def create_approval_request_attachment(approval_request, uploaded_file, uploaded
     return attachment
 
 
-def approve_version(approval_request, approved_by, comment="", send_notifications=True):
+def approve_version(
+    approval_request, approved_by, comment="", send_notifications=True,
+    signature_page=None, signature_x=None, signature_y=None,
+):
     from documents.models import DocumentVersion
 
     Policy = ApprovalRequest.Policy
@@ -128,6 +131,20 @@ def approve_version(approval_request, approved_by, comment="", send_notification
                 "Non è ancora il tuo turno: aspetta che l'approvatore precedente abbia approvato."
             )
 
+    # 6. Posizionamento libero firma: o tutti e 3 i valori sono forniti
+    #    (firma manuale), o nessuno (firma automatica in calce, comportamento
+    #    invariato) — nessuno stato intermedio ammesso.
+    placement_fields = (signature_page, signature_x, signature_y)
+    if any(f is not None for f in placement_fields) and not all(f is not None for f in placement_fields):
+        raise ValidationError(
+            "Per posizionare manualmente la firma servono pagina, X e Y insieme."
+        )
+    if signature_page is not None:
+        if signature_page < 1:
+            raise ValidationError("La pagina della firma deve essere >= 1.")
+        if not (0.0 <= signature_x <= 1.0) or not (0.0 <= signature_y <= 1.0):
+            raise ValidationError("Le coordinate della firma devono essere comprese tra 0.0 e 1.0.")
+
     with transaction.atomic():
         now = timezone.now()
 
@@ -136,6 +153,9 @@ def approve_version(approval_request, approved_by, comment="", send_notification
             approver=approved_by,
             decision=ApprovalDecision.Decision.APPROVED,
             notes=comment,
+            signature_page=signature_page,
+            signature_x=signature_x,
+            signature_y=signature_y,
         )
         _build_decision_snapshot(decision, approved_by, approval_request)
 

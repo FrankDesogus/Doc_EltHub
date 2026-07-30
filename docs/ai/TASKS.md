@@ -18,7 +18,6 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
-| TASK-040 | Posizionamento libero firma su PDF approvazione (Fase 1: modello, service, endpoint PDF inline) | Cursor Agent |
 
 ## Backlog
 
@@ -79,6 +78,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-037-2 | Applicabilità ECN — correzione strutturale (Fase 2: fix suite di test) | — | 2026-07-30 |
 | TASK-038 | Fix UI Istruttoria CCB: bug commento multi-riga renderizzato, componenti CCB uniti a Proposta di variante, larghezza campi testo | — | 2026-07-30 |
 | TASK-039 | Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN (`auditlog/locking.py`, timeout 20 min) | — | 2026-07-30 |
+| TASK-040 | Posizionamento libero firma su PDF approvazione (Fase 1: modello, service, endpoint PDF inline) | — | 2026-07-30 |
 
 ---
 
@@ -4479,6 +4479,45 @@ nella versione attuale) e `can_download_representation_pdf`
 letta per intero: il punto di creazione di `ApprovalDecision` è alle
 righe 134-139 circa. Usa i numeri di riga come riferimento
 approssimativo, cerca sempre per contenuto.
+
+#### Esito (2026-07-30)
+
+Implementato da Cursor Agent secondo spec (via `ai-cycle.sh --run`),
+verificato riga per riga da Claude Code prima del commit.
+
+- `ApprovalDecision`: campi `signature_page`/`signature_x`/`signature_y`
+  aggiunti esattamente dove specificato. Migrazione scritta a mano da
+  Cursor Agent (ambiente senza shell disponibile per `makemigrations`):
+  verificata identica a quella che Django avrebbe generato
+  (`makemigrations --check --dry-run` → nessuna modifica mancante).
+- `approve_version`: firma estesa con i 3 parametri opzionali,
+  validazione "tutti o nessuno" + range coordinate + pagina ≥ 1, prima
+  della transazione. Nessuna modifica a `reject_version`.
+- Nuova vista `view_representation_pdf_inline` (`documents/views.py`) +
+  route `version_representation_pdf_view` (`config/urls.py`): stessa
+  identica autorizzazione di `download_representation_pdf`, senza
+  `as_attachment`.
+- Test aggiunti: `approvals.tests.ApproveVersionSignaturePlacementTests`
+  (5), `documents.tests.RepresentationPDFInlineViewTests` (4).
+
+**Bug trovato e corretto durante la verifica**: un test
+(`test_inline_serves_same_pdf_as_download`) confrontava
+`response.content` su una `FileResponse` — attributo non disponibile
+per risposte streaming nel test client Django
+(`AttributeError: This FileResponse instance has no 'content' attribute`).
+Non un bug del codice applicativo (la vista funziona correttamente),
+solo dell'asserzione di test. Corretto da Claude Code confrontando
+`b''.join(response.streaming_content)` invece di `.content`.
+
+Verifiche: `python manage.py check` pulito;
+`makemigrations --check --dry-run` pulito;
+`python manage.py test approvals documents --settings=config.test_settings -v1`
+→ **603/603 PASS** (dopo il fix del test).
+
+Nessuna UI in questa fase (nessun template toccato, nessuna dipendenza
+nuova installata): la Fase 2 (interfaccia di trascinamento con pdf.js,
+già autorizzata dall'operatore) resta un task futuro separato, non
+ancora scritto.
 
 ---
 
