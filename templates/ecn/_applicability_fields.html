@@ -1,10 +1,12 @@
-{# Campi applicabilità ECN (categoria + dettaglio condizionale), compilati
-   dalla CCB nel dossier istruttorio (ChangeNoticeDossierForm) — non
-   obbligatori al livello del campo Django (si può salvare una bozza del
-   dossier senza applicabilità), ma richiesti prima dell'invio al voto
-   tramite ChangeNoticeDossierForm.validate_for_submit().
-   La UI qui sotto è solo un aiuto: la validazione reale è server-side
-   (ChangeNotice.validate_applicability), quindi funziona anche a JS disattivato. #}
+{% comment %}
+Campi applicabilità ECN (categoria + dettaglio condizionale), compilati
+dalla CCB nel dossier istruttorio (ChangeNoticeDossierForm) — non
+obbligatori al livello del campo Django (si può salvare una bozza del
+dossier senza applicabilità), ma richiesti prima dell'invio al voto
+tramite ChangeNoticeDossierForm.validate_for_submit().
+La UI qui sotto è solo un aiuto: la validazione reale è server-side
+(ChangeNotice.validate_applicability), quindi funziona anche a JS disattivato.
+{% endcomment %}
 <div class="form-group">
   <label class="form-label">
     {{ form.applicability_category.label }} <span class="text-red-500">*</span>

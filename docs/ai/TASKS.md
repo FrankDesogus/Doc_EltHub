@@ -18,6 +18,7 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
+| TASK-039 | Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN | Cursor Agent |
 
 ## Backlog
 
@@ -76,6 +77,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | b9a5797 | 2026-07-29 |
 | TASK-037 | Applicabilità ECN — correzione strutturale: decisa dalla CCB nel dossier, non dal proponente (Fase 1: modello, service, form, view, template, dati demo) | — | 2026-07-30 |
 | TASK-037-2 | Applicabilità ECN — correzione strutturale (Fase 2: fix suite di test) | — | 2026-07-30 |
+| TASK-038 | Fix UI Istruttoria CCB: bug commento multi-riga renderizzato, componenti CCB uniti a Proposta di variante, larghezza campi testo | — | 2026-07-30 |
 
 ---
 
@@ -3766,6 +3768,418 @@ fare push, merge, rebase. Non lanciare il server di sviluppo.
 Fix + adattamento dei test esistenti (Parti A-B sopra). Non serve
 ampliare la copertura oltre a colmare i buchi lasciati dalle rimozioni
 (punti 4 e 7 sopra già indicano dove aggiungere gli equivalenti corretti).
+
+---
+
+### TASK-038 — Fix UI Istruttoria CCB — Claude Code
+
+Eseguito direttamente da Claude Code (modifiche template/CSS mirate,
+nessun ciclo Cursor/Codex), su segnalazione diretta dell'operatore dopo
+aver visionato la pagina "Istruttoria CCB" (`ecn_ccb_dossier.html`) nel
+browser.
+
+#### Bug reale scoperto e corretto
+
+Il tokenizer di Django per i commenti `{# ... #}` non usa `re.DOTALL`:
+un commento su più righe non viene riconosciuto come tale e viene
+stampato letteralmente in pagina. Due file avevano commenti multi-riga
+con questa sintassi, entrambi pre-esistenti (introdotti in TASK-036/037,
+non una regressione di questa sessione):
+`templates/ecn/_applicability_fields.html` (7 righe, sopra il blocco
+Applicabilità del dossier) e `templates/ecn/_applicability_summary.html`
+(3 righe, incluso da `ecn_review_form.html` e `ecn_close_form.html`).
+Convertiti entrambi in `{% comment %}...{% endcomment %}`, che gestisce
+correttamente il multi-riga. Verificato nel browser (Chrome, via
+`supervisor_demo`) che il testo del commento non compare più su nessuna
+delle pagine coinvolte.
+
+#### Altre modifiche richieste dall'operatore
+
+- **Componenti CCB** integrati dentro "Proposta di variante" in cima a
+  `ecn_ccb_dossier.html` (nuovo `<div class="detail-item md:col-span-2">`
+  con lo stesso elenco numerato di prima); rimossa la sezione
+  `form-section` separata "Componenti CCB (N)".
+- **Larghezza campi**: `input`/`select`/`textarea` in tutto il progetto
+  non avevano mai una regola `width: 100%` — bug sistemico (visibile in
+  particolare sul campo "Dettaglio dell'applicabilità", che restava alla
+  larghezza intrinseca del browser invece di riempire la sezione).
+  Aggiunta in `src/css/main.css` (`@layer base`) la regola
+  `select, textarea, input:not([type="checkbox"]):not([type="radio"])
+  { display: block; width: 100%; }` (checkbox/radio esclusi
+  esplicitamente per non alterarne il rendering). Rigenerato
+  `static/css/tailwind.css` con `npm run build`.
+- Le descrizioni brevi delle 3 categorie di applicabilità sotto le radio
+  card restano sempre visibili (nessun cambiamento lì: un primo tentativo
+  di nasconderle dietro un pulsante "info" è stato fatto e poi annullato
+  su richiesta esplicita dell'operatore, che nel frattempo aveva
+  confuso il bug del commento con quella UI).
+
+#### File coinvolti
+
+`templates/ecn/_applicability_fields.html`,
+`templates/ecn/_applicability_summary.html`,
+`templates/ecn/ecn_ccb_dossier.html`, `src/css/main.css`,
+`static/css/tailwind.css` (generato).
+
+#### Verifiche eseguite
+
+`python manage.py check` pulito. `npm run build` (Tailwind) senza errori.
+Verifica visiva reale nel browser (Chrome via `claude-in-chrome`, utente
+`supervisor_demo`) su `ecn/3/ccb-dossier/` (Istruttoria CCB) e
+`ecn/4/review/` (Decisione CCB): nessun testo di commento visibile,
+componenti CCB uniti, campo dettaglio applicabilità a larghezza piena,
+nessuna regressione visiva evidente sugli altri campi della pagina
+(select classificazione, textarea impatti, checkbox sanatoria invariata).
+Suite `ecn` completa: **373/373 PASS**.
+
+#### Guardrail rispettati
+
+Nessuna modifica a modelli, service, form, permessi, migrazioni. Nessun
+push, merge, rebase.
+
+---
+
+### TASK-039 — Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN — Cursor Agent
+
+#### Obiettivo
+
+Introdurre un lock applicativo che permetta **un solo utente alla volta**
+di lavorare sulle pagine d'azione di Approvazioni (`approval_detail`) ed
+ECN (`ecn_ccb_dossier`, `ecn_review`), indipendentemente dalla policy
+(`any`/`all`/`sequential`). Le pagine di sola consultazione (dettaglio
+ECN, dettaglio documento, dettaglio progetto, storico) **non sono
+toccate da questo task** e restano multi-utente come oggi. Motivazione
+di prodotto (decisa con l'operatore, non dedurla altrimenti): abilita in
+un task futuro il posizionamento libero (drag&drop) della firma visiva
+sul PDF senza rischio di sovrapposizioni concorrenti, ma è già un
+miglioramento operativo a sé stante anche senza quel task successivo.
+
+#### Scope
+
+Consentito modificare **solo**:
+- `ecn/models.py` (nuovi campi su `ChangeNotice`)
+- `ecn/migrations/` (nuova migrazione)
+- `ecn/views.py` (solo le funzioni `ecn_ccb_dossier` e `ecn_review`)
+- `approvals/models.py` (nuovi campi su `ApprovalRequest`)
+- `approvals/migrations/` (nuova migrazione)
+- `approvals/views.py` (solo la funzione `approval_detail`)
+- `auditlog/locking.py` (nuovo file)
+- `auditlog/tests.py` (nuovi test, in coda al file)
+- `ecn/tests.py` (nuovi test, in coda al file)
+- `approvals/tests.py` (nuovi test, in coda al file)
+
+**Non toccare**: nessun template (`templates/**`), nessun file CSS,
+`ecn/permissions.py`, `ecn/forms.py`, `ecn/services.py`,
+`approvals/services.py`, `demo_full.py`, `demo_company.py`, admin.py di
+qualunque app. Questo task **non richiede modifiche a nessun template**:
+il caso "lock detenuto da un altro utente" si gestisce con un redirect +
+`messages.warning(...)` verso la pagina di dettaglio già esistente
+(stesso pattern già usato in `ecn_review` per lo stato sbagliato, righe
+655-660 di `ecn/views.py`), non con una nuova pagina o un nuovo blocco
+HTML.
+
+#### 1. Nuovo modulo condiviso `auditlog/locking.py`
+
+Nessun `ContentType`/`GenericForeignKey`: il lock opera per duck-typing
+su qualunque oggetto con i campi `locked_by`/`locked_at` (solo 2 modelli
+coinvolti, non serve un'astrazione più generica). Contenuto esatto:
+
+```python
+"""
+Lock applicativo "un utente alla volta" per le pagine d'azione dei
+flussi di approvazione (documento) ed ECN (dossier istruttorio, voto
+CCB). Opera per duck-typing su qualunque model con i campi
+locked_by/locked_at (ChangeNotice, ApprovalRequest) — nessun
+ContentType/GenericForeignKey, solo 2 modelli coinvolti.
+
+Il lock scade automaticamente dopo LOCK_TIMEOUT di inattività (nessuna
+azione di sblocco manuale in questa fase): un lock scaduto è
+equivalente a "nessun lock" agli occhi di lock_holder/acquire_lock.
+"""
+from datetime import timedelta
+
+from django.utils import timezone
+
+LOCK_TIMEOUT = timedelta(minutes=20)
+
+
+def lock_holder(obj):
+    """Restituisce l'utente che detiene un lock valido (non scaduto) su `obj`, o None."""
+    if obj.locked_by_id and obj.locked_at and timezone.now() - obj.locked_at <= LOCK_TIMEOUT:
+        return obj.locked_by
+    return None
+
+
+def acquire_lock(obj, user):
+    """
+    Prova ad acquisire il lock su `obj` per `user`.
+    Restituisce True se acquisito (o già detenuto da `user`: rinnova il
+    timestamp), False se detenuto da un altro utente con lock non scaduto
+    (in tal caso non modifica nulla).
+    """
+    holder = lock_holder(obj)
+    if holder is not None and holder.pk != user.pk:
+        return False
+    obj.locked_by = user
+    obj.locked_at = timezone.now()
+    obj.save(update_fields=['locked_by', 'locked_at'])
+    return True
+
+
+def release_lock(obj, user):
+    """Rilascia il lock su `obj` solo se detenuto da `user` (anche se già scaduto)."""
+    if obj.locked_by_id == user.pk:
+        obj.locked_by = None
+        obj.locked_at = None
+        obj.save(update_fields=['locked_by', 'locked_at'])
+```
+
+#### 2. Campi nuovi su `ChangeNotice` (`ecn/models.py`)
+
+Aggiungi subito dopo il campo `updated_at` (cerca `updated_at =
+models.DateTimeField(\n        auto_now=True,\n        verbose_name='Aggiornato il',\n    )`,
+poco prima di `class Meta:`), stesso stile di `closed_by`/`closed_at`
+già presente nello stesso file:
+
+```python
+    locked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='locked_ecns',
+        verbose_name='In lavorazione da',
+        help_text='Utente che sta compilando il dossier o votando in questo momento (lock temporaneo).',
+    )
+    locked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='In lavorazione dal',
+    )
+```
+
+Genera la migrazione con `python manage.py makemigrations ecn` (deve
+risultare `ecn/migrations/0008_changenotice_locked_at_changenotice_locked_by.py`
+o nome equivalente auto-generato — non scriverla a mano).
+
+#### 3. Campi nuovi su `ApprovalRequest` (`approvals/models.py`)
+
+Aggiungi subito dopo `completed_at`, prima di `class Meta:`:
+
+```python
+    locked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='locked_approval_requests',
+        verbose_name='In lavorazione da',
+        help_text='Utente che sta decidendo questa richiesta in questo momento (lock temporaneo).',
+    )
+    locked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='In lavorazione dal',
+    )
+```
+
+Genera la migrazione con `python manage.py makemigrations approvals`
+(nome auto-generato, atteso `approvals/migrations/0007_...py`).
+
+#### 4. `ecn/views.py` — `ecn_ccb_dossier` (righe 490-602 nella versione attuale)
+
+Aggiungi in testa al file l'import:
+```python
+from auditlog.locking import acquire_lock, lock_holder, release_lock
+```
+e, se non già presente in questo file, `from django.utils import
+timezone` (verifica prima con grep: non risultava presente all'inizio
+di questo task).
+
+Subito dopo la riga `dossier_editable = can_compile_dossier(request.user, ecn)`
+inserisci:
+```python
+    if dossier_editable:
+        holder = lock_holder(ecn)
+        if holder is not None and holder.pk != request.user.pk:
+            messages.warning(
+                request,
+                f"Dossier in lavorazione da {holder.get_full_name() or holder.username} "
+                f"dalle {timezone.localtime(ecn.locked_at).strftime('%d/%m/%Y %H:%M')}. Riprova più tardi.",
+            )
+            return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+        acquire_lock(ecn, request.user)
+```
+Questo copre sia GET (mostra il form) sia POST (salva bozza/invia):
+acquisire il lock ad ogni richiesta valida rinnova il timestamp per
+l'utente che già lo detiene, così un lavoro lungo su una bozza non
+scade mentre è ancora in corso.
+
+Nel ramo `if action == 'submit':` che ha successo (subito dopo la
+chiamata a `submit_change_notice(...)`, prima del
+`messages.success(request, f'{ecn.code}: dossier inviato...')`
+successivo), aggiungi:
+```python
+                        release_lock(ecn, request.user)
+```
+Il salvataggio bozza (`action == 'save'`) **non** rilascia il lock
+(l'utente potrebbe voler continuare a lavorarci).
+
+#### 5. `ecn/views.py` — `ecn_review` (righe 635-721 nella versione attuale)
+
+Subito dopo il blocco esistente:
+```python
+    if ecn.status != ChangeNotice.Status.UNDER_REVIEW:
+        messages.error(...)
+        return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+```
+e prima di `if request.method == 'POST':`, inserisci:
+```python
+    holder = lock_holder(ecn)
+    if holder is not None and holder.pk != request.user.pk:
+        messages.warning(
+            request,
+            f"Decisione CCB in lavorazione da {holder.get_full_name() or holder.username} "
+            f"dalle {timezone.localtime(ecn.locked_at).strftime('%d/%m/%Y %H:%M')}. Riprova più tardi.",
+        )
+        return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+    acquire_lock(ecn, request.user)
+```
+
+Sia il ramo di approvazione sia quello di rifiuto terminano con lo
+stesso `return redirect('ecn:ecn_detail', ecn_id=ecn_id)` dopo l'
+`if`/`else`: aggiungi **una sola volta**, subito prima di quel
+`return` condiviso (dopo i due blocchi `messages.success(...)`):
+```python
+                return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+```
+diventa
+```python
+                release_lock(ecn, request.user)
+                return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+```
+(un solo punto di modifica, non duplicarlo nei due rami).
+
+#### 6. `approvals/views.py` — `approval_detail` (righe 112-221 nella versione attuale)
+
+Aggiungi in testa al file:
+```python
+from django.utils import timezone
+
+from auditlog.locking import acquire_lock, lock_holder, release_lock
+```
+
+Subito dopo il blocco esistente:
+```python
+    is_assigned = ar.approvers.filter(approver=request.user).exists()
+    if not is_assigned and not request.user.is_superuser:
+        raise PermissionDenied
+```
+inserisci:
+```python
+    if ar.status == ApprovalRequest.Status.PENDING:
+        holder = lock_holder(ar)
+        if holder is not None and holder.pk != request.user.pk:
+            messages.warning(
+                request,
+                f"Decisione in lavorazione da {holder.get_full_name() or holder.username} "
+                f"dalle {timezone.localtime(ar.locked_at).strftime('%d/%m/%Y %H:%M')}. Riprova più tardi.",
+            )
+            return redirect('approval_queue')
+        acquire_lock(ar, request.user)
+```
+Il lock si applica solo quando `ar.status == PENDING` (una richiesta già
+decisa è consultazione storica, multi-utente come oggi — nessuna
+modifica per quel caso).
+
+Nel ramo `if action == 'approve':` che ha successo, subito prima di
+`return redirect('approval_queue')` (quello dentro il blocco try,
+dopo i `messages.success`/`messages.info`), aggiungi
+`release_lock(ar, request.user)`. Stessa cosa nel ramo
+`elif action == 'reject':` che ha successo, prima del suo
+`return redirect('approval_queue')`. Sono **due punti distinti** (non
+condivisi come in `ecn_review`): vanno modificati entrambi.
+
+#### Acceptance criteria
+
+- [ ] `python manage.py check` pulito.
+- [ ] `python manage.py makemigrations --check --dry-run` pulito (le due
+      migrazioni sono già state generate e committate).
+- [ ] Un secondo utente con permesso di compilare/votare/decidere, che
+      prova ad aprire GET o POST su una delle 3 pagine mentre un altro
+      utente detiene il lock (non scaduto), viene rediretto con un
+      messaggio `messages.warning` e **non vede il form**.
+- [ ] Lo stesso utente che detiene già il lock può riaprire/ri-salvare
+      la stessa pagina senza essere bloccato (il lock è suo).
+- [ ] Un lock con `locked_at` più vecchio di `LOCK_TIMEOUT` (20 minuti)
+      non blocca più nessuno (equivalente a nessun lock).
+- [ ] Dopo un invio dossier riuscito (`ecn_ccb_dossier`, action
+      submit), un voto riuscito (`ecn_review`), o una decisione riuscita
+      (`approval_detail`, approve o reject), `locked_by`/`locked_at`
+      tornano `None` sull'oggetto.
+- [ ] Salvare una bozza dossier (`ecn_ccb_dossier`, action save) **non**
+      rilascia il lock.
+- [ ] Le pagine di sola consultazione (`ecn_detail`, `document_detail`,
+      `project_detail`, storico) restano accessibili da più utenti senza
+      alcun lock: nessun test esistente su quelle viste deve rompersi.
+- [ ] Nessuna regressione sulla suite esistente.
+
+#### Test richiesti
+
+Aggiungi test (non serve un file nuovo, in coda alle classi/test
+esistenti pertinenti):
+
+- `auditlog/tests.py`: test unitari diretti su `acquire_lock`,
+  `release_lock`, `lock_holder` (acquisizione da utente libero,
+  blocco da utente diverso, riacquisizione dallo stesso utente,
+  scadenza timeout impostando manualmente `locked_at` nel passato oltre
+  `LOCK_TIMEOUT`, rilascio da parte di chi non detiene il lock — deve
+  essere un no-op silenzioso).
+- `ecn/tests.py`: per `ecn_ccb_dossier` — secondo utente autorizzato
+  bloccato mentre il primo detiene il lock (GET e POST); lock rilasciato
+  dopo `submit` riuscito; lock NON rilasciato dopo `save` bozza; lock
+  scaduto non blocca. Per `ecn_review` — stesso schema (blocco, rilascio
+  dopo voto riuscito, scadenza).
+- `approvals/tests.py`: per `approval_detail` — stesso schema (blocco,
+  rilascio dopo approve/reject riuscito, nessun lock applicato quando
+  `ar.status != PENDING`).
+
+Comando di verifica finale:
+```bash
+python manage.py test ecn approvals auditlog --keepdb -v1
+```
+Deve concludere con 0 errori e 0 fallimenti rispetto al conteggio
+attuale (373 test in `ecn`, verificane il numero esatto in `approvals`
+e `auditlog` prima di iniziare con `python manage.py test approvals
+auditlog --keepdb -v1` sul codice non modificato).
+
+#### Guardrail
+
+- Non modificare `ecn/permissions.py`, `ecn/forms.py`, `ecn/services.py`,
+  `approvals/services.py`: la logica di permesso/policy resta identica,
+  il lock si aggiunge come controllo indipendente.
+- Non toccare alcun template né file CSS.
+- Non toccare `demo_full.py`/`demo_company.py`.
+- Non introdurre `ContentType`/`GenericForeignKey`: solo i 2 modelli
+  elencati, con campi diretti.
+- Non introdurre un meccanismo di sblocco manuale (admin, bottone,
+  comando di management): solo il timeout automatico.
+- Nessun commit, push, merge, rebase da parte dell'implementatore.
+- Nessuna dipendenza esterna nuova, nessuna installazione di pacchetti.
+- Non lanciare il server di sviluppo.
+
+#### Note operative
+
+Questo task **non** implementa il posizionamento libero della firma
+(task futuro, fuori scope): si ferma al meccanismo di lock generico.
+Verifica preliminare già fatta da Claude Code prima di scrivere questa
+spec: le 3 viste coinvolte, i loro esatti punti di ingresso/uscita e gli
+import mancanti (`timezone` non era importato in nessuno dei due file
+`ecn/views.py`/`approvals/views.py` prima di questo task) sono stati
+letti riga per riga — usa i numeri di riga sopra come riferimento
+approssimativo (potrebbero essere leggermente spostati se il file è
+cambiato), non come garanzia assoluta: cerca sempre i blocchi di codice
+per contenuto, non solo per numero di riga.
 
 ---
 

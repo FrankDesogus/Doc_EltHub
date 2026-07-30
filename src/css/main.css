@@ -62,6 +62,16 @@
     @apply rounded-md placeholder:text-slate-400 focus:border-elt-cyan-500 focus:ring-2 focus:ring-elt-cyan-500/40;
   }
 
+  /* Senza questa regola i campi testo/select/textarea restano alla larghezza
+     intrinseca del browser (es. textarea a ~20 colonne) invece di riempire
+     il contenitore — visibile soprattutto nelle form-section più larghe. */
+  select,
+  textarea,
+  input:not([type="checkbox"]):not([type="radio"]) {
+    display: block;
+    width: 100%;
+  }
+
   input[type="checkbox"],
   input[type="radio"] {
     background-color: var(--field-bg);
