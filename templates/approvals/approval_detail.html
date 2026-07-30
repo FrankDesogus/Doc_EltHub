@@ -320,9 +320,9 @@
     var dragPos = { x: 0.5, y: 0.5 };
     var ownMarker = null;
 
-    import('{% static "vendor/pdfjs/pdf.min.mjs" %}').then(function (pdfjsLib) {
+    import('{% static "vendor/pdfjs/pdf.min.mjs" %}?v=2').then(function (pdfjsLib) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = '{% static "vendor/pdfjs/pdf.worker.min.mjs" %}';
-      pdfjsLib.getDocument(pdfUrl).promise.then(function (doc) {
+      pdfjsLib.getDocument({ url: pdfUrl }).promise.then(function (doc) {
         pdfDoc = doc;
         renderPage(currentPage);
       }).catch(function (err) {

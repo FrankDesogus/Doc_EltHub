@@ -1,3 +1,4 @@
+import base64
 import os
 
 from django.contrib import messages
@@ -252,10 +253,21 @@ def approval_detail(request, approval_request_id):
         for d in decisions
         if d.signature_page is not None
     ]
+    # Data URI, non .image.url: nessuna route serve /media/ direttamente in
+    # questo progetto (accesso ai file sempre tramite view autenticate) —
+    # stesso pattern già usato da accounts.views.signature_settings.
     user_signature_url = None
     signature_profile = getattr(request.user, 'signature_profile', None)
     if signature_profile is not None and signature_profile.image:
-        user_signature_url = signature_profile.image.url
+        try:
+            with signature_profile.image.open('rb') as fh:
+                encoded = base64.b64encode(fh.read()).decode('ascii')
+            user_signature_url = f'data:image/png;base64,{encoded}'
+        except OSError:
+            # File mancante su disco nonostante il riferimento in DB: la
+            # pagina resta consultabile, solo senza il widget di
+            # posizionamento libero (torna la modalità automatica).
+            pass
 
     return render(request, 'approvals/approval_detail.html', {
         'approval_request': ar,

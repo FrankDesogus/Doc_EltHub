@@ -1651,5 +1651,6 @@ class ApprovalDetailSignaturePlacementViewTests(TestCase):
         version = create_new_revision(other_doc, self.author, '00', 0, _bypass_ecn_check=True)
         req = submit_version_for_approval(version, self.author, [self.approver], send_notifications=False)
         self.client.login(username='sigview-approver', password='pw')
-        response = self.client.get(reverse('approval_detail', args=[req.pk]))
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.get(reverse('approval_detail', args=[req.pk]))
         self.assertNotContains(response, 'id_manual_signature_toggle')

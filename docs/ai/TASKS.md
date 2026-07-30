@@ -4607,7 +4607,10 @@ versione senza PDF di rappresentazione.
 
 `python manage.py check` pulito. `npm run build` senza errori.
 `python manage.py test approvals documents --settings=config.test_settings -v1`
-→ **608/608 PASS** (603 di Fase 1 + 5 nuovi di questa fase).
+→ **608/608 PASS** (603 di Fase 1 + 5 nuovi di questa fase; conteggio
+riconfermato identico dopo tutti i fix trovati con la verifica visiva,
+vedi sotto — un fallimento intermedio dovuto a un bug nel test stesso,
+non nel codice applicativo, corretto durante il percorso).
 
 **Verifica server-side via richieste HTTP reali** (non solo lettura di
 codice): creato uno scenario di prova ad hoc (documento
@@ -4626,21 +4629,79 @@ rispondono 200 con `content-type: text/javascript`; il nuovo endpoint
 PDF valido (verificato con `file`) e header `Content-Disposition:
 inline` (non `attachment`).
 
-**Verifica visiva interattiva NON eseguita**: l'estensione Chrome
-(`claude-in-chrome`) è rimasta disconnessa per l'intera sessione di
-ripresa (ritentata più volte, mai riconnessa) — non è stato possibile
-osservare concretamente il rendering del canvas, il trascinamento con
-il mouse, né il caricamento effettivo del modulo pdf.js in un browser
-reale. Tutto ciò che era verificabile senza esecuzione JS (markup
-server-side, asset statici, endpoint, persistenza dati via POST reali)
-è stato verificato con evidenza diretta, non solo affermato. **Azione
-richiesta all'operatore** (o a una sessione futura con l'estensione
-connessa): aprire `http://127.0.0.1:8001/approvals/25/` con
-`supervisor_demo`/`demo1234`, spuntare "Posiziona manualmente la firma
-sul documento" e confermare che il PDF si vede, la firma si trascina, e
-dopo "Approva revisione" il posizionamento risulta salvato
-correttamente (query `ApprovalDecision.objects.get(pk=...)` o
-riapertura pagina).
+**Verifica visiva interattiva eseguita** (in una ripresa successiva
+della stessa sessione, dopo che l'operatore ha riavviato Chrome e
+l'estensione si è riconnessa): aperto `/approvals/25/` con
+`supervisor_demo`, spuntato "Posiziona manualmente la firma sul
+documento", verificato che il canvas mostra davvero il contenuto del
+PDF (818 righe di testo visibili), che il segnaposto della firma
+compare come immagine reale trascinabile, che il trascinamento
+(simulato con eventi mouse nativi via JS per bypassare
+un'incongruenza di scala tra le coordinate del tool di screenshot e
+quelle CSS del viewport — `devicePixelRatio: 1.5`) aggiorna
+correttamente sia la posizione visiva sia i campi hidden, e che dopo
+"Approva revisione" la richiesta risulta `APPROVED` con
+`ApprovalDecision.signature_page/x/y` salvati esattamente al punto
+trascinato (verificato via `manage.py shell`, non solo dedotto).
+
+**3 bug reali trovati e corretti durante questa verifica** (nessuno
+individuabile dalla sola lettura del codice o dai test automatici, che
+infatti restavano tutti verdi con codice comunque rotto lato browser):
+
+1. **Versione di `pdfjs-dist` incompatibile con il Chrome disponibile**:
+   sia la build "moderna" sia quella "legacy" di `pdfjs-dist@6.2.108`
+   usano internamente `Map.prototype.getOrInsertComputed`, un metodo
+   JS troppo recente (non disponibile nemmeno in un Chrome 143
+   aggiornato). Errore in console:
+   `TypeError: this[#Ra].getOrInsertComputed is not a function`,
+   canvas che restava vuoto. Corretto **pinnando la dipendenza a
+   `pdfjs-dist@5.0.375`** (versione esatta, non un range `^`, per
+   evitare che un futuro `npm install` riporti lo stesso problema) e
+   rivendorizzando `static/vendor/pdfjs/` dalla build `legacy/build/`
+   di quella versione (0 occorrenze dell'API problematica, verificato
+   con grep prima di procedere).
+2. **`user.signature_profile.image.url` non funzionava**: nessuna
+   route in `config/urls.py` serve `/media/` direttamente in questo
+   progetto (accesso ai file sempre tramite view autenticate, per
+   design — confermato con un grep mirato: `.image.url`/`.file.url`
+   non compaiono in nessun altro punto del codebase). L'URL restituiva
+   404 anche se il file esisteva davvero su disco. Corretto in
+   `approvals/views.py` (`approval_detail`) riusando lo stesso pattern
+   già presente in `accounts/views.py` (`signature_settings`): il file
+   viene letto e incorporato come `data:image/png;base64,...` invece
+   di un URL, `import base64` aggiunto in cima al file.
+3. **Cache del browser sul modulo ES `pdf.min.mjs`**: durante il primo
+   giro di fix (prima di scoprire il vero problema al punto 1), il
+   browser ha continuato a servire una versione già scaricata del file
+   nonostante il contenuto su disco fosse cambiato, mascherando
+   temporaneamente l'indagine. Aggiunto un cache-buster statico
+   (`?v=1`/`?v=2` sull'URL dell'`import()` dinamico in
+   `approval_detail.html`) — utile anche in futuro se il file
+   vendorizzato verrà aggiornato senza cambiare nome.
+
+Questi 3 problemi erano **tutti invisibili lato server** (nessun errore
+Django, nessun test rotto): solo l'esecuzione JS reale in un browser li
+ha esposti — a riprova del perché la verifica "solo HTTP/curl" fatta
+nel primo giro di questa fase non poteva bastare da sola per una
+feature con questa quantità di logica client-side.
+
+**4° problema, trovato invece dai test** (bug reale nella suite di
+questa stessa fase, non nel codice applicativo): la correzione del
+punto 2 fa sì che `approval_detail` ora apra davvero il file immagine
+della firma (prima con `.image.url` non lo apriva mai). Un test
+(`test_widget_hidden_without_representation_pdf`) faceva la GET fuori
+dal blocco `with self.settings(MEDIA_ROOT=self.temp_media)`, quindi
+cercava il file nella media directory sbagliata → `FileNotFoundError`
+in un test che prima passava per un motivo sbagliato (non toccava mai
+il file). Corretto il test. **Occasione per un fix difensivo reale,
+non speculativo** (il fallimento del test lo ha dimostrato
+concretamente): un file firma mancante su disco nonostante il record
+DB esistente (scenario plausibile: backup/restore incompleto,
+cancellazione manuale) ora non fa più fallire l'intera pagina di
+approvazione con un 500 — `approval_detail` cattura `OSError` attorno
+alla lettura del file e degrada silenziosamente a
+`user_signature_url = None` (niente widget di posizionamento libero,
+resta comunque la modalità automatica).
 
 #### Non ancora fatto (Fase 3, task futuro separato)
 
