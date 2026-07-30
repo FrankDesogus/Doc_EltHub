@@ -1260,7 +1260,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
 
         doc = self._document_with_current_version('E2E-ECN-001', requires_approved_pdf=False)
         ecn = create_simple_ecn(
-            document=doc, proposed_by=self.author, title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            document=doc, proposed_by=self.author, title='Revisione rapida', send_notifications=False,
         )
         version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice')
         req = submit_version_for_approval(version, self.author, [self.approver])
@@ -1276,7 +1276,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
 
         doc = self._document_with_current_version('E2E-ECN-002', requires_approved_pdf=True)
         ecn = create_simple_ecn(
-            document=doc, proposed_by=self.author, title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            document=doc, proposed_by=self.author, title='Revisione rapida', send_notifications=False,
         )
         version = create_new_revision(doc, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice')
         req = submit_version_for_approval(version, self.author, [self.approver])
@@ -1293,7 +1293,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         doc = self._document_with_current_version('E2E-ECN-003', requires_approved_pdf=False)
         ecn = create_change_notice(
             document=doc, proposed_by=self.author, title='ECN standard',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
         )
         ecn.status = ChangeNotice.Status.APPROVED
         ecn.save(update_fields=['status'])
@@ -1314,7 +1314,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         doc = self._document_with_current_version('E2E-ECN-ALL', requires_approved_pdf=False)
         ecn = create_change_notice(
             document=doc, proposed_by=self.author, title='ECN standard ALL',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
         )
         ecn.status = ChangeNotice.Status.APPROVED
         ecn.save(update_fields=['status'])
@@ -1340,7 +1340,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         doc = self._document_with_current_version('E2E-ECN-SEQ', requires_approved_pdf=False)
         ecn = create_change_notice(
             document=doc, proposed_by=self.author, title='ECN standard SEQUENTIAL',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
         )
         ecn.status = ChangeNotice.Status.APPROVED
         ecn.save(update_fields=['status'])
@@ -1379,7 +1379,7 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         doc = self._document_with_current_version('E2E-ECN-CCB-MAIL', requires_approved_pdf=False)
         ecn = create_change_notice(
             document=doc, proposed_by=self.author, title='ECN standard con CCB',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT, send_notifications=False,
         )
         configure_ccb(ecn, actor=self.author, users=[ccb_member1, ccb_member2], policy='any',
                       send_notifications=False)

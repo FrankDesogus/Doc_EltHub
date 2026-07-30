@@ -532,7 +532,7 @@ class ApplicabilityValidationTests(TestCase):
             code='APPL-HIST-001',
             applicability_category=None,
         )
-        self.assertEqual(ecn.applicability_display, 'Applicabilità non registrata — ECN storico')
+        self.assertEqual(ecn.applicability_display, 'Applicabilità non specificata')
         self.assertEqual(ecn.applicability_badge_class, 'badge-applicability-unset')
         self.assertEqual(ecn.applicability_short_description, '')
         self.assertFalse(ecn.applicability_shows_scope_notice)
@@ -562,88 +562,57 @@ class ApplicabilityValidationTests(TestCase):
 
 
 class ApplicabilityFormTests(TestCase):
-    """TASK-036-4 Parte B: i tre form registrano e validano i campi del mixin."""
+    """
+    TASK-037: l'applicabilità vive nel dossier istruttorio CCB
+    (ChangeNoticeDossierForm), non nelle form di creazione/modifica ECN
+    (ChangeNoticeForm/ChangeNoticeEditForm/SimpleEcnForm non hanno più
+    questi campi — corretto rispetto all'impostazione iniziale TASK-036).
+    Opzionale al salvataggio bozza, obbligatoria solo prima dell'invio al
+    voto (validate_for_submit), stesso trattamento di ccb_class/
+    ccb_requirements/ccb_technical_impact.
+    """
 
-    def _standard_form_data(self, **overrides):
+    def _valid_dossier_data(self, **overrides):
         data = {
-            'title': 'ECN form test',
-            'motivation': ChangeNotice.Motivation.IMPROVEMENT,
-            'motivation_detail': '',
-            'description': 'Descrizione',
-            'commessa': '',
             'applicability_category': ChangeNotice.Applicability.GENERAL,
             'applicability_detail': '',
+            'ccb_class': ChangeNotice.CCBClass.CLASS1,
+            'ccb_requirements': 'Verificato.',
+            'ccb_technical_impact': 'Nessuno.',
         }
         data.update(overrides)
         return data
 
-    def _simple_form_data(self, **overrides):
-        data = {
-            'title': 'ECN semplice form test',
-            'description': 'Descrizione',
-            'applicability_category': ChangeNotice.Applicability.GENERAL,
-            'applicability_detail': '',
-        }
-        data.update(overrides)
-        return data
+    def test_dossier_form_valid_without_applicability_but_submit_requires_it(self):
+        from ecn.forms import ChangeNoticeDossierForm
 
-    def test_regression_mixin_fields_are_injected_and_required_on_all_forms(self):
-        # Regressione TASK-036-2: i Field nel mixin devono essere in self.fields;
-        # se tornassero dichiarativi a livello di classe, Django li ignorerebbe.
-        from ecn.forms import ChangeNoticeEditForm, ChangeNoticeForm, SimpleEcnForm
+        form = ChangeNoticeDossierForm(data=self._valid_dossier_data(applicability_category=''))
+        self.assertTrue(form.is_valid(), form.errors)
+        with self.assertRaises(ValidationError) as cm:
+            form.validate_for_submit()
+        self.assertIn('applicability_category', cm.exception.message_dict)
 
-        cases = [
-            (ChangeNoticeForm, self._standard_form_data()),
-            (ChangeNoticeEditForm, self._standard_form_data()),
-            (SimpleEcnForm, self._simple_form_data()),
-        ]
-        for form_class, data in cases:
-            with self.subTest(form=form_class.__name__):
-                data.pop('applicability_category')
-                form = form_class(data=data)
-                self.assertIn('applicability_category', form.fields)
-                self.assertIn('applicability_detail', form.fields)
-                self.assertFalse(form.is_valid())
-                self.assertIn('applicability_category', form.errors)
+    def test_dossier_form_submit_requires_detail_for_limited(self):
+        from ecn.forms import ChangeNoticeDossierForm
 
-    def test_change_notice_form_validates_limited_detail(self):
-        from ecn.forms import ChangeNoticeForm
-
-        form = ChangeNoticeForm(data=self._standard_form_data(
+        form = ChangeNoticeDossierForm(data=self._valid_dossier_data(
             applicability_category=ChangeNotice.Applicability.LIMITED,
             applicability_detail='',
         ))
-        self.assertFalse(form.is_valid())
-        self.assertIn('applicability_detail', form.errors)
+        self.assertTrue(form.is_valid(), form.errors)
+        with self.assertRaises(ValidationError) as cm:
+            form.validate_for_submit()
+        self.assertIn('applicability_detail', cm.exception.message_dict)
 
-        form = ChangeNoticeForm(data=self._standard_form_data(
+    def test_dossier_form_submit_passes_with_valid_limited_detail(self):
+        from ecn.forms import ChangeNoticeDossierForm
+
+        form = ChangeNoticeDossierForm(data=self._valid_dossier_data(
             applicability_category=ChangeNotice.Applicability.LIMITED,
-            applicability_detail='  Progetto ABC  ',
+            applicability_detail='Solo commessa ABC-2026, non le altre linee.',
         ))
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data['applicability_detail'], 'Progetto ABC')
-
-    def test_simple_and_edit_forms_validate_limited_detail(self):
-        from ecn.forms import ChangeNoticeEditForm, SimpleEcnForm
-
-        cases = [
-            (SimpleEcnForm, self._simple_form_data),
-            (ChangeNoticeEditForm, self._standard_form_data),
-        ]
-        for form_class, factory in cases:
-            with self.subTest(form=form_class.__name__, valid=False):
-                form = form_class(data=factory(
-                    applicability_category=ChangeNotice.Applicability.LIMITED,
-                    applicability_detail='',
-                ))
-                self.assertFalse(form.is_valid())
-                self.assertIn('applicability_detail', form.errors)
-            with self.subTest(form=form_class.__name__, valid=True):
-                form = form_class(data=factory(
-                    applicability_category=ChangeNotice.Applicability.LIMITED,
-                    applicability_detail='Commessa 12345',
-                ))
-                self.assertTrue(form.is_valid(), form.errors)
+        form.validate_for_submit()  # non deve sollevare
 
 
 # ===========================================================================
@@ -969,7 +938,7 @@ class ECNServiceCreateTests(TestCase):
             document=self.document,
             proposed_by=self.user,
             title='Test ECN',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
         self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
 
@@ -978,7 +947,7 @@ class ECNServiceCreateTests(TestCase):
             document=self.document,
             proposed_by=self.user,
             title='Test ECN auto-code',
-            motivation=ChangeNotice.Motivation.OTHER, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.OTHER,
         )
         self.assertTrue(ecn.code.startswith('ECN-'))
         self.assertEqual(len(ecn.code), 8)  # ECN-NNNN
@@ -989,7 +958,7 @@ class ECNServiceCreateTests(TestCase):
             proposed_by=self.user,
             title='Test code esplicito',
             motivation=ChangeNotice.Motivation.CUSTOMER,
-            code='ECN-CUSTOM', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-CUSTOM',
         )
         self.assertEqual(ecn.code, 'ECN-CUSTOM')
 
@@ -998,7 +967,7 @@ class ECNServiceCreateTests(TestCase):
             document=self.document,
             proposed_by=self.user,
             title='Test version snapshot',
-            motivation=ChangeNotice.Motivation.REGULATORY, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.REGULATORY,
         )
         self.assertEqual(ecn.document_version.pk, self.version.pk)
 
@@ -1016,7 +985,7 @@ class ECNServiceCreateTests(TestCase):
             proposed_by=self.user,
             title='Test explicit version',
             motivation=ChangeNotice.Motivation.DESIGN,
-            document_version=other_version, applicability_category=ChangeNotice.Applicability.GENERAL,
+            document_version=other_version,
         )
         self.assertEqual(ecn.document_version.pk, other_version.pk)
 
@@ -1028,7 +997,7 @@ class ECNServiceCreateTests(TestCase):
                 document=doc_no_version,
                 proposed_by=self.user,
                 title='Fallisce',
-                motivation=ChangeNotice.Motivation.OTHER, applicability_category=ChangeNotice.Applicability.GENERAL,
+                motivation=ChangeNotice.Motivation.OTHER,
             )
 
     def test_create_created_by_defaults_to_proposed_by(self):
@@ -1036,7 +1005,7 @@ class ECNServiceCreateTests(TestCase):
             document=self.document,
             proposed_by=self.user,
             title='Test created_by',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
         self.assertEqual(ecn.created_by.pk, self.user.pk)
         self.assertEqual(ecn.proposed_by.pk, self.user.pk)
@@ -1054,7 +1023,7 @@ class ECNServiceCreateTests(TestCase):
             proposed_by=self.user,
             title='ECN con progetto',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            project=project, applicability_category=ChangeNotice.Applicability.GENERAL,
+            project=project,
         )
         self.assertEqual(ecn.project.pk, project.pk)
 
@@ -1064,7 +1033,7 @@ class ECNServiceCreateTests(TestCase):
             document=self.document,
             proposed_by=self.user,
             title='Test audit create',
-            motivation=ChangeNotice.Motivation.OTHER, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.OTHER,
         )
         log = AuditLog.objects.filter(action='ECN_CREATED').first()
         self.assertIsNotNone(log)
@@ -1080,7 +1049,7 @@ class ECNServiceCreateTests(TestCase):
             document=self.document,
             proposed_by=self.user,
             title='Test document_id query',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
         count = AuditLog.objects.filter(changes__document_id=self.document.pk).count()
         self.assertEqual(count, 1)
@@ -1107,7 +1076,7 @@ class ECNServiceApproverTests(TestCase):
             proposed_by=self.manager,
             title='ECN approver test',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code=code, applicability_category=ChangeNotice.Applicability.GENERAL,
+            code=code,
         )
 
     def test_set_approvers_creates_records(self):
@@ -1257,7 +1226,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN workflow test',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code=code, applicability_category=ChangeNotice.Applicability.GENERAL,
+            code=code,
         )
         # ECN-E: assegna almeno un approvatore (ccb) prima di submit
         set_change_notice_approvers(ecn, [self.ccb])
@@ -1318,7 +1287,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN no approvers',
             motivation=ChangeNotice.Motivation.OTHER,
-            code='ECN-WF-SUBM-NOAPPR', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-SUBM-NOAPPR',
         )
         # Nessun approvatore assegnato
         with self.assertRaises(ValidationError):
@@ -1399,7 +1368,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN manager approver',
             motivation=ChangeNotice.Motivation.OTHER,
-            code='ECN-WF-APR-MGR2', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-APR-MGR2',
         )
         set_change_notice_approvers(ecn, [self.manager])
         submit_change_notice(ecn, self.manager)
@@ -1435,7 +1404,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN ANY policy',
             motivation=ChangeNotice.Motivation.OTHER,
-            code='ECN-WF-ANY', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-ANY',
         )
         ccb2 = _make_user_in_groups('wf_ccb2', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='any')
@@ -1454,7 +1423,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN ALL policy',
             motivation=ChangeNotice.Motivation.OTHER,
-            code='ECN-WF-ALL', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-ALL',
         )
         ccb2 = _make_user_in_groups('wf_ccb2b', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='all')
@@ -1477,7 +1446,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN SEQUENTIAL policy',
             motivation=ChangeNotice.Motivation.OTHER,
-            code='ECN-WF-SEQ', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-SEQ',
         )
         ccb2 = _make_user_in_groups('wf_ccb2c', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='sequential')
@@ -1493,7 +1462,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN SEQ full',
             motivation=ChangeNotice.Motivation.OTHER,
-            code='ECN-WF-SEQ-FULL', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-SEQ-FULL',
         )
         ccb2 = _make_user_in_groups('wf_ccb2d', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='sequential')
@@ -1650,7 +1619,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='Full workflow ECN',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code='ECN-WF-FULL', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-FULL',
         )
         set_change_notice_approvers(ecn, [self.ccb])
         self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
@@ -1675,7 +1644,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN rifiutato',
             motivation=ChangeNotice.Motivation.CUSTOMER,
-            code='ECN-WF-REJ-FULL', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-REJ-FULL',
         )
         set_change_notice_approvers(ecn, [self.ccb])
         submit_change_notice(ecn, self.manager)
@@ -1696,7 +1665,7 @@ class ECNServiceWorkflowTests(TestCase):
             proposed_by=self.proposer,
             title='ECN audit query test',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code='ECN-WF-AUD-ALL', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-WF-AUD-ALL',
         )
         set_change_notice_approvers(ecn, [self.ccb])
         submit_change_notice(ecn, self.manager)
@@ -1726,7 +1695,7 @@ class GetCloseReadinessTests(TestCase):
         ecn = create_change_notice(
             document=self.document, proposed_by=self.proposer,
             title='ECN readiness test', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code=code, send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            code=code, send_notifications=False,
         )
         ecn.status = ChangeNotice.Status.APPROVED
         ecn.save(update_fields=['status'])
@@ -1937,8 +1906,6 @@ class ECNViewTests(TestCase):
             'motivation_detail': '',
             'description': '',
             'commessa': '',
-            'applicability_category': ChangeNotice.Applicability.GENERAL,
-            'applicability_detail': '',
         })
         self.assertEqual(r.status_code, 302)
         new_ecn = ChangeNotice.objects.filter(title='Variante UI test').first()
@@ -2506,7 +2473,7 @@ class ECNEditPermissionTests(TestCase):
             motivation=ChangeNotice.Motivation.CUSTOMER,
             description='Nuova descrizione',
             motivation_detail='Dettaglio motivazione',
-            commessa='C-2025-99', applicability_category=ChangeNotice.Applicability.GENERAL,
+            commessa='C-2025-99',
         )
         self.assertEqual(updated.title, 'Nuovo titolo')
         self.assertEqual(updated.motivation, ChangeNotice.Motivation.CUSTOMER)
@@ -2519,14 +2486,14 @@ class ECNEditPermissionTests(TestCase):
         with self.assertRaises(ValidationError):
             self.update_change_notice(
                 self.ecn, actor=self.manager,
-                title='X', motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+                title='X', motivation=ChangeNotice.Motivation.IMPROVEMENT,
             )
 
     def test_update_change_notice_writes_audit(self):
         self.update_change_notice(
             self.ecn, actor=self.manager,
             title='Audit test',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
         self.assertTrue(AuditLog.objects.filter(action='ECN_UPDATED').exists())
 
@@ -2641,8 +2608,6 @@ class ECNEditViewTests(TestCase):
             'motivation_detail': '',
             'description': 'Nuova desc',
             'commessa': '',
-            'applicability_category': ChangeNotice.Applicability.GENERAL,
-            'applicability_detail': '',
         })
         self.assertEqual(r.status_code, 302)
         self.ecn.refresh_from_db()
@@ -3047,7 +3012,7 @@ def _make_draft_ecn_with_ccb(doc, version, proposer, manager, ccb_users,
     ecn = create_change_notice(
         document=doc, proposed_by=proposer,
         title='ECN STEP I', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-        code=code, applicability_category=ChangeNotice.Applicability.GENERAL,
+        code=code,
     )
     configure_ccb(ecn, actor=manager, users=ccb_users, policy=policy,
                   coordinator=manager)
@@ -3071,7 +3036,7 @@ class CCBConfigureTests(TestCase):
         self.ecn = create_change_notice(
             document=self.document, proposed_by=self.qm,
             title='Test config', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code='ECN-CI-001', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-CI-001',
         )
 
     def _configure(self, users, policy='all', coordinator=None):
@@ -3195,7 +3160,7 @@ class CCBDossierTests(TestCase):
         self.ecn = create_change_notice(
             document=self.document, proposed_by=self.qm,
             title='ECN dossier', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code='ECN-DOS-001', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-DOS-001',
         )
         from ecn.services import configure_ccb
         configure_ccb(self.ecn, actor=self.qm, users=[self.ccb1],
@@ -3205,6 +3170,7 @@ class CCBDossierTests(TestCase):
         from ecn.services import update_ccb_dossier
         actor = actor or self.qm
         defaults = {
+            'applicability_category': ChangeNotice.Applicability.GENERAL,
             'ccb_class': 'class1',
             'ccb_requirements': 'Conforme.',
             'ccb_technical_impact': 'Minore.',
@@ -3250,6 +3216,7 @@ class CCBDossierTests(TestCase):
         from ecn.services import update_ccb_dossier, submit_change_notice
         update_ccb_dossier(
             self.ecn, actor=self.qm,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
             ccb_requirements='Conforme.', ccb_technical_impact='Minore.',
         )
         with self.assertRaises(ValidationError):
@@ -3303,13 +3270,14 @@ class CCBVoteTests(TestCase):
         self.ecn = create_change_notice(
             document=self.document, proposed_by=self.qm,
             title='ECN vote', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code='ECN-VT-001', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-VT-001',
         )
         from ecn.services import configure_ccb, update_ccb_dossier, submit_change_notice
         configure_ccb(self.ecn, actor=self.qm, users=[self.ccb1, self.ccb2],
                       policy='all', coordinator=self.qm)
         update_ccb_dossier(
             self.ecn, actor=self.qm,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
             ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='Minore',
         )
         submit_change_notice(self.ecn, self.qm)
@@ -3410,12 +3378,13 @@ class CCBPolicyTests(TestCase):
         ecn = create_change_notice(
             document=self.document, proposed_by=self.qm,
             title='ECN policy', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code=code, applicability_category=ChangeNotice.Applicability.GENERAL,
+            code=code,
         )
         configure_ccb(ecn, actor=self.qm, users=[self.ccb1, self.ccb2],
                       policy=policy, coordinator=self.qm)
         update_ccb_dossier(
             ecn, actor=self.qm,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
             ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
         )
         submit_change_notice(ecn, self.qm)
@@ -3505,11 +3474,13 @@ class CCBEmailNotificationTests(TestCase):
         ecn = create_change_notice(
             document=self.document, proposed_by=self.qm,
             title='ECN email', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code=code, applicability_category=ChangeNotice.Applicability.GENERAL,
+            code=code,
         )
         configure_ccb(ecn, actor=self.qm, users=[self.ccb1, self.ccb2],
                       policy=policy, coordinator=self.qm)
-        update_ccb_dossier(ecn, actor=self.qm, ccb_class='class1',
+        update_ccb_dossier(ecn, actor=self.qm,
+                           applicability_category=ChangeNotice.Applicability.GENERAL,
+                           ccb_class='class1',
                            ccb_requirements='OK', ccb_technical_impact='OK')
         submit_change_notice(ecn, self.qm)
         ecn.refresh_from_db()
@@ -3580,7 +3551,7 @@ class CCBAuditTests(TestCase):
         self.ecn = create_change_notice(
             document=self.document, proposed_by=self.qm,
             title='ECN audit', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            code='ECN-AUD-SI-001', applicability_category=ChangeNotice.Applicability.GENERAL,
+            code='ECN-AUD-SI-001',
         )
 
     # 1. CCB_CONFIGURED
@@ -3605,7 +3576,9 @@ class CCBAuditTests(TestCase):
     def test_ecn_submitted_auditlog(self):
         from ecn.services import configure_ccb, update_ccb_dossier, submit_change_notice
         configure_ccb(self.ecn, actor=self.qm, users=[self.ccb1], coordinator=self.qm)
-        update_ccb_dossier(self.ecn, actor=self.qm, ccb_class='class1',
+        update_ccb_dossier(self.ecn, actor=self.qm,
+                           applicability_category=ChangeNotice.Applicability.GENERAL,
+                           ccb_class='class1',
                            ccb_requirements='OK', ccb_technical_impact='OK')
         AuditLog.objects.all().delete()
         submit_change_notice(self.ecn, self.qm)
@@ -3616,7 +3589,9 @@ class CCBAuditTests(TestCase):
     def test_ecn_approved_auditlog(self):
         from ecn.services import configure_ccb, update_ccb_dossier, submit_change_notice
         configure_ccb(self.ecn, actor=self.qm, users=[self.ccb1], coordinator=self.qm)
-        update_ccb_dossier(self.ecn, actor=self.qm, ccb_class='class1',
+        update_ccb_dossier(self.ecn, actor=self.qm,
+                           applicability_category=ChangeNotice.Applicability.GENERAL,
+                           ccb_class='class1',
                            ccb_requirements='OK', ccb_technical_impact='OK')
         submit_change_notice(self.ecn, self.qm)
         AuditLog.objects.all().delete()
@@ -3628,7 +3603,9 @@ class CCBAuditTests(TestCase):
     def test_ecn_rejected_auditlog(self):
         from ecn.services import configure_ccb, update_ccb_dossier, submit_change_notice
         configure_ccb(self.ecn, actor=self.qm, users=[self.ccb1], coordinator=self.qm)
-        update_ccb_dossier(self.ecn, actor=self.qm, ccb_class='class1',
+        update_ccb_dossier(self.ecn, actor=self.qm,
+                           applicability_category=ChangeNotice.Applicability.GENERAL,
+                           ccb_class='class1',
                            ccb_requirements='OK', ccb_technical_impact='OK')
         submit_change_notice(self.ecn, self.qm)
         AuditLog.objects.all().delete()
@@ -3774,56 +3751,9 @@ class ApplicabilityServiceLifecycleTests(TestCase):
         self.document.current_version = self.version
         self.document.save(update_fields=['current_version'])
 
-    def test_create_change_notice_rejects_invalid_applicability_without_writing(self):
-        invalid_cases = [
-            (ChangeNotice.Applicability.LIMITED, ''),
-            ('bogus', ''),
-        ]
-        for idx, (category, detail) in enumerate(invalid_cases, start=1):
-            with self.subTest(category=category):
-                before = ChangeNotice.objects.count()
-                with self.assertRaises(ValidationError):
-                    create_change_notice(
-                        document=self.document,
-                        proposed_by=self.manager,
-                        title=f'Invalid applicability {idx}',
-                        motivation=ChangeNotice.Motivation.IMPROVEMENT,
-                        applicability_category=category,
-                        applicability_detail=detail,
-                        send_notifications=False,
-                    )
-                self.assertEqual(ChangeNotice.objects.count(), before)
+    def test_update_ccb_dossier_rejects_non_draft_non_preparation_and_keeps_applicability_unchanged(self):
+        from ecn.services import update_ccb_dossier
 
-    def test_update_change_notice_persists_applicability_and_writes_audit_old_new_values(self):
-        ecn = _make_ecn(self.document, self.version, self.manager, code='APPL-UPD-001')
-        AuditLog.objects.all().delete()
-
-        update_change_notice(
-            ecn,
-            actor=self.manager,
-            title='Titolo aggiornato',
-            motivation=ChangeNotice.Motivation.CUSTOMER,
-            applicability_category=ChangeNotice.Applicability.LIMITED,
-            applicability_detail='Solo commessa ABC',
-            description='Descrizione aggiornata',
-        )
-
-        ecn.refresh_from_db()
-        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
-        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
-        log = AuditLog.objects.get(action='ECN_UPDATED')
-        self.assertEqual(
-            log.changes['old_values']['applicability_category'],
-            ChangeNotice.Applicability.GENERAL,
-        )
-        self.assertEqual(log.changes['old_values']['applicability_detail'], '')
-        self.assertEqual(
-            log.changes['new_values']['applicability_category'],
-            ChangeNotice.Applicability.LIMITED,
-        )
-        self.assertEqual(log.changes['new_values']['applicability_detail'], 'Solo commessa ABC')
-
-    def test_update_change_notice_rejects_non_draft_states_and_keeps_applicability_unchanged(self):
         states = [
             ChangeNotice.Status.UNDER_REVIEW,
             ChangeNotice.Status.APPROVED,
@@ -3841,11 +3771,9 @@ class ApplicabilityServiceLifecycleTests(TestCase):
                 ecn.save(update_fields=['status'])
 
                 with self.assertRaises(ValidationError):
-                    update_change_notice(
+                    update_ccb_dossier(
                         ecn,
                         actor=self.manager,
-                        title='Tentativo modifica',
-                        motivation=ChangeNotice.Motivation.CUSTOMER,
                         applicability_category=ChangeNotice.Applicability.LIMITED,
                         applicability_detail='Solo commessa ABC',
                     )
@@ -3854,12 +3782,17 @@ class ApplicabilityServiceLifecycleTests(TestCase):
                 self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.FUTURE)
                 self.assertEqual(ecn.applicability_detail, '')
 
-    def test_submit_change_notice_revalidates_historical_missing_applicability(self):
+    def test_submit_change_notice_revalidates_missing_applicability_from_ccb_preparation(self):
+        # Il controllo si applica solo sul percorso moderno (CCB_PREPARATION),
+        # non sul percorso legacy DRAFT→UNDER_REVIEW (stessa eccezione già
+        # in vigore per ccb_class/ccb_requirements/ccb_technical_impact).
         ecn = _make_ecn(
             self.document, self.version, self.manager,
             code='APPL-SUB-HIST',
             applicability_category=None,
         )
+        ecn.status = ChangeNotice.Status.CCB_PREPARATION
+        ecn.save(update_fields=['status'])
         ChangeNoticeApprover.objects.create(change_notice=ecn, user=self.ccb, order=1)
 
         with self.assertRaises(ValidationError) as cm:
@@ -3867,19 +3800,28 @@ class ApplicabilityServiceLifecycleTests(TestCase):
 
         self.assertIn('applicability_category', cm.exception.error_dict)
         ecn.refresh_from_db()
-        self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
+        self.assertEqual(ecn.status, ChangeNotice.Status.CCB_PREPARATION)
 
     def test_standard_approval_audit_freezes_applicability_metadata(self):
+        from ecn.services import configure_ccb, update_ccb_dossier
+
         ecn = create_change_notice(
             document=self.document,
             proposed_by=self.manager,
             title='Future applicability',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            applicability_category=ChangeNotice.Applicability.FUTURE,
             send_notifications=False,
         )
-        set_change_notice_approvers(
-            ecn, [self.ccb], policy=ChangeNotice.CCBPolicy.ANY,
+        configure_ccb(
+            ecn, actor=self.manager, users=[self.ccb],
+            policy=ChangeNotice.CCBPolicy.ANY, send_notifications=False,
+        )
+        update_ccb_dossier(
+            ecn, actor=self.manager,
+            applicability_category=ChangeNotice.Applicability.FUTURE,
+            ccb_class=ChangeNotice.CCBClass.CLASS1,
+            ccb_requirements='Verificato.',
+            ccb_technical_impact='Nessuno.',
         )
         submit_change_notice(ecn, self.manager, send_notifications=False)
         AuditLog.objects.all().delete()
@@ -3975,33 +3917,27 @@ class ApplicabilityViewTests(TestCase):
         data.update(overrides)
         return data
 
-    def test_ecn_create_get_renders_three_applicability_options(self):
+    def test_ecn_create_post_without_applicability_creates_ecn_normally(self):
+        # TASK-037: la creazione ECN standard non richiede più applicabilità
+        # (è compilata dopo, dalla CCB, nel dossier istruttorio).
         self.client.force_login(self.manager)
-        response = self.client.get(f'/ecn/new/?document={self.document.pk}')
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'value="general"')
-        self.assertContains(response, 'value="future"')
-        self.assertContains(response, 'value="limited"')
+        before = ChangeNotice.objects.count()
+        response = self.client.post(f'/ecn/new/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Variante senza applicabilità in creazione',
+            'motivation': ChangeNotice.Motivation.IMPROVEMENT,
+            'motivation_detail': '',
+            'description': '',
+            'commessa': '',
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(ChangeNotice.objects.count(), before + 1)
+        new_ecn = ChangeNotice.objects.get(title='Variante senza applicabilità in creazione')
+        self.assertIsNone(new_ecn.applicability_category)
 
-    def test_ecn_create_post_missing_or_invalid_limited_applicability_rerenders_without_create(self):
-        self.client.force_login(self.manager)
-        cases = [
-            self._create_payload(applicability_category=None),
-            self._create_payload(
-                applicability_category=ChangeNotice.Applicability.LIMITED,
-                applicability_detail='',
-            ),
-        ]
-        for payload in cases:
-            with self.subTest(payload=payload):
-                payload = {k: v for k, v in payload.items() if v is not None}
-                before = ChangeNotice.objects.count()
-                response = self.client.post(f'/ecn/new/?document={self.document.pk}', payload)
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(ChangeNotice.objects.count(), before)
-                self.assertContains(response, 'applicability_category')
-
-    def test_ecn_create_simple_post_missing_applicability_rerenders_without_create(self):
+    def test_ecn_create_simple_post_without_applicability_creates_and_approves(self):
+        # TASK-037: l'ECN semplice non ha mai applicabilità (nessuna CCB si
+        # riunisce in quel flusso).
         self.client.force_login(self.manager)
         before = ChangeNotice.objects.count()
         response = self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
@@ -4009,9 +3945,11 @@ class ApplicabilityViewTests(TestCase):
             'title': 'Semplice senza applicabilità',
             'description': '',
         })
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(ChangeNotice.objects.count(), before)
-        self.assertContains(response, 'applicability_category')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(ChangeNotice.objects.count(), before + 1)
+        new_ecn = ChangeNotice.objects.get(title='Semplice senza applicabilità')
+        self.assertEqual(new_ecn.status, ChangeNotice.Status.APPROVED)
+        self.assertIsNone(new_ecn.applicability_category)
 
     def test_ecn_list_renders_badge_classes_for_all_categories(self):
         for category in ChangeNotice.Applicability:
@@ -4061,7 +3999,7 @@ class ApplicabilityViewTests(TestCase):
         self.client.force_login(self.manager)
         response = self.client.get(f'/ecn/{historical.pk}/')
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Applicabilità non registrata')
+        self.assertContains(response, 'Applicabilità non specificata')
 
     def test_applicability_field_does_not_bypass_existing_permissions(self):
         ecn = _make_ecn(self.document, self.version, self.manager, code='APPL-PERM-001')
@@ -4096,77 +4034,32 @@ class SimpleEcnServiceTests(TestCase):
         from ecn.services import create_simple_ecn
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.SIMPLE)
 
-    def test_rejects_invalid_applicability_without_writing(self):
-        from ecn.services import create_simple_ecn
-
-        invalid_cases = [
-            (ChangeNotice.Applicability.LIMITED, ''),
-            (None, ''),
-        ]
-        for category, detail in invalid_cases:
-            with self.subTest(category=category):
-                before = ChangeNotice.objects.count()
-                with self.assertRaises(ValidationError):
-                    create_simple_ecn(
-                        document=self.document,
-                        proposed_by=self.author,
-                        title='Revisione rapida invalida',
-                        applicability_category=category,
-                        applicability_detail=detail,
-                        send_notifications=False,
-                    )
-                self.assertEqual(ChangeNotice.objects.count(), before)
-
-    def test_persists_valid_applicability_on_autoapproved_ecn(self):
+    def test_simple_ecn_never_has_applicability(self):
+        # TASK-037: l'ECN semplice non ha mai applicabilità — nessuna CCB
+        # si riunisce mai in quel flusso per deciderla.
         from ecn.services import create_simple_ecn
 
         ecn = create_simple_ecn(
             document=self.document,
             proposed_by=self.author,
             title='Revisione rapida limitata',
-            applicability_category=ChangeNotice.Applicability.LIMITED,
-            applicability_detail='Solo commessa ABC',
             send_notifications=False,
         )
 
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
-        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
-        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
-
-    def test_autoapproved_simple_ecn_applicability_is_immediately_immutable(self):
-        from ecn.services import create_simple_ecn
-
-        ecn = create_simple_ecn(
-            document=self.document,
-            proposed_by=self.author,
-            title='Revisione rapida futura',
-            applicability_category=ChangeNotice.Applicability.FUTURE,
-            send_notifications=False,
-        )
-
-        with self.assertRaises(ValidationError):
-            update_change_notice(
-                ecn,
-                actor=self.author,
-                title='Tentativo modifica',
-                motivation=ChangeNotice.Motivation.IMPROVEMENT,
-                applicability_category=ChangeNotice.Applicability.LIMITED,
-                applicability_detail='Solo commessa ABC',
-            )
-
-        ecn.refresh_from_db()
-        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.FUTURE)
+        self.assertIsNone(ecn.applicability_category)
+        self.assertEqual(ecn.applicability_detail, '')
 
     def test_code_matches_simple_convention(self):
         from datetime import date
         from ecn.services import create_simple_ecn
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         year = date.today().year
         self.assertEqual(ecn.code, f'ECN-S-{year}-0001')
@@ -4178,16 +4071,16 @@ class SimpleEcnServiceTests(TestCase):
         doc2.save(update_fields=['current_version'])
 
         ecn1 = create_simple_ecn(document=self.document, proposed_by=self.author,
-                                 title='Prima', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL)
+                                 title='Prima', send_notifications=False)
         ecn2 = create_simple_ecn(document=doc2, proposed_by=self.author,
-                                 title='Seconda', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL)
+                                 title='Seconda', send_notifications=False)
         self.assertNotEqual(ecn1.code, ecn2.code)
 
     def test_auto_approved_no_ccb(self):
         from ecn.services import create_simple_ecn
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
         self.assertIsNotNone(ecn.ccb_reviewed_at)
@@ -4199,7 +4092,7 @@ class SimpleEcnServiceTests(TestCase):
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
             title='Revisione rapida', description='Motivo demo',
-            send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            send_notifications=False,
         )
         self.assertEqual(ecn.title, 'Revisione rapida')
         self.assertEqual(ecn.description, 'Motivo demo')
@@ -4217,13 +4110,13 @@ class SimpleEcnServiceTests(TestCase):
         )
         with self.assertRaises(ValidationError):
             create_simple_ecn(document=bare_doc, proposed_by=self.author,
-                              title='x', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL)
+                              title='x', send_notifications=False)
 
     def test_writes_audit_trail(self):
         from ecn.services import create_simple_ecn
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         actions = list(
             AuditLog.objects.filter(changes__document_id=self.document.pk)
@@ -4240,7 +4133,7 @@ class SimpleEcnServiceTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn,
@@ -4291,8 +4184,6 @@ class AutoCloseEcnTests(TestCase):
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
             title='Revisione rapida', send_notifications=False,
-            applicability_category=ChangeNotice.Applicability.LIMITED,
-            applicability_detail='Solo commessa ABC',
         )
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
@@ -4303,8 +4194,7 @@ class AutoCloseEcnTests(TestCase):
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.CLOSED)
         self.assertEqual(ecn.closed_by_id, self.approver.pk)
-        self.assertEqual(ecn.applicability_category, ChangeNotice.Applicability.LIMITED)
-        self.assertEqual(ecn.applicability_detail, 'Solo commessa ABC')
+        self.assertIsNone(ecn.applicability_category)
 
     def test_standard_ecn_auto_closes_when_execution_approved(self):
         from documents.services import create_new_revision
@@ -4313,7 +4203,7 @@ class AutoCloseEcnTests(TestCase):
         ecn = create_change_notice(
             document=self.document, proposed_by=self.author,
             title='ECN standard', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            send_notifications=False,
         )
         ecn.status = ChangeNotice.Status.APPROVED
         ecn.save(update_fields=['status'])
@@ -4334,7 +4224,7 @@ class AutoCloseEcnTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
@@ -4366,7 +4256,7 @@ class AutoCloseEcnTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
@@ -4386,7 +4276,7 @@ class AutoCloseEcnTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
@@ -4405,7 +4295,7 @@ class AutoCloseEcnTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         # Nessun ecn= collegato a questa seconda revisione.
         unrelated_version = create_new_revision(
@@ -4427,7 +4317,7 @@ class AutoCloseEcnTests(TestCase):
 
         ecn = create_simple_ecn(
             document=self.document, proposed_by=self.author,
-            title='Revisione rapida', send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            title='Revisione rapida', send_notifications=False,
         )
         new_version = create_new_revision(
             self.document, self.author, '01', 1, ecn=ecn, change_summary='Via ECN semplice',
@@ -4498,7 +4388,6 @@ class SimpleEcnViewTests(TestCase):
             'document': self.document.pk,
             'title': 'Revisione rapida demo',
             'description': 'Motivo demo',
-            'applicability_category': ChangeNotice.Applicability.GENERAL,
         })
         self.assertRedirects(r, f'/documents/{self.document.pk}/')
         ecn = ChangeNotice.objects.get(document=self.document)
@@ -4510,7 +4399,6 @@ class SimpleEcnViewTests(TestCase):
         r = self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
             'document': self.document.pk,
             'title': 'Revisione rapida demo superuser',
-            'applicability_category': ChangeNotice.Applicability.GENERAL,
         })
         self.assertRedirects(r, f'/documents/{self.document.pk}/')
 
@@ -4535,7 +4423,7 @@ class SimpleEcnStandardFlowUnaffectedTests(TestCase):
         ecn = create_change_notice(
             document=self.document, proposed_by=self.author,
             title='ECN standard', motivation=ChangeNotice.Motivation.IMPROVEMENT,
-            send_notifications=False, applicability_category=ChangeNotice.Applicability.GENERAL,
+            send_notifications=False,
         )
         self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.STANDARD)
         self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)

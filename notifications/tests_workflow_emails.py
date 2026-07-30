@@ -249,7 +249,7 @@ class EcnCreatedEmailTest(TestCase):
             document=self.doc,
             proposed_by=self.proposer,
             title='Test ECN creation',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
 
         recipients = [m.to[0] for m in mail.outbox]
@@ -263,7 +263,7 @@ class EcnCreatedEmailTest(TestCase):
             document=self.doc,
             proposed_by=self.proposer,
             title='Test ECN QM',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
 
         recipients = [m.to[0] for m in mail.outbox]
@@ -277,7 +277,7 @@ class EcnCreatedEmailTest(TestCase):
             document=self.doc,
             proposed_by=self.proposer,
             title='Test ECN no self',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
 
         recipients = [m.to[0] for m in mail.outbox]
@@ -292,7 +292,7 @@ class EcnCreatedEmailTest(TestCase):
             document=doc,
             proposed_by=self.proposer,
             title='Test ECN owner eq proposer',
-            motivation=ChangeNotice.Motivation.IMPROVEMENT, applicability_category=ChangeNotice.Applicability.GENERAL,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
         )
 
         recipients = [m.to[0] for m in mail.outbox]

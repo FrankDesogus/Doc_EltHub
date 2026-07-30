@@ -30,7 +30,6 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 
 | ID | Titolo | Priorità | Note |
 | -- | ------ | -------- | ---- |
-| TASK-037-2 | Applicabilità ECN — correzione strutturale (Fase 2: fix test suite) | Alta | Spec completa in Dettaglio task |
 
 ## Completati
 
@@ -76,6 +75,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-036-3 | Applicabilità ECN (Fase 3: template rimanenti + email) | c18eeb4 | 2026-07-29 |
 | TASK-036-4 | Applicabilità ECN (Fase 4: test dedicati) | b9a5797 | 2026-07-29 |
 | TASK-037 | Applicabilità ECN — correzione strutturale: decisa dalla CCB nel dossier, non dal proponente (Fase 1: modello, service, form, view, template, dati demo) | — | 2026-07-30 |
+| TASK-037-2 | Applicabilità ECN — correzione strutturale (Fase 2: fix suite di test) | — | 2026-07-30 |
 
 ---
 
@@ -3476,7 +3476,54 @@ push.
 
 ---
 
-### TASK-037-2 — Applicabilità ECN: correzione strutturale (Fase 2: fix suite di test) — Codex
+### TASK-037-2 — Applicabilità ECN: correzione strutturale (Fase 2: fix suite di test) — Claude Code
+
+#### Nota — pianificata per Codex, eseguita direttamente da Claude Code
+
+L'operatore ha chiesto esplicitamente di eseguire questa fase direttamente,
+senza aspettare Codex. Analisi e correzioni applicate esattamente secondo
+la spec sotto (già scritta in precedenza, riusata come piano di lavoro).
+
+#### Esito (2026-07-30)
+
+Parte A (fix meccanico): rimossi `applicability_category=`/
+`applicability_detail=` da tutte le chiamate a `create_change_notice`/
+`create_simple_ecn`/`update_change_notice` in `ecn/tests.py`,
+`documents/tests.py`, `approvals/tests.py`,
+`notifications/tests_workflow_emails.py` (script paren-aware per i casi
+appesi a fine riga, generato per questa sessione). Lasciati invariati gli
+usi diretti di `_make_ecn`/`ChangeNotice.objects.create(...)` (bypassano
+il service, restano validi).
+
+Parte B (test concettualmente sbagliati): applicati tutti i 19 punti della
+spec in `ecn/tests.py` — rimossi i test che verificavano l'applicabilità
+nelle form di creazione/modifica ECN (non esiste più lì), riscritti quelli
+sul ciclo di vita service (`update_ccb_dossier` al posto di
+`create_change_notice`/`update_change_notice` per applicabilità),
+aggiunti 3 nuovi test per `ChangeNoticeDossierForm`
+(`ApplicabilityFormTests`), corretto il testo atteso da "Applicabilità non
+registrata — ECN storico" a "Applicabilità non specificata" (cambiato in
+TASK-037 Fase 1) in 2 punti.
+
+**Scoperta durante l'esecuzione, non prevista dalla spec originale**: oltre
+alle chiamate dirette a `create_change_notice`/`create_simple_ecn`/
+`update_change_notice`, **12 chiamate preesistenti a `update_ccb_dossier`**
+(sparse in `CCBDossierTests`, `CCBVoteTests`, `CCBPolicyTests`,
+`CCBEmailNotificationTests`, `CCBAuditTests` — nessuna delle quali ha a che
+fare con l'applicabilità, testano invito/voto/policy/email/audit CCB)
+proseguivano con `submit_change_notice` su un ECN in `CCB_PREPARATION`,
+innescando il nuovo controllo di TASK-037 senza mai aver fornito
+applicabilità. Individuate una per una (non un fix cieco) e corrette
+aggiungendo `applicability_category=ChangeNotice.Applicability.GENERAL`
+alle chiamate `update_ccb_dossier` esistenti — stesso principio già
+applicato da TASK-036-2 alle chiamate `create_change_notice`, ma qui il
+punto di innesco è la transizione di stato del dossier, non la creazione.
+
+**Verifica finale**: `python manage.py check` pulito.
+`python manage.py test ecn --keepdb -v1` → **373/373 PASS**.
+`python manage.py test documents approvals notifications projects --keepdb -v1`
+→ **1054/1054 PASS**. Nessuna modifica a file applicativi, solo ai 4 file
+di test elencati nella Parte A.
 
 #### Obiettivo
 
