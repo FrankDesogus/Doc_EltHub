@@ -7,8 +7,10 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from auditlog.historical_forms import should_send_notifications
+from auditlog.locking import acquire_lock, lock_holder, release_lock
 from auditlog.models import HistoricalRecord
 from auditlog.permissions import can_use_sanatoria
 
@@ -513,6 +515,17 @@ def ecn_ccb_dossier(request, ecn_id):
 
     dossier_editable = can_compile_dossier(request.user, ecn)
 
+    if dossier_editable:
+        holder = lock_holder(ecn)
+        if holder is not None and holder.pk != request.user.pk:
+            messages.warning(
+                request,
+                f"Dossier in lavorazione da {holder.get_full_name() or holder.username} "
+                f"dalle {timezone.localtime(ecn.locked_at).strftime('%d/%m/%Y %H:%M')}. Riprova più tardi.",
+            )
+            return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+        acquire_lock(ecn, request.user)
+
     if request.method == 'POST':
         if not dossier_editable:
             raise PermissionDenied
@@ -559,6 +572,7 @@ def ecn_ccb_dossier(request, ecn_id):
                             request.user,
                             send_notifications=should_send_notifications(sanatoria=form.is_sanatoria),
                         )
+                        release_lock(ecn, request.user)
                         messages.success(
                             request,
                             f'{ecn.code}: dossier inviato alla CCB. La votazione è avviata.',
@@ -659,6 +673,16 @@ def ecn_review(request, ecn_id):
         )
         return redirect('ecn:ecn_detail', ecn_id=ecn_id)
 
+    holder = lock_holder(ecn)
+    if holder is not None and holder.pk != request.user.pk:
+        messages.warning(
+            request,
+            f"Decisione CCB in lavorazione da {holder.get_full_name() or holder.username} "
+            f"dalle {timezone.localtime(ecn.locked_at).strftime('%d/%m/%Y %H:%M')}. Riprova più tardi.",
+        )
+        return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+    acquire_lock(ecn, request.user)
+
     if request.method == 'POST':
         form = ChangeNoticeReviewForm(request.POST, current_user=request.user)
         if form.is_valid():
@@ -701,6 +725,7 @@ def ecn_review(request, ecn_id):
                         recorded_by=request.user,
                     )
                     messages.success(request, f'{ecn.code} rifiutato dalla CCB.')
+                release_lock(ecn, request.user)
                 return redirect('ecn:ecn_detail', ecn_id=ecn_id)
             except (PermissionDenied, ValidationError) as exc:
                 if isinstance(exc, PermissionDenied):

@@ -43,6 +43,20 @@ class ApprovalRequest(models.Model):
     due_date = models.DateField(null=True, blank=True, verbose_name='Scadenza approvazione')
     notes = models.TextField(blank=True, verbose_name='Note')
     completed_at = models.DateTimeField(null=True, blank=True, verbose_name='Completato il')
+    locked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='locked_approval_requests',
+        verbose_name='In lavorazione da',
+        help_text='Utente che sta decidendo questa richiesta in questo momento (lock temporaneo).',
+    )
+    locked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='In lavorazione dal',
+    )
 
     class Meta:
         verbose_name = 'Richiesta di approvazione'

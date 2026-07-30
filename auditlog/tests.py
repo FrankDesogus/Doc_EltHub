@@ -593,3 +593,104 @@ class ShouldSendNotificationsTests(TestCase):
     def test_sanatoria_true_no_send(self):
         """sanatoria=True → nessuna notifica."""
         self.assertFalse(should_send_notifications(sanatoria=True))
+
+
+# ---------------------------------------------------------------------------
+# TASK-039: lock applicativo "un utente alla volta"
+# ---------------------------------------------------------------------------
+
+class LockingTests(TestCase):
+    """Test unitari su auditlog.locking."""
+
+    def setUp(self):
+        self.user1 = User.objects.create_user('lock_u1', password='pw')
+        self.user2 = User.objects.create_user('lock_u2', password='pw')
+        owner = User.objects.create_user('lock_owner', password='pw')
+        from documents.models import Document
+        from projects.models import ProjectFolder
+        folder = ProjectFolder.objects.create(
+            code='LOCK-FOLD', name='Lock Fold',
+            owner=owner, created_by=owner,
+        )
+        doc = Document.objects.create(
+            code='LOCK-DOC', title='Lock Doc',
+            category=Document.Category.QUALITY,
+            project_folder=folder,
+            owner=owner, created_by=owner,
+        )
+        from documents.models import DocumentVersion
+        version = DocumentVersion.objects.create(
+            document=doc, revision_label='00', revision_number=0,
+            status=DocumentVersion.Status.APPROVED,
+            change_summary='Init', created_by=owner, is_current=True,
+        )
+        doc.current_version = version
+        doc.save(update_fields=['current_version'])
+        from ecn.models import ChangeNotice
+        self.ecn = ChangeNotice.objects.create(
+            code='LOCK-ECN-001',
+            title='Lock ECN',
+            document=doc,
+            document_version=version,
+            proposed_by=owner,
+            created_by=owner,
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+
+    def test_acquire_lock_from_free_object(self):
+        from auditlog.locking import acquire_lock, lock_holder
+        self.assertTrue(acquire_lock(self.ecn, self.user1))
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.user1)
+        self.assertIsNotNone(self.ecn.locked_at)
+        self.assertEqual(lock_holder(self.ecn), self.user1)
+
+    def test_acquire_lock_blocked_by_other_user(self):
+        from auditlog.locking import acquire_lock
+        acquire_lock(self.ecn, self.user1)
+        self.ecn.refresh_from_db()
+        self.assertFalse(acquire_lock(self.ecn, self.user2))
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.user1)
+
+    def test_same_user_reacquire_renews_timestamp(self):
+        from auditlog.locking import acquire_lock
+        from django.utils import timezone
+        from ecn.models import ChangeNotice
+        acquire_lock(self.ecn, self.user1)
+        self.ecn.refresh_from_db()
+        old_at = self.ecn.locked_at
+        past = timezone.now() - datetime.timedelta(minutes=5)
+        ChangeNotice.objects.filter(pk=self.ecn.pk).update(locked_at=past)
+        self.ecn.refresh_from_db()
+        self.assertTrue(acquire_lock(self.ecn, self.user1))
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.user1)
+        self.assertGreater(self.ecn.locked_at, old_at)
+
+    def test_expired_lock_does_not_block(self):
+        from auditlog.locking import acquire_lock, lock_holder, LOCK_TIMEOUT
+        from django.utils import timezone
+        self.ecn.locked_by = self.user1
+        self.ecn.locked_at = timezone.now() - LOCK_TIMEOUT - datetime.timedelta(seconds=1)
+        self.ecn.save(update_fields=['locked_by', 'locked_at'])
+        self.assertIsNone(lock_holder(self.ecn))
+        self.assertTrue(acquire_lock(self.ecn, self.user2))
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.user2)
+
+    def test_release_lock_by_non_holder_is_noop(self):
+        from auditlog.locking import acquire_lock, release_lock
+        acquire_lock(self.ecn, self.user1)
+        release_lock(self.ecn, self.user2)
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.user1)
+        self.assertIsNotNone(self.ecn.locked_at)
+
+    def test_release_lock_by_holder_clears_fields(self):
+        from auditlog.locking import acquire_lock, release_lock
+        acquire_lock(self.ecn, self.user1)
+        release_lock(self.ecn, self.user1)
+        self.ecn.refresh_from_db()
+        self.assertIsNone(self.ecn.locked_by)
+        self.assertIsNone(self.ecn.locked_at)

@@ -1404,3 +1404,97 @@ class SimpleEcnAutoCloseEndToEndTests(TestCase):
         self.assertTrue(closure_emails)
         self.assertIn('chiuso automaticamente', closure_emails[0].body.lower())
         self.assertIn('Rev. 01', closure_emails[0].body)
+
+
+# ---------------------------------------------------------------------------
+# TASK-039 — Lock "un utente alla volta" su approval_detail
+# ---------------------------------------------------------------------------
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class ApprovalDetailLockTests(TestCase):
+    """Lock su approval_detail per richieste PENDING."""
+
+    def setUp(self):
+        mail.outbox = []
+        self.author = User.objects.create_user('lock_ap_author', password='pw')
+        self.approver1 = User.objects.create_user('lock_ap_a1', password='pw')
+        self.approver2 = User.objects.create_user('lock_ap_a2', password='pw')
+        self.document = make_document(code='LOCK-AP-DOC', owner=self.author)
+
+    def _make_pending(self):
+        version = create_new_revision(self.document, self.author, 'A', 1, _bypass_ecn_check=True)
+        req = submit_version_for_approval(
+            version, self.author, [self.approver1, self.approver2], approval_policy='any',
+        )
+        mail.outbox = []
+        return version, req
+
+    def test_second_approver_blocked_on_get(self):
+        _, req = self._make_pending()
+        self.client.login(username='lock_ap_a1', password='pw')
+        r1 = self.client.get(reverse('approval_detail', args=[req.pk]))
+        self.assertEqual(r1.status_code, 200)
+        self.client.login(username='lock_ap_a2', password='pw')
+        r2 = self.client.get(reverse('approval_detail', args=[req.pk]))
+        self.assertRedirects(r2, reverse('approval_queue'))
+        from django.contrib.messages import get_messages
+        msgs = [str(m) for m in get_messages(r2.wsgi_request)]
+        self.assertTrue(any('Decisione in lavorazione da' in m for m in msgs))
+
+    def test_second_approver_blocked_on_post(self):
+        _, req = self._make_pending()
+        self.client.login(username='lock_ap_a1', password='pw')
+        self.client.get(reverse('approval_detail', args=[req.pk]))
+        self.client.login(username='lock_ap_a2', password='pw')
+        r = self.client.post(
+            reverse('approval_detail', args=[req.pk]),
+            {'action': 'approve', 'comment': ''},
+        )
+        self.assertRedirects(r, reverse('approval_queue'))
+
+    def test_lock_released_after_approve(self):
+        _, req = self._make_pending()
+        self.client.login(username='lock_ap_a1', password='pw')
+        r = self.client.post(
+            reverse('approval_detail', args=[req.pk]),
+            {'action': 'approve', 'comment': ''},
+        )
+        self.assertRedirects(r, reverse('approval_queue'))
+        req.refresh_from_db()
+        self.assertIsNone(req.locked_by)
+        self.assertIsNone(req.locked_at)
+
+    def test_lock_released_after_reject(self):
+        _, req = self._make_pending()
+        self.client.login(username='lock_ap_a1', password='pw')
+        r = self.client.post(
+            reverse('approval_detail', args=[req.pk]),
+            {'action': 'reject', 'rejection_reason': 'Incompleto'},
+        )
+        self.assertRedirects(r, reverse('approval_queue'))
+        req.refresh_from_db()
+        self.assertIsNone(req.locked_by)
+        self.assertIsNone(req.locked_at)
+
+    def test_no_lock_when_status_not_pending(self):
+        _, req = self._make_pending()
+        approve_version(req, self.approver1)
+        req.refresh_from_db()
+        self.assertEqual(req.status, ApprovalRequest.Status.APPROVED)
+        self.client.login(username='lock_ap_a2', password='pw')
+        r = self.client.get(reverse('approval_detail', args=[req.pk]))
+        self.assertEqual(r.status_code, 200)
+
+    def test_expired_lock_does_not_block(self):
+        import datetime
+        from auditlog.locking import LOCK_TIMEOUT
+        from django.utils import timezone
+        _, req = self._make_pending()
+        req.locked_by = self.approver1
+        req.locked_at = timezone.now() - LOCK_TIMEOUT - datetime.timedelta(seconds=1)
+        req.save(update_fields=['locked_by', 'locked_at'])
+        self.client.login(username='lock_ap_a2', password='pw')
+        r = self.client.get(reverse('approval_detail', args=[req.pk]))
+        self.assertEqual(r.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.locked_by, self.approver2)

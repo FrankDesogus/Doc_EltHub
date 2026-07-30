@@ -5,7 +5,9 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
+from auditlog.locking import acquire_lock, lock_holder, release_lock
 from approvals.models import ApprovalRequest, ApprovalRequestApprover, ApprovalRequestAttachment
 from approvals.services import approve_version, reject_version
 
@@ -117,6 +119,17 @@ def approval_detail(request, approval_request_id):
     if not is_assigned and not request.user.is_superuser:
         raise PermissionDenied
 
+    if ar.status == ApprovalRequest.Status.PENDING:
+        holder = lock_holder(ar)
+        if holder is not None and holder.pk != request.user.pk:
+            messages.warning(
+                request,
+                f"Decisione in lavorazione da {holder.get_full_name() or holder.username} "
+                f"dalle {timezone.localtime(ar.locked_at).strftime('%d/%m/%Y %H:%M')}. Riprova più tardi.",
+            )
+            return redirect('approval_queue')
+        acquire_lock(ar, request.user)
+
     # Sanatoria: legge i campi storici opzionali dal POST
     from auditlog.historical_forms import SanatoriaStandaloneForm, should_send_notifications
     from auditlog.permissions import can_use_sanatoria
@@ -154,6 +167,7 @@ def approval_detail(request, approval_request_id):
                         request,
                         'Approvazione registrata. La richiesta è ancora in attesa degli altri approvatori.',
                     )
+                release_lock(ar, request.user)
                 return redirect('approval_queue')
             except (ValidationError, PermissionDenied) as exc:
                 error = ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc)
@@ -180,6 +194,7 @@ def approval_detail(request, approval_request_id):
                     )
                     san_suffix = ' [sanatoria]' if is_sanatoria else ''
                     messages.success(request, f'Revisione rifiutata.{san_suffix}')
+                    release_lock(ar, request.user)
                     return redirect('approval_queue')
                 except (ValidationError, PermissionDenied) as exc:
                     error = ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc)

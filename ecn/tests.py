@@ -1,3 +1,5 @@
+import datetime
+
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError
@@ -4427,3 +4429,150 @@ class SimpleEcnStandardFlowUnaffectedTests(TestCase):
         )
         self.assertEqual(ecn.flow_type, ChangeNotice.FlowType.STANDARD)
         self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
+
+
+# ---------------------------------------------------------------------------
+# TASK-039 — Lock "un utente alla volta" su pagine d'azione ECN
+# ---------------------------------------------------------------------------
+
+class ECNActionPageLockTests(TestCase):
+    """Lock su ecn_ccb_dossier ed ecn_review."""
+
+    def setUp(self):
+        from django.urls import reverse
+        self.reverse = reverse
+
+        self.qm1 = _make_quality_manager('lock_dos_qm1')
+        self.qm2 = _make_quality_manager('lock_dos_qm2')
+        self.ccb1 = _make_user_in_groups('lock_rev_ccb1', GROUP_CCB)
+        self.ccb2 = _make_user_in_groups('lock_rev_ccb2', GROUP_CCB)
+        self.folder = _make_folder(self.qm1, 'FOLD-LOCK')
+        self.document, self.version = _make_approved_document(
+            self.qm1, self.folder, 'DOC-LOCK-001',
+        )
+        self.ecn = create_change_notice(
+            document=self.document, proposed_by=self.qm1,
+            title='ECN lock', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code='ECN-LOCK-001',
+        )
+        from ecn.services import configure_ccb
+        configure_ccb(
+            self.ecn, actor=self.qm1, users=[self.ccb1, self.ccb2],
+            policy='all', coordinator=self.qm1,
+        )
+
+    def _dossier_post_data(self, action='save'):
+        return {
+            'applicability_category': ChangeNotice.Applicability.GENERAL,
+            'applicability_detail': '',
+            'ccb_class': ChangeNotice.CCBClass.CLASS1,
+            'ccb_requirements': 'Verificato.',
+            'ccb_technical_impact': 'Nessuno.',
+            'dossier_action': action,
+        }
+
+    def _dossier_url(self):
+        return self.reverse('ecn:ecn_ccb_dossier', args=[self.ecn.pk])
+
+    def _review_url(self):
+        return f'/ecn/{self.ecn.pk}/review/'
+
+    def _put_under_review(self):
+        from ecn.services import update_ccb_dossier, submit_change_notice
+        update_ccb_dossier(
+            self.ecn, actor=self.qm1,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(self.ecn, self.qm1)
+        self.ecn.refresh_from_db()
+
+    def test_dossier_second_user_blocked_on_get(self):
+        self.client.force_login(self.qm1)
+        r1 = self.client.get(self._dossier_url())
+        self.assertEqual(r1.status_code, 200)
+        self.client.force_login(self.qm2)
+        r2 = self.client.get(self._dossier_url())
+        self.assertRedirects(r2, self.reverse('ecn:ecn_detail', args=[self.ecn.pk]))
+        from django.contrib.messages import get_messages
+        msgs = [str(m) for m in get_messages(r2.wsgi_request)]
+        self.assertTrue(any('Dossier in lavorazione da' in m for m in msgs))
+
+    def test_dossier_second_user_blocked_on_post(self):
+        self.client.force_login(self.qm1)
+        self.client.get(self._dossier_url())
+        self.client.force_login(self.qm2)
+        r = self.client.post(self._dossier_url(), self._dossier_post_data())
+        self.assertRedirects(r, self.reverse('ecn:ecn_detail', args=[self.ecn.pk]))
+
+    def test_dossier_lock_released_after_submit(self):
+        self.client.force_login(self.qm1)
+        r = self.client.post(
+            self._dossier_url(),
+            self._dossier_post_data(action='submit'),
+        )
+        self.assertRedirects(r, self.reverse('ecn:ecn_detail', args=[self.ecn.pk]))
+        self.ecn.refresh_from_db()
+        self.assertIsNone(self.ecn.locked_by)
+        self.assertIsNone(self.ecn.locked_at)
+
+    def test_dossier_lock_not_released_after_save_draft(self):
+        self.client.force_login(self.qm1)
+        r = self.client.post(
+            self._dossier_url(),
+            self._dossier_post_data(action='save'),
+        )
+        self.assertRedirects(r, self.reverse('ecn:ecn_detail', args=[self.ecn.pk]))
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.qm1)
+        self.assertIsNotNone(self.ecn.locked_at)
+
+    def test_dossier_expired_lock_does_not_block(self):
+        from auditlog.locking import LOCK_TIMEOUT
+        from django.utils import timezone
+        self.ecn.locked_by = self.qm1
+        self.ecn.locked_at = timezone.now() - LOCK_TIMEOUT - datetime.timedelta(seconds=1)
+        self.ecn.save(update_fields=['locked_by', 'locked_at'])
+        self.client.force_login(self.qm2)
+        r = self.client.get(self._dossier_url())
+        self.assertEqual(r.status_code, 200)
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.qm2)
+
+    def test_review_second_user_blocked_on_get(self):
+        self._put_under_review()
+        self.client.force_login(self.ccb1)
+        r1 = self.client.get(self._review_url())
+        self.assertEqual(r1.status_code, 200)
+        self.client.force_login(self.ccb2)
+        r2 = self.client.get(self._review_url())
+        self.assertRedirects(r2, f'/ecn/{self.ecn.pk}/')
+        from django.contrib.messages import get_messages
+        msgs = [str(m) for m in get_messages(r2.wsgi_request)]
+        self.assertTrue(any('Decisione CCB in lavorazione da' in m for m in msgs))
+
+    def test_review_lock_released_after_successful_vote(self):
+        self._put_under_review()
+        self.client.force_login(self.ccb1)
+        r = self.client.post(self._review_url(), {
+            'action': 'approve',
+            'comment': '',
+            'ccb_notes': '',
+        })
+        self.assertRedirects(r, f'/ecn/{self.ecn.pk}/', fetch_redirect_response=False)
+        self.ecn.refresh_from_db()
+        self.assertIsNone(self.ecn.locked_by)
+        self.assertIsNone(self.ecn.locked_at)
+
+    def test_review_expired_lock_does_not_block(self):
+        from auditlog.locking import LOCK_TIMEOUT
+        from django.utils import timezone
+        self._put_under_review()
+        self.ecn.locked_by = self.ccb1
+        self.ecn.locked_at = timezone.now() - LOCK_TIMEOUT - datetime.timedelta(seconds=1)
+        self.ecn.save(update_fields=['locked_by', 'locked_at'])
+        self.client.force_login(self.ccb2)
+        r = self.client.get(self._review_url())
+        self.assertEqual(r.status_code, 200)
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.locked_by, self.ccb2)

@@ -359,6 +359,20 @@ class ChangeNotice(models.Model):
         auto_now=True,
         verbose_name='Aggiornato il',
     )
+    locked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='locked_ecns',
+        verbose_name='In lavorazione da',
+        help_text='Utente che sta compilando il dossier o votando in questo momento (lock temporaneo).',
+    )
+    locked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='In lavorazione dal',
+    )
 
     class Meta:
         verbose_name        = 'ECN / Variante'

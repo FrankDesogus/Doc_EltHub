@@ -18,7 +18,6 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
-| TASK-039 | Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN | Cursor Agent |
 
 ## Backlog
 
@@ -78,6 +77,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-037 | Applicabilità ECN — correzione strutturale: decisa dalla CCB nel dossier, non dal proponente (Fase 1: modello, service, form, view, template, dati demo) | — | 2026-07-30 |
 | TASK-037-2 | Applicabilità ECN — correzione strutturale (Fase 2: fix suite di test) | — | 2026-07-30 |
 | TASK-038 | Fix UI Istruttoria CCB: bug commento multi-riga renderizzato, componenti CCB uniti a Proposta di variante, larghezza campi testo | — | 2026-07-30 |
+| TASK-039 | Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN (`auditlog/locking.py`, timeout 20 min) | — | 2026-07-30 |
 
 ---
 
@@ -4180,6 +4180,52 @@ letti riga per riga — usa i numeri di riga sopra come riferimento
 approssimativo (potrebbero essere leggermente spostati se il file è
 cambiato), non come garanzia assoluta: cerca sempre i blocchi di codice
 per contenuto, non solo per numero di riga.
+
+#### Esito (2026-07-30)
+
+Implementato da Cursor Agent esattamente secondo spec (via
+`ai-cycle.sh --run`), verificato riga per riga da Claude Code prima del
+commit.
+
+- Nuovo modulo `auditlog/locking.py`: `lock_holder`/`acquire_lock`/
+  `release_lock`, `LOCK_TIMEOUT = 20 minuti`, duck-typing su
+  `locked_by`/`locked_at` (nessun `ContentType`/`GenericForeignKey`).
+- `ChangeNotice`/`ApprovalRequest`: campi `locked_by`/`locked_at`
+  aggiunti esattamente dove specificato. Migrazioni
+  `ecn/migrations/0008_changenotice_locked_at_changenotice_locked_by.py`
+  e
+  `approvals/migrations/0007_approvalrequest_locked_at_approvalrequest_locked_by.py`.
+- `ecn_ccb_dossier`, `ecn_review`, `approval_detail`: lock applicato solo
+  nelle condizioni previste (`dossier_editable`; sempre in `ecn_review`
+  dopo il check di stato; solo `status == PENDING` in
+  `approval_detail`). Rilascio dopo invio dossier riuscito, voto CCB
+  riuscito, approvazione/rifiuto riusciti; **non** rilasciato dopo il
+  salvataggio di una bozza dossier. Utente diverso da chi detiene un
+  lock non scaduto viene rediretto con `messages.warning` (niente form,
+  niente nuovo template).
+- Test aggiunti: `auditlog.tests.LockingTests` (6), `ecn.tests.ECNActionPageLockTests` (8),
+  `approvals.tests.ApprovalDetailLockTests` (6) — coprono acquisizione,
+  blocco da altro utente, riacquisizione dallo stesso utente, scadenza
+  timeout, rilascio dopo azione riuscita, bozza che non rilascia,
+  nessun lock quando la richiesta di approvazione non è più PENDING.
+
+**Bug operativo trovato e corretto durante la verifica (non nel
+codice)**: le due nuove migrazioni non erano ancora applicate al
+database di sviluppo (`db.sqlite3`) usato dal server locale già avviato
+per la sessione — qualunque pagina che leggesse `ApprovalRequest`
+falliva con `OperationalError: no such column:
+approvals_approvalrequest.locked_by_id`, comprese le liste (ECN,
+coda approvazioni), non solo le pagine d'azione — un problema di
+allineamento schema/DB, non della logica di lock (che infatti non
+tocca le viste di lista). Risolto con `python manage.py migrate
+ecn`/`migrate approvals` sul DB di sviluppo; verificato con richieste
+HTTP reali (login `supervisor_demo`) che lista ECN, dettaglio ECN, coda
+approvazioni, Istruttoria CCB e Decisione CCB rispondono tutte 200.
+
+Verifiche: `python manage.py check` pulito;
+`makemigrations --check --dry-run` pulito;
+`python manage.py test ecn approvals auditlog --settings=config.test_settings -v2`
+→ **523/523 PASS**.
 
 ---
 
