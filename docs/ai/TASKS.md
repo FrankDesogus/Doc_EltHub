@@ -80,6 +80,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-039 | Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN (`auditlog/locking.py`, timeout 20 min) | — | 2026-07-30 |
 | TASK-040 | Posizionamento libero firma su PDF approvazione (Fase 1: modello, service, endpoint PDF inline) | — | 2026-07-30 |
 | TASK-040-2 | Posizionamento libero firma (Fase 2: UI drag&drop con pdf.js, nuova dipendenza autorizzata) | — | 2026-07-30 |
+| TASK-041 | Fix UI Istruttoria CCB: sezione Applicabilità spostata in fondo, prima della sanatoria | — | 2026-07-30 |
 
 ---
 
@@ -4714,6 +4715,43 @@ task dedicato per usare `signature_page`/`signature_x`/`signature_y`
 nella generazione effettiva, disegnando la firma nel punto scelto
 invece che nella riga del registro per le decisioni che lo hanno
 impostato.
+
+---
+
+### TASK-041 — Fix UI Istruttoria CCB: riposizionamento sezione Applicabilità — Claude Code
+
+Eseguito direttamente da Claude Code (modifica di layout mirata), su
+segnalazione diretta dell'operatore dopo TASK-038.
+
+#### Difetto segnalato
+
+Nel form editabile di `ecn_ccb_dossier.html`, la sezione "Applicabilità"
+era la prima subito dopo l'apertura del `<form>` (prima di
+"Classificazione variante" e "Analisi istruttoria"), risultando quasi
+in cima alla pagina. L'operatore la voleva invece in fondo, appena
+prima della sezione sanatoria.
+
+#### Modifica
+
+Spostato il blocco `<div class="form-section">` di "Applicabilità"
+(con l'`{% include "ecn/_applicability_fields.html" %}`) dalla prima
+posizione nel form all'ultima, subito prima di
+`{% include "auditlog/sanatoria_fields.html" %}`. Nuovo ordine:
+Classificazione variante → Analisi istruttoria → Applicabilità →
+Sanatoria storica → pulsanti. Nessuna modifica al contenuto delle
+sezioni, solo all'ordine nel template.
+
+#### File coinvolti
+
+`templates/ecn/ecn_ccb_dossier.html` (unico file toccato).
+
+#### Verifiche eseguite
+
+`python manage.py check` pulito. Verifica visiva reale nel browser
+(`ecn/3/ccb-dossier/`, utente `supervisor_demo`): confermato il nuovo
+ordine, "Applicabilità" ora immediatamente sopra "Sanatoria storica".
+Suite `ecn` completa: **381/381 PASS** (nessuna regressione, atteso —
+nessun test verifica l'ordine visivo delle sezioni).
 
 ---
 

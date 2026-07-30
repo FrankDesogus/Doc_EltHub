@@ -97,12 +97,6 @@
 <form method="post">
   {% csrf_token %}
 
-  <!-- Applicabilità -->
-  <div class="form-section">
-    <div class="form-section-title">Applicabilità <span class="text-red-500">*</span></div>
-    {% include "ecn/_applicability_fields.html" %}
-  </div>
-
   <!-- Classificazione variante -->
   <div class="form-section">
     <div class="form-section-title">Classificazione variante <span class="text-red-500">*</span></div>
@@ -160,6 +154,12 @@
       {{ form.ccb_notes }}
       {% if form.ccb_notes.errors %}<p class="form-error">{{ form.ccb_notes.errors.as_text }}</p>{% endif %}
     </div>
+  </div>
+
+  <!-- Applicabilità -->
+  <div class="form-section">
+    <div class="form-section-title">Applicabilità <span class="text-red-500">*</span></div>
+    {% include "ecn/_applicability_fields.html" %}
   </div>
 
   {% include "auditlog/sanatoria_fields.html" %}
