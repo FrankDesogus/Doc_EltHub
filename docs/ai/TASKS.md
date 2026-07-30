@@ -18,7 +18,6 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
-| TASK-040-2 | Posizionamento libero firma (Fase 2: UI drag&drop pdf.js) — WIP, non verificato | Claude Code |
 
 ## Backlog
 
@@ -80,6 +79,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-038 | Fix UI Istruttoria CCB: bug commento multi-riga renderizzato, componenti CCB uniti a Proposta di variante, larghezza campi testo | — | 2026-07-30 |
 | TASK-039 | Lock "un utente alla volta" su pagine d'azione Approvazioni/ECN (`auditlog/locking.py`, timeout 20 min) | — | 2026-07-30 |
 | TASK-040 | Posizionamento libero firma su PDF approvazione (Fase 1: modello, service, endpoint PDF inline) | — | 2026-07-30 |
+| TASK-040-2 | Posizionamento libero firma (Fase 2: UI drag&drop con pdf.js, nuova dipendenza autorizzata) | — | 2026-07-30 |
 
 ---
 
@@ -4519,6 +4519,140 @@ Nessuna UI in questa fase (nessun template toccato, nessuna dipendenza
 nuova installata): la Fase 2 (interfaccia di trascinamento con pdf.js,
 già autorizzata dall'operatore) resta un task futuro separato, non
 ancora scritto.
+
+---
+
+### TASK-040-2 — Posizionamento libero firma su PDF approvazione (Fase 2: UI drag&drop con pdf.js) — Claude Code
+
+Eseguito direttamente da Claude Code (JS/canvas interattivo, non
+delegato a Cursor Agent — richiede iterazione visiva, non solo
+correttezza meccanica del diff). Sessione interrotta a metà per
+disconnessione dell'operatore, ripresa in una finestra di contesto
+successiva a partire da `docs/ai/SESSION_HANDOFF_2026-07-30.md` (file
+non tracciato, poi superato da questo aggiornamento).
+
+#### Obiettivo
+
+Interfaccia utente per il posizionamento libero della firma
+sull'approvazione documento (fondamenta backend già in TASK-040 Fase
+1): un approvatore vede il PDF di rappresentazione renderizzato nel
+browser e trascina la propria firma nel punto desiderato, oppure lascia
+il comportamento automatico invariato (checkbox non spuntata).
+
+#### Dipendenza nuova (autorizzata esplicitamente dall'operatore)
+
+`pdfjs-dist@6.2.108` (devDependency). **Prima dipendenza esterna nuova
+introdotta in questo progetto** — tutte le precedenti erano già
+presenti o sono state rimosse (TASK-009). Vendorizzati
+`node_modules/pdfjs-dist/build/pdf.min.mjs` e `pdf.worker.min.mjs`
+(build "moderna" ES module, non la build "legacy": pdfjs-dist v6 non
+ha più build UMD) in `static/vendor/pdfjs/`, committati direttamente
+nel repo — stesso pattern già in uso per `static/css/tailwind.css`
+("no Node in produzione"). Script `npm run vendor:pdfjs` aggiunto a
+`package.json` per rigenerarli in futuro. `npm audit` segnala 1
+vulnerabilità high, ma su `postcss` (transitiva di `tailwindcss`,
+pre-esistente): `pdfjs-dist` non ha sotto-dipendenze proprie.
+
+#### Modifiche
+
+- **`approvals/views.py`** (`approval_detail`): nel ramo `action ==
+  'approve'`, legge `signature_page`/`signature_x`/`signature_y` dal
+  POST solo se presenti **tutti e 3** (altrimenti li tratta come
+  assenti, silenziosamente — la validazione stringente è comunque già
+  in `approve_version`, Fase 1); valori non numerici vengono scartati
+  allo stesso modo invece di propagare un `ValueError` non gestito.
+  Nuovo context: `existing_signature_placements` (lista di
+  `{page, x, y, label}` per le decisioni già registrate su questa
+  `ApprovalRequest` con posizionamento salvato — mostrata come
+  segnaposto di sola lettura al prossimo firmatario) e
+  `user_signature_url` (URL dell'immagine firma dell'utente corrente
+  via `user.signature_profile`, `None` se l'utente non ne ha una
+  caricata).
+- **`templates/approvals/approval_detail.html`**: nel form "Approva",
+  se `version.representation_pdf.file` esiste **e** `user_signature_url`
+  non è `None`, mostra un checkbox "Posiziona manualmente la firma sul
+  documento" che rivela: navigazione pagina (precedente/successiva),
+  `<canvas>` renderizzato da pdf.js, overlay assoluto con i segnaposto
+  delle firme già apposte (grigi, sola lettura, filtrati per pagina
+  corrente) e la firma trascinabile dell'utente (immagine reale, quadro
+  verde). I dati dei segnaposto esistenti sono passati al JS tramite
+  `{{ existing_signature_placements|json_script:"signature-existing-placements" }}`
+  (escaping automatico Django, niente `json.dumps` manuale). Campi
+  hidden `signature_page`/`signature_x`/`signature_y` popolati da JS
+  durante il drag; se il checkbox viene deselezionato tornano vuoti
+  (torna il comportamento automatico, invariato). Script in
+  `{% block extra_js %}`, caricato solo se il widget è mostrato;
+  `pdf.min.mjs` importato con `import()` dinamico (modulo ES, non serve
+  marcare l'intero blocco `<script type="module">`).
+- **`src/css/main.css`**: nuovo blocco `@layer components` in fondo al
+  file con le classi del widget
+  (`.signature-placement-canvas-wrap`/`.signature-overlay`/
+  `.signature-marker*`). CSS ricompilato con `npm run build`.
+- **`package.json`**: aggiunta `pdfjs-dist` a `devDependencies`, nuovo
+  script `vendor:pdfjs`.
+
+#### Test aggiunti
+
+`approvals/tests.py`,
+`ApprovalDetailSignaturePlacementViewTests` (5 test, integrazione a
+livello vista, non solo service — già coperto a livello service in
+Fase 1): salvataggio corretto con posizionamento valido via POST;
+nessun posizionamento quando i campi non sono forniti (comportamento
+automatico); valori non numerici scartati senza errore 500; contesto
+del template include `user_signature_url`/`existing_signature_placements`
+per un utente con firma; il checkbox non compare affatto per una
+versione senza PDF di rappresentazione.
+
+#### Verifiche eseguite
+
+`python manage.py check` pulito. `npm run build` senza errori.
+`python manage.py test approvals documents --settings=config.test_settings -v1`
+→ **608/608 PASS** (603 di Fase 1 + 5 nuovi di questa fase).
+
+**Verifica server-side via richieste HTTP reali** (non solo lettura di
+codice): creato uno scenario di prova ad hoc (documento
+`DEMO-SIGPLACE-001`, sorgente `.txt`, PDF di rappresentazione
+auto-generato e confermato, richiesta di approvazione assegnata a
+`supervisor_demo`, che ha già una firma visiva caricata nel dataset
+demo) — verificato con `curl` autenticato: la pagina
+`/approvals/25/` risponde 200 senza errori di template, contiene tutto
+il markup atteso (checkbox, contenitore widget con
+`data-pdf-url`/`data-signature-url` corretti, blocco `json_script` con
+`[]` come atteso — nessuna firma ancora posizionata su quella
+richiesta, canvas, i 3 campi hidden, lo script con l'`import()` di
+pdf.js); gli asset statici `pdf.min.mjs`/`pdf.worker.min.mjs`
+rispondono 200 con `content-type: text/javascript`; il nuovo endpoint
+`/versions/27/pdf/representation/view/` (Fase 1) risponde 200 con un
+PDF valido (verificato con `file`) e header `Content-Disposition:
+inline` (non `attachment`).
+
+**Verifica visiva interattiva NON eseguita**: l'estensione Chrome
+(`claude-in-chrome`) è rimasta disconnessa per l'intera sessione di
+ripresa (ritentata più volte, mai riconnessa) — non è stato possibile
+osservare concretamente il rendering del canvas, il trascinamento con
+il mouse, né il caricamento effettivo del modulo pdf.js in un browser
+reale. Tutto ciò che era verificabile senza esecuzione JS (markup
+server-side, asset statici, endpoint, persistenza dati via POST reali)
+è stato verificato con evidenza diretta, non solo affermato. **Azione
+richiesta all'operatore** (o a una sessione futura con l'estensione
+connessa): aprire `http://127.0.0.1:8001/approvals/25/` con
+`supervisor_demo`/`demo1234`, spuntare "Posiziona manualmente la firma
+sul documento" e confermare che il PDF si vede, la firma si trascina, e
+dopo "Approva revisione" il posizionamento risulta salvato
+correttamente (query `ApprovalDecision.objects.get(pk=...)` o
+riapertura pagina).
+
+#### Non ancora fatto (Fase 3, task futuro separato)
+
+Le coordinate salvate **non hanno ancora alcun effetto sul PDF
+approvato finale**: `documents/pdf_generation.py` non è stato toccato
+in questa fase. Una decisione con posizionamento manuale finisce
+comunque, oggi, nel registro "in calce" standard come tutte le altre
+(il campo è salvato ma inutilizzato lato generazione PDF). Serve un
+task dedicato per usare `signature_page`/`signature_x`/`signature_y`
+nella generazione effettiva, disegnando la firma nel punto scelto
+invece che nella riga del registro per le decisioni che lo hanno
+impostato.
 
 ---
 

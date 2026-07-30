@@ -1554,3 +1554,102 @@ class ApproveVersionSignaturePlacementTests(TestCase):
             approve_version(req, self.approver, signature_page=1, signature_x=-0.1, signature_y=0.5)
         with self.assertRaises(ValidationError):
             approve_version(req, self.approver, signature_page=1, signature_x=0.5, signature_y=1.1)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class ApprovalDetailSignaturePlacementViewTests(TestCase):
+    """TASK-040 (Fase 2) — parsing dei campi di posizionamento firma nella vista approval_detail."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        from accounts.models import UserSignature
+        from documents.pdf_pipeline import confirm_representation_pdf
+
+        self.author = User.objects.create_user('sigview-author', password='pw')
+        self.approver = User.objects.create_user('sigview-approver', password='pw')
+        self.document = make_document(owner=self.author, requires_approved_pdf=True)
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            UserSignature.objects.create(
+                user=self.approver,
+                image=SimpleUploadedFile('firma.png', b'\x89PNG\r\n\x1a\n' + b'0' * 50, content_type='image/png'),
+            )
+            src = create_document_file(
+                SimpleUploadedFile('sorgente.txt', b'Testo di prova.\n' * 20, content_type='text/plain'),
+                self.author,
+            )
+            self.version = create_new_revision(
+                self.document, self.author, '00', 0, file=src,
+                change_summary='Test firma libera', _bypass_ecn_check=True,
+            )
+            self.version.refresh_from_db()
+            confirm_representation_pdf(self.version, self.author)
+            self.req = submit_version_for_approval(
+                self.version, self.author, [self.approver], send_notifications=False,
+            )
+
+    def test_approve_with_valid_placement_saves_on_decision(self):
+        self.client.login(username='sigview-approver', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.post(
+                reverse('approval_detail', args=[self.req.pk]),
+                {'action': 'approve', 'comment': '', 'signature_page': '1', 'signature_x': '0.3', 'signature_y': '0.6'},
+            )
+        self.assertRedirects(response, reverse('approval_queue'))
+        from approvals.models import ApprovalDecision
+        decision = ApprovalDecision.objects.get(approval_request=self.req, approver=self.approver)
+        self.assertEqual(decision.signature_page, 1)
+        self.assertAlmostEqual(decision.signature_x, 0.3)
+        self.assertAlmostEqual(decision.signature_y, 0.6)
+
+    def test_approve_without_placement_fields_is_automatic(self):
+        self.client.login(username='sigview-approver', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.post(
+                reverse('approval_detail', args=[self.req.pk]),
+                {'action': 'approve', 'comment': ''},
+            )
+        self.assertRedirects(response, reverse('approval_queue'))
+        from approvals.models import ApprovalDecision
+        decision = ApprovalDecision.objects.get(approval_request=self.req, approver=self.approver)
+        self.assertIsNone(decision.signature_page)
+        self.assertIsNone(decision.signature_x)
+        self.assertIsNone(decision.signature_y)
+
+    def test_approve_with_malformed_placement_falls_back_to_automatic(self):
+        self.client.login(username='sigview-approver', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.post(
+                reverse('approval_detail', args=[self.req.pk]),
+                {'action': 'approve', 'comment': '', 'signature_page': 'abc', 'signature_x': '0.3', 'signature_y': '0.6'},
+            )
+        self.assertRedirects(response, reverse('approval_queue'))
+        from approvals.models import ApprovalDecision
+        decision = ApprovalDecision.objects.get(approval_request=self.req, approver=self.approver)
+        self.assertIsNone(decision.signature_page)
+        self.assertIsNone(decision.signature_x)
+        self.assertIsNone(decision.signature_y)
+
+    def test_widget_context_includes_signature_url_and_placements(self):
+        self.client.login(username='sigview-approver', password='pw')
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.get(reverse('approval_detail', args=[self.req.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.context['user_signature_url'])
+        self.assertEqual(response.context['existing_signature_placements'], [])
+
+    def test_widget_hidden_without_representation_pdf(self):
+        other_doc = make_document(code='SIGVIEW-NOPDF', owner=self.author)
+        version = create_new_revision(other_doc, self.author, '00', 0, _bypass_ecn_check=True)
+        req = submit_version_for_approval(version, self.author, [self.approver], send_notifications=False)
+        self.client.login(username='sigview-approver', password='pw')
+        response = self.client.get(reverse('approval_detail', args=[req.pk]))
+        self.assertNotContains(response, 'id_manual_signature_toggle')
