@@ -383,3 +383,41 @@
   background-color: var(--code-bg);
   color: var(--text-primary);
 }
+
+@layer components {
+  /* Widget di posizionamento libero della firma (TASK-040, Fase 2):
+     canvas pdf.js + overlay assoluto con i segnaposto delle firme già
+     apposte (sola lettura) e la firma trascinabile dell'approvatore
+     corrente. */
+  .signature-placement-canvas-wrap {
+    @apply relative inline-block border rounded-md overflow-hidden max-w-full;
+    border-color: var(--border-soft);
+    background: #525659;
+  }
+  .signature-placement-canvas-wrap canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+  .signature-overlay {
+    @apply absolute top-0 left-0;
+  }
+  .signature-marker {
+    @apply absolute text-xs font-semibold px-1.5 py-0.5 rounded select-none whitespace-nowrap;
+    transform: translate(-50%, -50%);
+  }
+  .signature-marker-existing {
+    @apply bg-slate-700/80 text-white pointer-events-none;
+  }
+  .signature-marker-own {
+    @apply bg-emerald-500 text-white cursor-move shadow-lg border-2 border-white;
+    max-width: 140px;
+    max-height: 60px;
+  }
+  .signature-marker-own[src] {
+    padding: 0;
+    background: transparent;
+    border: 2px solid #10b981;
+    border-radius: 4px;
+  }
+}

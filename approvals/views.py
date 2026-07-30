@@ -145,11 +145,27 @@ def approval_detail(request, approval_request_id):
         comment = request.POST.get('comment', '').strip()
 
         if action == 'approve':
+            signature_page = None
+            signature_x = None
+            signature_y = None
+            raw_page = request.POST.get('signature_page', '').strip()
+            raw_x = request.POST.get('signature_x', '').strip()
+            raw_y = request.POST.get('signature_y', '').strip()
+            if raw_page and raw_x and raw_y:
+                try:
+                    signature_page = int(raw_page)
+                    signature_x = float(raw_x)
+                    signature_y = float(raw_y)
+                except ValueError:
+                    signature_page = signature_x = signature_y = None
             try:
                 approve_version(
                     ar, request.user,
                     comment=comment,
                     send_notifications=should_send_notifications(sanatoria=is_sanatoria),
+                    signature_page=signature_page,
+                    signature_x=signature_x,
+                    signature_y=signature_y,
                 )
                 ar.refresh_from_db()
                 # Sanatoria: crea HistoricalRecord
@@ -223,6 +239,24 @@ def approval_detail(request, approval_request_id):
             ).select_related('recorded_by').order_by('-historical_date')
         )
 
+    # Posizionamento libero firma: segnaposto delle firme già apposte da
+    # altri approvatori su questa stessa richiesta, per evitare che il
+    # prossimo firmatario le sovrapponga (vedi TASK-040).
+    existing_signature_placements = [
+        {
+            'page': d.signature_page,
+            'x': d.signature_x,
+            'y': d.signature_y,
+            'label': d.approver.get_full_name() or d.approver.username,
+        }
+        for d in decisions
+        if d.signature_page is not None
+    ]
+    user_signature_url = None
+    signature_profile = getattr(request.user, 'signature_profile', None)
+    if signature_profile is not None and signature_profile.image:
+        user_signature_url = signature_profile.image.url
+
     return render(request, 'approvals/approval_detail.html', {
         'approval_request': ar,
         'version': version,
@@ -233,4 +267,6 @@ def approval_detail(request, approval_request_id):
         'form': sanatoria_form,
         'historical_records': historical_records,
         'sanatoria_available': can_use_sanatoria(request.user),
+        'existing_signature_placements': existing_signature_placements,
+        'user_signature_url': user_signature_url,
     })

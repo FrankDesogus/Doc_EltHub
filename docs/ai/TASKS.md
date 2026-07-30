@@ -18,6 +18,7 @@
 
 | ID | Titolo | Agente |
 | -- | ------ | ------ |
+| TASK-040-2 | Posizionamento libero firma (Fase 2: UI drag&drop pdf.js) — WIP, non verificato | Claude Code |
 
 ## Backlog
 
