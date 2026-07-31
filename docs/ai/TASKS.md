@@ -82,6 +82,8 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-040-2 | Posizionamento libero firma (Fase 2: UI drag&drop con pdf.js, nuova dipendenza autorizzata) | — | 2026-07-30 |
 | TASK-041 | Fix UI Istruttoria CCB: sezione Applicabilità spostata in fondo, prima della sanatoria | — | 2026-07-30 |
 | TASK-042 | Fix UX gate PDF di rappresentazione: distinguere "PDF mancante" da "PDF caricato, da confermare" | — | 2026-07-30 |
+| TASK-040-3 | Posizionamento libero firma (Fase 3: la firma viene disegnata realmente sul PDF approvato) | — | 2026-07-30 |
+| TASK-043 | Fix bug CSS: checkbox selezionata visivamente invisibile (spunta bianca su sfondo bianco) | — | 2026-07-31 |
 
 ---
 
@@ -4841,6 +4843,193 @@ resta un task futuro separato, da specificare in dettaglio se
 l'operatore decide di procedere (dipendenza di sistema, non pip —
 richiede autorizzazione esplicita per l'installazione in ogni
 ambiente di deploy).
+
+---
+
+### TASK-040-3 — Posizionamento libero firma su PDF approvazione (Fase 3: firma disegnata realmente sul PDF) — Claude Code
+
+Eseguito direttamente da Claude Code (modifica chirurgica di codice di
+generazione PDF ad alto rischio — stessa scelta già fatta per Fase 2,
+per precisione e controllo diretto invece di delegare a Cursor Agent).
+
+#### Obiettivo
+
+Le coordinate di posizionamento libero salvate su `ApprovalDecision`
+nelle Fasi 1/2 (`signature_page`/`signature_x`/`signature_y`) non
+avevano ancora alcun effetto sul PDF approvato finale
+(`documents/pdf_generation.py` non era mai stato toccato): ogni
+decisione, anche con posizionamento manuale, finiva comunque nel
+registro "in calce" standard. Questa fase chiude la funzionalità: la
+firma viene disegnata davvero nel punto scelto dall'approvatore.
+
+#### Modifica (`documents/pdf_generation.py`, unico file applicativo toccato)
+
+- Nuova `_decisions_with_valid_manual_placement(decisions, n_pages)`:
+  seleziona solo le decisioni con posizionamento **davvero utilizzabile**
+  — tutti e 3 i campi presenti, pagina nel range del PDF, immagine firma
+  realmente leggibile su disco (`os.path.exists`). Qualunque controllo
+  fallisca, la decisione resta fuori e ricade sul comportamento
+  automatico preesistente (immagine nel registro) — mai una firma persa,
+  mai un errore di generazione per un dato incoerente (es. revisione
+  ri-generata con un PDF di rappresentazione diverso, meno pagine di
+  quando la firma fu posizionata).
+- Nuova `_build_signature_placements_overlay(placements, orig_width, orig_height, y_offset)`:
+  disegna la firma (40×16mm, più grande della miniatura 26×9mm del
+  registro) centrata sulle coordinate normalizzate, con clamping
+  (`_clamp_center`) per restare sempre dentro i bordi della pagina.
+  `y_offset` gestisce il caso speciale in cui la pagina target **è
+  anche** l'ultima pagina estesa per il footer "in calce" (Y traslata
+  della stessa quantità del contenuto originale, per restare
+  visivamente nello stesso punto scelto) — per tutte le altre pagine
+  `y_offset=0`.
+- `_stamp_footer_on_last_page`/`_append_page`: entrambi i percorsi
+  (footer "in calce" e pagina dedicata di fallback) ora fanno il merge
+  dell'overlay firma sulla pagina corretta, prima di aggiungerla al
+  `PdfWriter`.
+- `_build_footer_overlay`/`_build_registry_standalone_page`: per le
+  decisioni con posizionamento valido, la riga del registro resta solo
+  testuale (niente immagine duplicata) con una nota
+  `(firma apposta a pag. N)`; `_estimate_footer_height` aggiornata di
+  conseguenza (riga testuale, non con immagine, per il calcolo
+  dell'altezza).
+
+#### Guardrail rispettati
+
+Nessuna modifica a `approvals/services.py`, `approvals/models.py`,
+`documents/views.py`, template, o alla logica del gate PDF (TASK-026/042,
+invariata). Nessuna nuova dipendenza. Il PDF di rappresentazione
+sorgente non viene mai modificato (si lavora sempre su una copia in
+memoria, comportamento preesistente invariato).
+
+#### Test aggiunti
+
+`approvals/tests.py`, `ApprovedPDFManualSignaturePlacementTests` (5
+test, verificano il PDF risultante byte per byte via `pypdf`, non solo
+il comportamento del service):
+- firma disegnata sulla pagina corretta, non duplicata come immagine
+  nel registro (conteggio reale delle immagini incorporate via
+  `page.images`, testo del registro con la nota di pagina);
+- pagina fuori range → fallback automatico silenzioso (immagine nel
+  registro, nessuna nota);
+- posizionamento su una pagina diversa dall'ultima → nessun offset
+  verticale indebito (verificato su documento a 2 pagine);
+- posizionamento rispettato anche nel percorso di fallback a pagina
+  dedicata (molti approvatori);
+- coordinate estreme (0.0/0.0) non fanno fallire la generazione
+  (clamping).
+
+#### Verifiche eseguite
+
+`python manage.py check` pulito. Suite `documents approvals` completa:
+**613/613 PASS** (608 preesistenti + 5 nuovi di questa fase, tutti
+verdi al primo tentativo). Verifica visiva nel browser non eseguita in
+questa sessione (estensione Chrome non connessa, stesso problema già
+segnalato in Fase 2/TASK-042) — verifica invece tramite parsing reale
+del PDF generato (conteggio immagini incorporate, estrazione testo),
+non solo lettura di codice o mock del service.
+
+---
+
+### TASK-043 — Fix bug CSS: checkbox selezionata visivamente invisibile — Claude Code
+
+Eseguito direttamente da Claude Code, su segnalazione diretta
+dell'operatore ("non riesco a selezionare sia ECN semplice sia PDF
+firmato contemporaneamente, una si deseleziona quando seleziono
+l'altra"). Indagine lunga e a più falsi indizi prima di trovare la
+causa reale — documentata qui per intero perché il percorso stesso
+insegna qualcosa di riusabile.
+
+#### Percorso dell'indagine (falsi indizi esclusi, non solo il risultato finale)
+
+1. **Audit codice completo** (modello, form, `ecn/services.py`,
+   template, JS di `new_document.html` e `base.html`): nessun
+   collegamento tra `allow_simple_ecn` e `requires_approved_pdf` — i
+   due campi sono e restano indipendenti. Nessun bug trovato qui.
+2. **Test end-to-end reale in Chrome** (browser automation, login
+   reale, click reali, verifica dello stato `.checked` via query DOM
+   diretta): entrambe le checkbox risultavano `true` contemporaneamente
+   senza problemi — **conclusione (errata) riportata all'operatore**:
+   "funziona in Chrome, il problema è specifico di Firefox/sistema".
+   L'errore: la verifica ha controllato solo la proprietà JS `.checked`
+   (corretta), mai lo **stile calcolato reale** — gli screenshot in
+   quella sessione fallivano per un problema tecnico del tool e non è
+   stata approfondita l'assenza di conferma visiva.
+3. **Diagnosi guidata con un LLM esterno** (prompt scritto da Claude
+   Code con contesto tecnico completo, eseguito dall'operatore):
+   script di probe JS (polling stato `checked`/`indeterminate` +
+   listener su tutti gli eventi rilevanti) eseguito dall'operatore nel
+   proprio Firefox reale. Il probe ha confermato: **lo stato DOM reale
+   era sempre corretto** (`checked` non veniva mai alterato, nessun
+   evento anomalo, nessun secondo click, nessuna label condivisa) — il
+   problema era quindi visivo, non funzionale. L'operatore ha
+   completato l'indagine da solo ispezionando lo stile calcolato reale
+   della checkbox: `background-color` restava bianco anche a
+   `checked:true`, con un `background-image` SVG bianco (la spunta)
+   sopra — spunta bianca su sfondo bianco, invisibile, salvo un attimo
+   durante l'hover.
+
+#### Causa reale
+
+`src/css/main.css`, regola (righe 75-80 prima del fix):
+```css
+input[type="checkbox"],
+input[type="radio"] {
+  background-color: var(--field-bg);
+  border-color: var(--field-border);
+  @apply text-elt-cyan-500 focus:ring-elt-cyan-500/40;
+}
+```
+Il plugin `@tailwindcss/forms` genera per lo stato selezionato
+`input:where([type=checkbox]):checked{background-color:currentColor;...}`
+(reso visibile grazie a `color` impostato dalla nostra stessa regola)
+— ma usa `:where()`, che azzera la specificità di tutto ciò che
+contiene. La nostra regola sopra usa invece un vero selettore
+d'attributo `[type="checkbox"]`, risultando nella **stessa specificità
+CSS** della regola `:checked` del plugin (`(0,1,1)` in entrambi i
+casi) ma **successiva** nel file compilato (`static/css/tailwind.css`,
+verificato con offset byte espliciti) — a parità di specificità vince
+l'ultima regola dichiarata, quindi il nostro `background-color` bianco
+sovrascriveva sempre quello del plugin, checkbox selezionata o meno.
+Spiega anche perché l'hover "rivelava" temporaneamente la spunta: la
+regola `:checked:hover` del plugin ha specificità più alta
+(`(0,2,1)`) e in quel momento vinceva.
+
+**Non è mai stato un bug di Firefox, del sistema operativo, di
+un'estensione, o un comportamento "tipo radio button"** tra le due
+checkbox — un puro bug di cascata CSS, presente identico in qualunque
+browser. Il motivo per cui non compariva nel test Chrome
+dell'operatore è che quel test verificava solo `.checked` (JS), mai lo
+stile calcolato/visivo.
+
+#### Modifica
+
+`src/css/main.css`: la regola `background-color`/`border-color`
+ristretta a `input[type="checkbox"]:not(:checked)` (e analogo per
+`radio`), separata dalla regola `color`/focus-ring che resta
+incondizionata. Con `:not(:checked)` la regola non può più competere
+strutturalmente con quella `:checked` del plugin, indipendentemente da
+specificità/ordine futuri. `npm run build` per ricompilare
+`static/css/tailwind.css`.
+
+#### File coinvolti
+
+`src/css/main.css`, `static/css/tailwind.css` (rigenerato),
+`documents/tests.py` (nuovo test di regressione).
+
+#### Verifiche eseguite
+
+Verificato nel file compilato (non solo nel sorgente) che la regola
+ora sia strutturalmente disgiunta da `:checked`. Verifica visiva reale
+in Chrome dopo il fix: `getComputedStyle` su una checkbox forzata
+`checked=true` → `backgroundColor: "rgb(16, 184, 212)"` (il cyan del
+brand, non più bianco) — conferma diretta che il fix funziona.
+`python manage.py check` pulito. Nuovo test
+`documents.tests.CheckboxCheckedStyleRegressionTests` (verifica che la
+regola sorgente resti scoped a `:not(:checked)`, unico controllo
+possibile da una suite Django che non renderizza CSS in un browser
+reale — la verifica dello stile calcolato resta manuale/browser,
+documentata sopra). Suite `documents` completa: **512/512 PASS**
+(nessuna regressione, 1 nuovo test di regressione CSS).
 
 ---
 

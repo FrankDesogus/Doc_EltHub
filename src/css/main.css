@@ -72,10 +72,20 @@
     width: 100%;
   }
 
-  input[type="checkbox"],
-  input[type="radio"] {
+  /* :not(:checked) è essenziale: senza, questa regola ha la stessa
+     specificità della regola :checked di @tailwindcss/forms
+     (background-color: currentColor, per rendere visibile la spunta
+     bianca) ma la segue nel CSS compilato — vincendo la cascata e
+     lasciando lo sfondo sempre bianco, spunta invisibile su sfondo
+     bianco anche a checkbox selezionata (bug reale riscontrato in
+     produzione, non solo teorico). */
+  input[type="checkbox"]:not(:checked),
+  input[type="radio"]:not(:checked) {
     background-color: var(--field-bg);
     border-color: var(--field-border);
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
     @apply text-elt-cyan-500 focus:ring-elt-cyan-500/40;
   }
 }

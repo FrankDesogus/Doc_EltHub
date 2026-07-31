@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.core import mail
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -6286,3 +6286,47 @@ class SubmitForApprovalPdfUploadTests(TestCase):
                     version, self.author, [self.approver, approver2], approval_policy=policy,
                 )
                 self.assertIsNotNone(req.pk)
+
+
+class CheckboxCheckedStyleRegressionTests(SimpleTestCase):
+    """
+    Regressione: `input[type="checkbox"]{background-color:var(--field-bg)}`
+    in src/css/main.css aveva la STESSA specificità CSS della regola
+    `:checked` di @tailwindcss/forms (che imposta background-color:
+    currentColor per rendere visibile la spunta bianca) ma la seguiva nel
+    file compilato, vincendo la cascata — risultato: spunta bianca su
+    sfondo rimasto bianco, checkbox visivamente sempre "vuota" anche da
+    selezionata (bug reale riscontrato dall'utente, non solo teorico:
+    vedi verifica manuale sotto). Il valore reale di `checked` nel DOM
+    non era mai stato alterato — da qui la falsa impressione di un
+    conflitto "tipo radio button" tra due checkbox indipendenti.
+
+    Nessun test Django può verificare lo stile calcolato in un browser
+    reale: questo test verifica solo che la regola sorgente resti
+    scoped a `:not(:checked)`, così da non poter più avere la stessa
+    specificità della regola `:checked` del plugin e ricadere nello
+    stesso bug per una modifica futura distratta.
+
+    Verifica manuale eseguita (non solo questo test): in Chrome, via
+    `getComputedStyle` sulla checkbox dopo averla selezionata,
+    `backgroundColor` risulta `rgb(16, 184, 212)` (il cyan del brand,
+    non più bianco) dopo il fix.
+    """
+
+    def test_checkbox_background_rule_excludes_checked_state(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        css_path = Path(settings.BASE_DIR) / 'src' / 'css' / 'main.css'
+        css = css_path.read_text(encoding='utf-8')
+
+        self.assertIn(
+            'input[type="checkbox"]:not(:checked)',
+            css,
+            "La regola che imposta background-color/border-color per "
+            "input[type=checkbox] deve restare scoped a :not(:checked), "
+            "altrimenti vince la cascata sulla regola :checked di "
+            "@tailwindcss/forms (stessa specificità, ordine successivo) "
+            "e la spunta selezionata torna invisibile (bianco su bianco).",
+        )

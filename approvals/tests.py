@@ -473,6 +473,188 @@ class ApprovedPDFFooterPlacementTests(TestCase):
 
 
 @override_settings(EMAIL_BACKEND=LOCMEM)
+class ApprovedPDFManualSignaturePlacementTests(TestCase):
+    """
+    TASK-040 Fase 3 — le coordinate di posizionamento libero salvate su
+    ApprovalDecision (Fase 1/2) vengono usate davvero per disegnare la firma
+    nel punto scelto sul PDF approvato finale, al posto della riga con
+    immagine nel registro "in calce"/pagina dedicata per quella decisione.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.author = User.objects.create_user('sigplace-author', password='pw')
+        self.document = make_document(code='SIGPLACE-001', owner=self.author, requires_approved_pdf=True)
+
+    @staticmethod
+    def _content_pdf_bytes(n_pages=1):
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        buf = io.BytesIO()
+        pdf = canvas.Canvas(buf, pagesize=A4)
+        for _ in range(n_pages):
+            pdf.setFont('Helvetica', 11)
+            pdf.drawString(30, 700, "Contenuto reale della pagina di prova")
+            pdf.showPage()
+        pdf.save()
+        return buf.getvalue()
+
+    @staticmethod
+    def _signature_png_bytes():
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new('RGBA', (300, 100), (0, 100, 200, 255)).save(buf, format='PNG')
+        return buf.getvalue()
+
+    def _approvers_with_signatures(self, n):
+        from accounts.models import UserSignature
+        users = []
+        for i in range(n):
+            u = User.objects.create_user(f'sigplace-approver{i}', password='pw', first_name=f'Nome{i}', last_name='Cognome')
+            sig = UserSignature.objects.create(user=u)
+            sig.image.save(f'firma{i}.png', SimpleUploadedFile(f'firma{i}.png', self._signature_png_bytes()), save=True)
+            users.append(u)
+        return users
+
+    def test_manual_placement_draws_on_page_and_not_duplicated_in_footer(self):
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(2)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0])  # automatico, nessun posizionamento
+            approve_version(req, approvers[1], signature_page=1, signature_x=0.5, signature_y=0.5)
+            version.refresh_from_db()
+
+            reader = PdfReader(version.approved_pdf.file.path)
+            self.assertEqual(len(reader.pages), 1)  # ancora "in calce", nessuna pagina aggiunta
+            page = reader.pages[0]
+            text = page.extract_text()
+            n_images = len(list(page.images))
+
+        self.assertIn(approvers[0].get_full_name(), text)
+        self.assertIn(approvers[1].get_full_name(), text)
+        self.assertIn('(firma apposta a pag. 1)', text)
+        # Un'immagine per l'approvatore automatico (nel registro) + una per
+        # quello con posizionamento libero (disegnata sulla pagina) — mai
+        # duplicata anche nel registro.
+        self.assertEqual(n_images, 2)
+
+    def test_invalid_page_falls_back_to_automatic_footer_image(self):
+        """Pagina fuori range: la decisione ricade sul comportamento
+        automatico, nessuna firma persa, nessun errore di generazione."""
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(1)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0], signature_page=5, signature_x=0.5, signature_y=0.5)
+            version.refresh_from_db()
+
+            self.assertEqual(version.approved_pdf.status, 'generated')
+            reader = PdfReader(version.approved_pdf.file.path)
+            page = reader.pages[0]
+            text = page.extract_text()
+            n_images = len(list(page.images))
+
+        self.assertNotIn('firma apposta a pag.', text)
+        self.assertEqual(n_images, 1)  # solo la miniatura automatica nel registro
+
+    def test_manual_placement_on_non_last_page_uses_no_footer_offset(self):
+        """Il posizionamento su una pagina diversa dall'ultima (che riceve
+        l'estensione per il footer 'in calce') non deve subire alcuna
+        traslazione verticale indebita."""
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(1)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=2), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0], signature_page=1, signature_x=0.5, signature_y=0.5)
+            version.refresh_from_db()
+
+            reader = PdfReader(version.approved_pdf.file.path)
+            self.assertEqual(len(reader.pages), 2)  # footer in calce sull'ultima, nessuna pagina extra
+            n_images_page1 = len(list(reader.pages[0].images))
+            n_images_page2 = len(list(reader.pages[1].images))
+            footer_text = reader.pages[1].extract_text()
+
+        self.assertEqual(n_images_page1, 1)  # la firma disegnata liberamente
+        self.assertEqual(n_images_page2, 0)  # registro sull'ultima pagina: solo testo per questa decisione
+        self.assertIn('(firma apposta a pag. 1)', footer_text)
+
+    def test_manual_placement_respected_in_dedicated_page_fallback(self):
+        """Con molti approvatori il registro ricade sulla pagina dedicata
+        (comportamento preesistente): il posizionamento libero deve restare
+        rispettato anche in questo percorso."""
+        from pypdf import PdfReader
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(10)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0], signature_page=1, signature_x=0.2, signature_y=0.8)
+            for u in approvers[1:]:
+                approve_version(req, u)
+            version.refresh_from_db()
+
+            reader = PdfReader(version.approved_pdf.file.path)
+            self.assertEqual(len(reader.pages), 2)  # contenuto + pagina registro dedicata
+            n_images_content = len(list(reader.pages[0].images))
+            registry_text = reader.pages[1].extract_text()
+
+        self.assertEqual(n_images_content, 1)
+        self.assertIn('(firma apposta a pag. 1)', registry_text)
+        self.assertIn(approvers[0].get_full_name(), registry_text)
+
+    def test_extreme_coordinates_do_not_crash_generation(self):
+        """Coordinate ai bordi (0.0/1.0): il clamping deve evitare firme
+        fuori pagina senza mai far fallire la generazione."""
+        from approvals.services import approve_version
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            approvers = self._approvers_with_signatures(1)
+            source = create_document_file(
+                SimpleUploadedFile('a.pdf', self._content_pdf_bytes(n_pages=1), content_type='application/pdf'),
+                self.author,
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            req = submit_version_for_approval(version, self.author, approvers, approval_policy='all')
+            approve_version(req, approvers[0], signature_page=1, signature_x=0.0, signature_y=0.0)
+            version.refresh_from_db()
+
+        self.assertEqual(version.approved_pdf.status, 'generated')
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
 class RejectVersionTests(TestCase):
 
     def setUp(self):

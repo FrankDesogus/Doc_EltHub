@@ -1,11 +1,25 @@
 """
 Generazione del PDF approvato (TASK-030, firma in calce corretta — verifica
-manuale del 2026-07-27).
+manuale del 2026-07-27; TASK-040 Fase 3, posizionamento libero firma
+disegnato realmente sul PDF).
 
 Quando una ApprovalRequest raggiunge l'esito APPROVED, il sistema genera un
 nuovo artefatto separato: il PDF di rappresentazione congelato + il registro
 delle approvazioni (nome, ruolo, decisione, timestamp, eventuale firma
 visiva, nota sull'assenza di firma digitale).
+
+Posizionamento libero della firma (TASK-040/040-2/040-3): un `ApprovalDecision`
+può avere `signature_page`/`signature_x`/`signature_y` valorizzati (coordinate
+normalizzate 0.0-1.0, X da sinistra, Y dall'alto, scelte dall'approvatore nel
+widget di trascinamento). Quando il posizionamento è valido — pagina in
+range, immagine firma realmente presente sul disco — la firma viene
+disegnata direttamente in quel punto della pagina indicata, **al posto**
+della riga con immagine nel registro "in calce"/pagina dedicata (che per
+quella decisione resta solo testuale, con una nota sulla pagina). Se il
+posizionamento non è valido per qualunque motivo (pagina fuori range,
+immagine mancante su disco, errore di lettura), la decisione ricade
+silenziosamente sul comportamento automatico preesistente (immagine nel
+registro) — mai una firma persa, mai un errore di generazione per questo.
 
 Collocazione del registro — strategia ibrida:
 
@@ -33,6 +47,7 @@ rigenerabile.
 """
 
 import io
+import os
 
 from django.core.files.base import ContentFile
 from django.utils import timezone
@@ -62,6 +77,12 @@ _ROW_HEIGHT_TEXT_ONLY = 6 * mm
 _ROW_HEIGHT_WITH_IMAGE = 16 * mm
 _SIGNATURE_IMG_WIDTH = 26 * mm
 _SIGNATURE_IMG_HEIGHT = 9 * mm
+
+# Dimensioni della firma disegnata nel punto scelto liberamente sulla pagina
+# (TASK-040 Fase 3) — più grande della miniatura del registro "in calce",
+# pensata per essere leggibile come una vera firma apposta sul documento.
+_MANUAL_SIGNATURE_WIDTH = 40 * mm
+_MANUAL_SIGNATURE_HEIGHT = 16 * mm
 
 
 def generate_approved_pdf(version, actor=None, force=False):
@@ -148,53 +169,99 @@ def _final_decisions(version):
 def _build_approved_pdf_bytes(version, representation_pdf_path, decisions_tuple):
     approval_request, decisions = decisions_tuple
     reader = PdfReader(representation_pdf_path)
+    n_pages = len(reader.pages)
+    manual_by_page, manual_ids = _decisions_with_valid_manual_placement(decisions, n_pages)
 
-    footer_height = _estimate_footer_height(decisions)
+    footer_height = _estimate_footer_height(decisions, manual_ids)
     if footer_height <= _MAX_FOOTER_HEIGHT_PT:
         try:
             return _stamp_footer_on_last_page(
                 reader, version, approval_request, decisions, footer_height,
+                manual_by_page, manual_ids,
             )
         except Exception:
             pass  # ripiego sulla pagina finale dedicata, mai un errore di generazione per questo
 
-    registry_bytes = _build_registry_standalone_page(version, approval_request, decisions)
-    return _append_page(representation_pdf_path, registry_bytes)
+    registry_bytes = _build_registry_standalone_page(version, approval_request, decisions, manual_ids)
+    return _append_page(representation_pdf_path, registry_bytes, manual_by_page)
 
 
-def _estimate_footer_height(decisions):
+def _decisions_with_valid_manual_placement(decisions, n_pages):
+    """
+    Seleziona le decisioni con posizionamento libero della firma (TASK-040)
+    davvero utilizzabile: pagina/coordinate tutte presenti, pagina nel range
+    del PDF, immagine firma realmente leggibile su disco. Qualunque di questi
+    controlli fallisca, la decisione resta fuori da entrambi i risultati e
+    ricade sul comportamento automatico (riga con immagine nel registro) —
+    mai un errore di generazione, mai una firma silenziosamente persa.
+
+    Ritorna (manual_by_page: {numero_pagina_1based: [decisioni]}, manual_ids: {pk}).
+    """
+    manual_by_page = {}
+    manual_ids = set()
+    for d in decisions:
+        if d.signature_page is None or d.signature_x is None or d.signature_y is None:
+            continue
+        if not d.snapshot_signature_image:
+            continue
+        if not (1 <= d.signature_page <= n_pages):
+            continue
+        try:
+            if not os.path.exists(d.snapshot_signature_image.path):
+                continue
+        except Exception:
+            continue
+        manual_by_page.setdefault(d.signature_page, []).append(d)
+        manual_ids.add(d.pk)
+    return manual_by_page, manual_ids
+
+
+def _estimate_footer_height(decisions, manual_ids):
     header_block = 22 * mm  # titolo registro + riga stato/codice/revisione + riga policy/data
     rows = sum(
-        _ROW_HEIGHT_WITH_IMAGE if d.snapshot_signature_image else _ROW_HEIGHT_TEXT_ONLY
+        _ROW_HEIGHT_TEXT_ONLY if d.pk in manual_ids
+        else (_ROW_HEIGHT_WITH_IMAGE if d.snapshot_signature_image else _ROW_HEIGHT_TEXT_ONLY)
         for d in decisions
     ) or _ROW_HEIGHT_TEXT_ONLY
     disclaimer_block = 10 * mm
     return header_block + rows + disclaimer_block + 2 * _MARGIN
 
 
-def _stamp_footer_on_last_page(reader, version, approval_request, decisions, footer_height):
+def _stamp_footer_on_last_page(
+    reader, version, approval_request, decisions, footer_height, manual_by_page, manual_ids,
+):
     writer = PdfWriter()
     n_pages = len(reader.pages)
 
     for i, page in enumerate(reader.pages):
-        if i < n_pages - 1:
-            writer.add_page(page)
-            continue
-
+        page_number = i + 1
         width = float(page.mediabox.width)
         height = float(page.mediabox.height)
+        y_offset = 0.0
 
-        footer_bytes = _build_footer_overlay(version, approval_request, decisions, width, footer_height)
-        footer_page = PdfReader(io.BytesIO(footer_bytes)).pages[0]
+        if i == n_pages - 1:
+            footer_bytes = _build_footer_overlay(
+                version, approval_request, decisions, width, footer_height, manual_ids,
+            )
+            footer_page = PdfReader(io.BytesIO(footer_bytes)).pages[0]
 
-        # Sposta il contenuto originale verso l'alto per liberare, in fondo,
-        # un'area realmente vuota (mai "indovinata" sopra al contenuto).
-        page.add_transformation(Transformation().translate(tx=0, ty=footer_height))
-        page.mediabox = RectangleObject([0, 0, width, height + footer_height])
-        if page.cropbox is not None:
-            page.cropbox = RectangleObject([0, 0, width, height + footer_height])
-        # L'area [0, footer_height] è vuota per costruzione: nessuna sovrapposizione.
-        page.merge_page(footer_page)
+            # Sposta il contenuto originale verso l'alto per liberare, in fondo,
+            # un'area realmente vuota (mai "indovinata" sopra al contenuto).
+            page.add_transformation(Transformation().translate(tx=0, ty=footer_height))
+            page.mediabox = RectangleObject([0, 0, width, height + footer_height])
+            if page.cropbox is not None:
+                page.cropbox = RectangleObject([0, 0, width, height + footer_height])
+            # L'area [0, footer_height] è vuota per costruzione: nessuna sovrapposizione.
+            page.merge_page(footer_page)
+            y_offset = footer_height
+
+        placements = manual_by_page.get(page_number)
+        if placements:
+            # Coordinate calcolate sulla pagina ORIGINALE (larghezza invariata,
+            # mai estesa); y_offset le trasla verso l'alto esattamente come il
+            # contenuto originale, solo per l'ultima pagina (unica estesa).
+            overlay_bytes = _build_signature_placements_overlay(placements, width, height, y_offset)
+            page.merge_page(PdfReader(io.BytesIO(overlay_bytes)).pages[0])
 
         writer.add_page(page)
 
@@ -203,7 +270,51 @@ def _stamp_footer_on_last_page(reader, version, approval_request, decisions, foo
     return buffer.getvalue()
 
 
-def _build_footer_overlay(version, approval_request, decisions, width, footer_height):
+def _clamp_center(raw, dimension, half_size):
+    """Vincola il centro di un riquadro di lato 2*half_size a restare
+    interamente dentro [0, dimension]; se il riquadro non ci sta proprio
+    (pagina più piccola della firma), lo centra semplicemente."""
+    if dimension <= half_size * 2:
+        return dimension / 2
+    return min(max(raw, half_size), dimension - half_size)
+
+
+def _build_signature_placements_overlay(placements, orig_width, orig_height, y_offset):
+    """
+    Overlay con le firme posizionate liberamente su questa pagina (TASK-040
+    Fase 3). Disegnato nel sistema di coordinate della pagina ORIGINALE
+    (larghezza invariata, mai estesa dal footer) e poi traslato di y_offset
+    se questa stessa pagina ha ricevuto anche l'estensione per il footer
+    "in calce" (solo l'ultima pagina, mai le altre) — così la firma resta
+    visivamente nello stesso punto scelto dall'approvatore rispetto al
+    contenuto originale, che ha subito la stessa traslazione.
+    """
+    canvas_height = orig_height + y_offset
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(orig_width, canvas_height))
+    half_w = _MANUAL_SIGNATURE_WIDTH / 2
+    half_h = _MANUAL_SIGNATURE_HEIGHT / 2
+
+    for decision in placements:
+        px = _clamp_center(decision.signature_x * orig_width, orig_width, half_w)
+        py = _clamp_center(orig_height - decision.signature_y * orig_height, orig_height, half_h)
+        py += y_offset
+        try:
+            img = ImageReader(decision.snapshot_signature_image.path)
+            pdf.drawImage(
+                img, px - half_w, py - half_h,
+                width=_MANUAL_SIGNATURE_WIDTH, height=_MANUAL_SIGNATURE_HEIGHT,
+                mask='auto', preserveAspectRatio=True,
+            )
+        except Exception:
+            continue  # già filtrate a monte da _decisions_with_valid_manual_placement, difensivo
+
+    pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+def _build_footer_overlay(version, approval_request, decisions, width, footer_height, manual_ids):
     """Registro compatto, disegnato con origine (0,0) in basso a sinistra,
     pensato per essere incollato esattamente nell'area liberata in calce."""
     document = version.document
@@ -246,7 +357,7 @@ def _build_footer_overlay(version, approval_request, decisions, width, footer_he
         decided_at = timezone.localtime(decision.decided_at).strftime('%d/%m/%Y %H:%M')
 
         pdf.setFont('Helvetica', 9)
-        if decision.snapshot_signature_image:
+        if decision.pk not in manual_ids and decision.snapshot_signature_image:
             try:
                 img = ImageReader(decision.snapshot_signature_image.path)
                 pdf.drawImage(
@@ -263,7 +374,10 @@ def _build_footer_overlay(version, approval_request, decisions, width, footer_he
                 continue
             except Exception:
                 pass
-        pdf.drawString(_MARGIN, y, f"{name} — {role} — {decision.get_decision_display()} — {decided_at}")
+        label = f"{name} — {role} — {decision.get_decision_display()} — {decided_at}"
+        if decision.pk in manual_ids:
+            label += f" (firma apposta a pag. {decision.signature_page})"
+        pdf.drawString(_MARGIN, y, label)
         y -= _ROW_HEIGHT_TEXT_ONLY
 
     pdf.setFont('Helvetica-Oblique', 6.5)
@@ -277,12 +391,22 @@ def _build_footer_overlay(version, approval_request, decisions, width, footer_he
     return buffer.getvalue()
 
 
-def _append_page(representation_pdf_path, registry_page_bytes):
+def _append_page(representation_pdf_path, registry_page_bytes, manual_by_page):
     reader = PdfReader(representation_pdf_path)
     registry_reader = PdfReader(io.BytesIO(registry_page_bytes))
 
     writer = PdfWriter()
-    for page in reader.pages:
+    for i, page in enumerate(reader.pages):
+        # Pagina dedicata di fallback: le pagine di contenuto originali non
+        # vengono mai estese/traslate (a differenza della strategia "in
+        # calce"), quindi le firme posizionate liberamente si disegnano
+        # sempre senza alcun offset verticale.
+        placements = manual_by_page.get(i + 1)
+        if placements:
+            width = float(page.mediabox.width)
+            height = float(page.mediabox.height)
+            overlay_bytes = _build_signature_placements_overlay(placements, width, height, 0.0)
+            page.merge_page(PdfReader(io.BytesIO(overlay_bytes)).pages[0])
         writer.add_page(page)
     for page in registry_reader.pages:
         writer.add_page(page)
@@ -292,7 +416,7 @@ def _append_page(representation_pdf_path, registry_page_bytes):
     return buffer.getvalue()
 
 
-def _build_registry_standalone_page(version, approval_request, decisions):
+def _build_registry_standalone_page(version, approval_request, decisions, manual_ids):
     """Fallback: pagina finale dedicata (usata solo quando il footer 'in
     calce' risulterebbe troppo alto, o se l'estensione della pagina fallisce
     per un motivo tecnico)."""
@@ -337,10 +461,13 @@ def _build_registry_standalone_page(version, approval_request, decisions):
         )
         decided_at = timezone.localtime(decision.decided_at).strftime('%d/%m/%Y %H:%M')
         row_top = state['y']
+        label = f"{name} — {role} — {decision.get_decision_display()} — {decided_at}"
+        if decision.pk in manual_ids:
+            label += f" (firma apposta a pag. {decision.signature_page})"
         pdf.setFont('Helvetica', 9)
-        pdf.drawString(margin + 2 * mm, row_top, f"{name} — {role} — {decision.get_decision_display()} — {decided_at}")
+        pdf.drawString(margin + 2 * mm, row_top, label)
 
-        if decision.snapshot_signature_image:
+        if decision.pk not in manual_ids and decision.snapshot_signature_image:
             try:
                 img = ImageReader(decision.snapshot_signature_image.path)
                 img_y = row_top - 4 * mm - _SIGNATURE_IMG_HEIGHT
