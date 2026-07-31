@@ -1,5 +1,9 @@
+import io
 import shutil
 import tempfile
+import unittest
+import zipfile
+from unittest import mock
 
 from django.contrib.auth.models import User
 from django.core import mail
@@ -4590,6 +4594,45 @@ class PDFStrategyPolicyTests(TestCase):
         decision = determine_pdf_strategy_for_file(_FakeDocumentFile())
         self.assertEqual(decision.strategy, PDFStrategy.MANUAL_REQUIRED)
 
+    def test_office_like_formats_auto_external_when_converter_available(self):
+        """TASK-044 — office_converter_available=True instrada verso AUTO_EXTERNAL."""
+        from documents.pdf_strategy import PDFConverter, PDFStrategy, determine_pdf_strategy
+        for ext in ('docx', 'doc', 'odt', 'rtf', 'xlsx', 'xls', 'ods', 'pptx', 'ppt', 'odp'):
+            with self.subTest(ext=ext):
+                decision = determine_pdf_strategy(ext, office_converter_available=True)
+                self.assertEqual(decision.strategy, PDFStrategy.AUTO_EXTERNAL)
+                self.assertEqual(decision.converter, PDFConverter.OFFICE_LIBREOFFICE)
+                self.assertTrue(decision.requires_confirmation)
+                self.assertTrue(decision.reason)
+
+    def test_office_converter_available_does_not_affect_non_office_extensions(self):
+        """TASK-044 — il parametro riguarda solo gli formati Office-like."""
+        from documents.pdf_strategy import PDFStrategy, determine_pdf_strategy
+        self.assertEqual(
+            determine_pdf_strategy('pdf', office_converter_available=True).strategy,
+            PDFStrategy.NATIVE_PDF,
+        )
+        self.assertEqual(
+            determine_pdf_strategy('png', office_converter_available=True).strategy,
+            PDFStrategy.AUTO_RELIABLE,
+        )
+        self.assertEqual(
+            determine_pdf_strategy('zip', office_converter_available=True).strategy,
+            PDFStrategy.MANUAL_REQUIRED,
+        )
+
+    def test_determine_pdf_strategy_for_file_passes_through_office_converter_available(self):
+        """TASK-044 — determine_pdf_strategy_for_file inoltra il nuovo parametro."""
+        from documents.pdf_strategy import PDFStrategy, determine_pdf_strategy_for_file
+
+        class _FakeDocumentFile:
+            extension = 'docx'
+
+        decision = determine_pdf_strategy_for_file(
+            _FakeDocumentFile(), office_converter_available=True,
+        )
+        self.assertEqual(decision.strategy, PDFStrategy.AUTO_EXTERNAL)
+
 
 class PDFArtifactModelTests(TestCase):
     """TASK-024 — RepresentationPDF / ApprovedPDFArtifact: solo schema."""
@@ -4694,6 +4737,169 @@ class PDFConvertersTests(TestCase):
 def _make_source_document_file(user, name, content, content_type='application/octet-stream'):
     upload = SimpleUploadedFile(name, content, content_type=content_type)
     return create_document_file(upload, user)
+
+
+def _minimal_docx_bytes(text='Contenuto di test TASK-044.'):
+    """
+    .docx minimo ma realmente valido (OOXML), scritto a mano come zip: nessuna
+    dipendenza aggiuntiva (python-docx) solo per generare un fixture di test.
+    LibreOffice lo apre correttamente (verificato con esecuzione reale).
+    """
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '</Types>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        '</Relationships>'
+    )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body>'
+        '</w:document>'
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('[Content_Types].xml', content_types)
+        archive.writestr('_rels/.rels', root_rels)
+        archive.writestr('word/document.xml', document_xml)
+    return buffer.getvalue()
+
+
+class LibreOfficeAvailabilityTests(SimpleTestCase):
+    """TASK-044 — is_libreoffice_available: solo logica di gating, binario sempre mockato."""
+
+    def test_unavailable_when_setting_disabled_even_if_binary_present(self):
+        from documents.pdf_converters_external import is_libreoffice_available
+        with override_settings(LIBREOFFICE_CONVERSION_ENABLED=False):
+            with mock.patch('shutil.which', return_value='/usr/bin/soffice'):
+                self.assertFalse(is_libreoffice_available())
+
+    def test_unavailable_when_binary_missing_even_if_setting_enabled(self):
+        from documents.pdf_converters_external import is_libreoffice_available
+        with override_settings(LIBREOFFICE_CONVERSION_ENABLED=True):
+            with mock.patch('shutil.which', return_value=None):
+                self.assertFalse(is_libreoffice_available())
+
+    def test_available_when_both_enabled_and_binary_present(self):
+        from documents.pdf_converters_external import is_libreoffice_available
+        with override_settings(LIBREOFFICE_CONVERSION_ENABLED=True):
+            with mock.patch('shutil.which', return_value='/usr/bin/soffice'):
+                self.assertTrue(is_libreoffice_available())
+
+    def test_unavailable_when_both_disabled_and_missing(self):
+        from documents.pdf_converters_external import is_libreoffice_available
+        with override_settings(LIBREOFFICE_CONVERSION_ENABLED=False):
+            with mock.patch('shutil.which', return_value=None):
+                self.assertFalse(is_libreoffice_available())
+
+    def test_render_raises_clear_error_when_binary_missing(self):
+        from documents.pdf_converters_external import render_office_to_pdf_bytes
+        with mock.patch('shutil.which', return_value=None):
+            with self.assertRaisesMessage(RuntimeError, 'non trovato sul PATH'):
+                render_office_to_pdf_bytes(b'qualunque cosa', 'docx')
+
+
+@unittest.skipUnless(shutil.which('soffice'), 'LibreOffice non installato su questa macchina')
+class LibreOfficeConversionIntegrationTests(TestCase):
+    """TASK-044 — conversione reale via LibreOffice, nessun mock: richiede il binario."""
+
+    def test_render_office_to_pdf_bytes_converts_real_docx(self):
+        from documents.pdf_converters_external import render_office_to_pdf_bytes
+        pdf_bytes = render_office_to_pdf_bytes(_minimal_docx_bytes(), 'docx')
+        self.assertTrue(pdf_bytes.startswith(b'%PDF-'))
+
+    def test_render_office_to_pdf_bytes_tolerates_text_garbage_as_docx(self):
+        """
+        Scoperta empirica in questa sessione: il filtro Writer di LibreOffice
+        è tollerante e importa testo grezzo non riconosciuto come OOXML/zip
+        con un fallback testuale, producendo comunque un PDF valido — non
+        solleva un'eccezione. Verificato qui perché contraddice
+        l'assunzione iniziale (rimpiazzata da
+        test_render_office_to_pdf_bytes_raises_on_malformed_binary_input,
+        che usa un input che il filtro Calc rifiuta davvero).
+        """
+        from documents.pdf_converters_external import render_office_to_pdf_bytes
+        pdf_bytes = render_office_to_pdf_bytes(b'non e\' un docx reale', 'docx')
+        self.assertTrue(pdf_bytes.startswith(b'%PDF-'))
+
+    def test_render_office_to_pdf_bytes_raises_on_malformed_binary_input(self):
+        from documents.pdf_converters_external import render_office_to_pdf_bytes
+        with self.assertRaises(RuntimeError):
+            render_office_to_pdf_bytes(b'\x00\x01\x02binary garbage not text at all \xff\xfe', 'xlsx')
+
+
+@unittest.skipUnless(shutil.which('soffice'), 'LibreOffice non installato su questa macchina')
+@override_settings(EMAIL_BACKEND=LOCMEM, LIBREOFFICE_CONVERSION_ENABLED=True)
+class LibreOfficePipelineIntegrationTests(TestCase):
+    """TASK-044 — sync_representation_pdf_for_new_source con LibreOffice abilitato, conversione reale."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.temp_media = tempfile.mkdtemp()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.author = User.objects.create_user('libreoffice-author', password='pw')
+        self.document = make_document(code='LIBREOFFICE-001', owner=self.author, requires_approved_pdf=True)
+
+    def test_real_docx_source_is_converted_and_ready(self):
+        from documents.models import RepresentationPDF
+        from documents.pdf_strategy import PDFConverter, PDFStrategy
+
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(self.author, 'relazione.docx', _minimal_docx_bytes())
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+            version.refresh_from_db()
+
+            rep = version.representation_pdf
+            self.assertEqual(rep.status, RepresentationPDF.Status.READY)
+            self.assertEqual(rep.strategy, PDFStrategy.AUTO_EXTERNAL)
+            self.assertEqual(rep.converter, PDFConverter.OFFICE_LIBREOFFICE)
+            self.assertTrue(rep.requires_confirmation)
+            rep.file.open('rb')
+            try:
+                self.assertTrue(rep.file.read().startswith(b'%PDF-'))
+            finally:
+                rep.file.close()
+
+    def test_malformed_xlsx_source_fails_gracefully_to_conversion_failed(self):
+        """
+        .docx con contenuto non valido viene comunque importato da LibreOffice
+        con un fallback testuale (vedi
+        LibreOfficeConversionIntegrationTests) — per un fallimento di
+        conversione reale serve un input che il filtro Calc rifiuti
+        davvero (binario non testuale con estensione .xlsx).
+        """
+        from documents.models import RepresentationPDF
+
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            source = _make_source_document_file(
+                self.author, 'foglio.xlsx',
+                b'\x00\x01\x02binary garbage not text at all \xff\xfe',
+            )
+            version = create_new_revision(self.document, self.author, 'A', 1, file=source)
+        version.refresh_from_db()
+
+        rep = version.representation_pdf
+        self.assertEqual(rep.status, RepresentationPDF.Status.CONVERSION_FAILED)
+        self.assertTrue(rep.error_message)
 
 
 @override_settings(EMAIL_BACKEND=LOCMEM)

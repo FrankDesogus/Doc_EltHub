@@ -185,6 +185,21 @@
   .card { @apply rounded-lg p-5 mb-4 backdrop-blur-sm; background-color: var(--panel-bg); border: 1px solid var(--border-soft); box-shadow: var(--shadow-soft); }
   .card-header { @apply pb-3 mb-4; border-bottom: 1px solid var(--border-soft); }
 
+  /* Dropdown "Azioni" (TASK-045): un solo bottone che raccoglie le azioni
+     disponibili su un'entità, invece di file di bottoni separati. */
+  .dropdown { @apply relative inline-block flex-shrink-0; }
+  .dropdown-menu {
+    @apply absolute right-0 mt-1 min-w-[230px] rounded-lg py-1.5;
+    background-color: var(--panel-bg);
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--shadow-soft);
+    z-index: 20;
+  }
+  .dropdown-menu[hidden] { display: none; }
+  .dropdown-item { @apply block w-full text-left px-4 py-2 text-sm transition-colors; color: var(--text-primary); }
+  .dropdown-item:hover { background-color: var(--hover-soft); }
+  .dropdown-divider { @apply my-1.5; border-top: 1px solid var(--border-soft); }
+
   /* Form fields */
   .form-label { @apply block text-sm font-medium mb-1; color: var(--text-primary); }
   .form-help  { @apply mt-1 text-xs; color: var(--text-secondary); }

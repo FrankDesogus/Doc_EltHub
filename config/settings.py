@@ -156,3 +156,15 @@ EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='info@elthub.it')
+
+# ---------------------------------------------------------------------------
+# Conversione PDF di rappresentazione via LibreOffice headless (TASK-044)
+# Opzionale: se il binario non è disponibile sul PATH, i formati Office
+# restano a caricamento manuale (comportamento invariato). Disabilitato
+# esplicitamente in config/test_settings.py: la suite non deve dipendere
+# dalla presenza di LibreOffice sulla macchina che esegue i test.
+# ---------------------------------------------------------------------------
+LIBREOFFICE_CONVERSION_ENABLED = config(
+    'LIBREOFFICE_CONVERSION_ENABLED', default=True, cast=bool
+)
+LIBREOFFICE_BINARY = config('LIBREOFFICE_BINARY', default='soffice')

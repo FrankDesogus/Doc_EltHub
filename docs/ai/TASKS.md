@@ -84,6 +84,8 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-042 | Fix UX gate PDF di rappresentazione: distinguere "PDF mancante" da "PDF caricato, da confermare" | — | 2026-07-30 |
 | TASK-040-3 | Posizionamento libero firma (Fase 3: la firma viene disegnata realmente sul PDF approvato) | — | 2026-07-30 |
 | TASK-043 | Fix bug CSS: checkbox selezionata visivamente invisibile (spunta bianca su sfondo bianco) | — | 2026-07-31 |
+| TASK-044 | Conversione automatica formati Office → PDF via LibreOffice headless (opzionale, gated a settings) | — | 2026-07-31 |
+| TASK-045 | UI dettaglio documento: card unica documento+versione, azioni raccolte in menu "Azioni" | — | 2026-07-31 |
 
 ---
 
@@ -5030,6 +5032,219 @@ possibile da una suite Django che non renderizza CSS in un browser
 reale — la verifica dello stile calcolato resta manuale/browser,
 documentata sopra). Suite `documents` completa: **512/512 PASS**
 (nessuna regressione, 1 nuovo test di regressione CSS).
+
+### TASK-044 — Conversione automatica formati Office → PDF via LibreOffice headless — Claude Code
+
+Task facoltativo valutato (non implementato) nella sessione del
+2026-07-31, ora implementato su richiesta esplicita dell'operatore.
+LibreOffice risultava già installato sul sistema (`/usr/bin/soffice`,
+Manjaro) — **nessuna installazione di pacchetti eseguita**, solo
+integrazione software con un binario già presente.
+
+#### Obiettivo
+
+Prima di questo task, i formati "Office-like" (`docx`, `doc`, `docm`,
+`odt`, `rtf`, `xlsx`, `xls`, `xlsm`, `ods`, `pptx`, `ppt`, `pptm`,
+`odp`) risultavano sempre `PDFStrategy.MANUAL_REQUIRED`
+(`documents/pdf_strategy.py`, motivo `_REASON_OFFICE_UNAVAILABLE`):
+l'autore doveva sempre caricare il PDF di rappresentazione a mano.
+Obiettivo: quando LibreOffice è disponibile ed esplicitamente abilitato
+via settings, tentare una conversione automatica reale (comunque non
+byte-per-byte identica al sorgente, quindi `requires_confirmation`
+resta `True` come per `AUTO_RELIABLE`), mantenendo intatto il
+fallback al caricamento manuale quando LibreOffice non è disponibile o
+la conversione fallisce.
+
+#### Decisione di design: gating esplicito via settings, non solo rilevamento del binario
+
+`documents/pdf_strategy.py` si dichiara esplicitamente una "funzione
+pura: nessun accesso a filesystem, rete o modelli Django" — invariante
+mantenuto. `determine_pdf_strategy(extension, office_converter_available=False)`
+riceve la disponibilità come parametro iniettato dal chiamante, non la
+calcola internamente. **Il default resta `False`**: ogni chiamata
+esistente (inclusi tutti i test già scritti prima di questo task) non
+passa il nuovo parametro e ottiene **esattamente lo stesso
+comportamento di prima**, byte per byte — zero rischio di regressione
+sui test esistenti.
+
+La disponibilità reale è calcolata in un nuovo modulo dedicato,
+`documents/pdf_converters_external.py::is_libreoffice_available()`,
+che richiede **entrambe** le condizioni:
+1. `settings.LIBREOFFICE_CONVERSION_ENABLED` (nuovo, default `True` in
+   produzione/sviluppo via `config/settings.py`, **esplicitamente
+   `False` in `config/test_settings.py`** — la suite reale non deve
+   mai dipendere dal fatto che la macchina che esegue i test abbia
+   LibreOffice installato, deve restare deterministica e veloce);
+2. `shutil.which(settings.LIBREOFFICE_BINARY)` non `None` (binario
+   davvero presente sul PATH in quell'ambiente).
+
+`config/demo_settings.py` non sovrascrive il flag: eredita `True` da
+`config/settings.py`, quindi la demo mostra la conversione automatica
+reale se LibreOffice è installato sulla macchina che la esegue.
+
+**Perché non nella policy pura**: verificare il PATH è I/O, non
+appartiene a una funzione dichiarata pura. Iniettare la disponibilità
+dall'esterno mantiene `pdf_strategy.py` invariato nel suo contratto e
+isola la nuova dipendenza di sistema in un modulo a parte,
+esplicitamente separato da `documents/pdf_converters.py` (che resta
+dichiaratamente "pure-Python, nessuna dipendenza di sistema").
+
+#### Modifiche
+
+- `documents/pdf_strategy.py`: nuova strategia
+  `PDFStrategy.AUTO_EXTERNAL` e nuovo convertitore
+  `PDFConverter.OFFICE_LIBREOFFICE`. `determine_pdf_strategy`/
+  `determine_pdf_strategy_for_file` accettano
+  `office_converter_available` (default `False`); quando `True` e
+  l'estensione è Office-like, restituiscono `AUTO_EXTERNAL` invece di
+  `MANUAL_REQUIRED`. Il registro `_OFFICE_LIKE_MANUAL_EXTENSIONS` non
+  cambia (stesso elenco estensioni, solo la decisione finale dipende
+  ora anche dal nuovo parametro).
+- `documents/pdf_converters_external.py` (nuovo file):
+  `is_libreoffice_available()` e `render_office_to_pdf_bytes(source_bytes, extension)`.
+  Quest'ultima scrive il sorgente in una directory temporanea dedicata
+  (`tempfile.TemporaryDirectory`), invoca
+  `soffice --headless --convert-to pdf --outdir ... <file>` con
+  **`-env:UserInstallation=` puntato a un profilo utente temporaneo
+  dedicato per ogni conversione** (evita il lock "soffice già in
+  esecuzione" quando più conversioni avvengono in rapida successione —
+  problema noto e documentato di LibreOffice headless in contesti
+  concorrenti), timeout 60s, `subprocess.run` **senza `shell=True`**
+  con argomenti in lista (nessun rischio di command injection: il nome
+  file scritto su disco è sempre fisso, `source.<estensione>`, mai
+  derivato dal nome file originale caricato dall'utente). Solleva
+  `RuntimeError` con messaggio chiaro su binario assente, timeout,
+  codice di uscita non zero o PDF di output mancante — catturato dal
+  chiamante esistente in `pdf_pipeline.py` esattamente come già
+  avveniva per `AUTO_RELIABLE` (→ stato `CONVERSION_FAILED`, nessun
+  path nuovo di gestione errore).
+- `documents/pdf_pipeline.py`: `sync_representation_pdf_for_new_source`
+  calcola `is_libreoffice_available()` una volta e la passa a
+  `determine_pdf_strategy_for_file`; il ramo `elif decision.strategy ==
+  PDFStrategy.AUTO_RELIABLE:` esteso a `in (PDFStrategy.AUTO_RELIABLE,
+  PDFStrategy.AUTO_EXTERNAL)` (stesso identico codice try/except,
+  nessuna duplicazione). `_convert` accetta ora anche `extension` (serve
+  a LibreOffice per scegliere il filtro di importazione corretto) e
+  gestisce `PDFConverter.OFFICE_LIBREOFFICE`.
+- `config/settings.py`: `LIBREOFFICE_CONVERSION_ENABLED` (default
+  `True`, `cast=bool`) e `LIBREOFFICE_BINARY` (default `'soffice'`) via
+  `decouple.config`, stesso pattern di tutte le altre impostazioni.
+- `config/test_settings.py`: `LIBREOFFICE_CONVERSION_ENABLED = False`
+  esplicito.
+- `.env.example`: documentate le due nuove variabili opzionali.
+
+#### Test
+
+- `documents/tests.py`: nuovi test su `determine_pdf_strategy` con
+  `office_converter_available=True` (estensioni Office-like →
+  `AUTO_EXTERNAL`/`OFFICE_LIBREOFFICE`/`requires_confirmation=True`) e
+  riconferma esplicita che il default resta `MANUAL_REQUIRED` quando il
+  parametro non è passato.
+- `documents/pdf_converters_external.py`: test di
+  `is_libreoffice_available()` con `override_settings` sulle due
+  variabili (4 combinazioni: entrambe vere/false/miste), senza mai
+  invocare realmente il binario in questi casi (mock su
+  `shutil.which`).
+- **Test di integrazione reale** (non mockato), `@override_settings(LIBREOFFICE_CONVERSION_ENABLED=True)`,
+  `unittest.skipUnless(shutil.which('soffice'), ...)`: genera un
+  `.docx` minimo ma realmente valido (zip OOXML scritto a mano nel
+  test, nessuna nuova dipendenza `python-docx`), lo converte con
+  `render_office_to_pdf_bytes` e verifica che l'output inizi con
+  `%PDF-` — **eseguito realmente in questa sessione** (LibreOffice è
+  installato sulla macchina), non solo scritto e mai lanciato.
+- Stesso gating, test end-to-end su
+  `sync_representation_pdf_for_new_source` con sorgente `.docx` reale:
+  stato finale `READY`, `requires_confirmation=True`. Test separato con
+  bytes non validi (pattern `b'finto office'` già usato altrove nella
+  suite) sotto lo stesso `override_settings`: conferma che una
+  conversione reale fallita produce `CONVERSION_FAILED` con
+  `error_message` popolato, non un'eccezione non gestita.
+- **Nessuna modifica ai test esistenti**: tutti i test precedenti che
+  usano sorgenti `.docx` con bytes finti (decine, in tutta
+  `documents/tests.py`) continuano a girare con
+  `LIBREOFFICE_CONVERSION_ENABLED=False` (default di
+  `config/test_settings.py`), quindi restano `MANUAL_UPLOAD_REQUIRED`
+  esattamente come prima — verificato eseguendo l'intera suite
+  `documents` dopo il cambio.
+
+#### Verifiche eseguite
+
+`python manage.py check` pulito. Suite `documents` completa eseguita
+con la venv reale del progetto (non solo letta): risultato riportato
+nel commit. Nessuna migrazione di modelli (nessun campo nuovo,
+`RepresentationPDF.Status.CONVERSION_FAILED`/`READY` già esistenti).
+`grep` mirato per confermare che nessun altro punto del codice
+(`views.py`, template, `admin.py`) assume un insieme chiuso di sole 3
+strategie: nessun consumatore trovato fuori da `pdf_strategy.py`,
+`pdf_pipeline.py` e `tests.py`.
+
+### TASK-045 — UI dettaglio documento: card unica + menu "Azioni" — Claude Code
+
+Richiesto verbalmente dall'operatore in questa sessione (mai discusso
+prima): nella pagina `document_detail` troppe informazioni erano
+sparse tra l'header e la card "Versione corrente", e le azioni
+disponibili (richiesta ECN, storico, modifica metadati, nuova
+revisione, dettaglio versione, download) erano distribuite in più
+bottoni separati. Obiettivo: interfaccia più minimale, senza perdere
+alcun dato o funzione già esposta prima.
+
+#### Modifiche
+
+- `templates/documents/document_detail.html`: header (codice, badge
+  tipo/stato, titolo, descrizione) e la card "Versione corrente" ex
+  separata uniti in un'unica `.card`, con un solo `detail-grid`
+  etichettato per tutti i campi (tipo documento, categoria,
+  proprietario, cartella progetto, modalità revisione, PDF approvato,
+  ECN semplice, revisione corrente, autore versione, data
+  approvazione, file, sommario modifiche). Testo dei badge esistenti
+  invariato byte-per-byte dove già coperto da test (vedi sotto).
+- Nuovo menu a tendina "Azioni" nell'header della card (bottone +
+  pannello, vanilla JS inline, nessuna libreria nuova): raccoglie + Nuova
+  revisione (diretta/via ECN secondo policy esistente), + Crea ECN
+  semplice, + Richiedi ECN standard, Modifica metadati, Vedi storico
+  completo, Dettaglio versione, Scarica file — stessa logica
+  condizionale (permessi/stato) di prima, solo riposizionata. Il
+  bottone non viene renderizzato se nessuna azione è disponibile.
+  Rimosso il pulsante duplicato "+ Richiedi variante" nella card
+  "Ultimo ECN / Variante" (stessa identica azione/URL già nel menu).
+- `src/css/main.css`: nuovo componente `.dropdown`/`.dropdown-menu`/
+  `.dropdown-item`/`.dropdown-divider`, stesso pattern
+  `var(--panel-bg)`/`var(--border-soft)`/`var(--shadow-soft)` già
+  usato da `.card` — theme-aware automaticamente, nessun override
+  `.dark` dedicato necessario (confermato visivamente, non solo per
+  lettura del codice, vedi sotto). `npm run build` eseguito,
+  `static/css/tailwind.css` rigenerato.
+
+#### Regressione trovata e corretta durante il primo giro di test
+
+3 test esistenti fallivano per un mismatch di maiuscole/testo dei
+badge dopo il refactor (`approvazione diretta senza ECN` diventato
+`Approvazione diretta senza ECN`; `Solo ECN standard (flusso semplice
+non consentito)` riscritto come `Non consentito (solo ECN standard)`)
+— corretto ripristinando il testo esatto atteso dai test
+(`test_document_detail_shows_policy_badge_when_disallowed`,
+`test_detail_shows_direct_approval_label`,
+`test_legacy_document_keeps_direct_revision_path`), non modificando i
+test: il testo originale era già corretto, non c'era motivo di
+cambiarlo.
+
+#### Verifiche eseguite
+
+`manage.py check` pulito. Suite `documents` completa: **525/525
+PASS** (0 nuovi test — refactor di template/CSS, la copertura
+esistente su testo/permessi/condizionali dei bottoni è bastata a
+guidare il fix della regressione sopra). Smoke test via `curl` (login
+reale) su documenti con combinazioni diverse di permessi/flag/assenza
+di versione corrente: tutti 200, nessun errore server.
+
+**Verifica visiva reale in Chrome** (non solo HTTP/DOM — lezione di
+TASK-043 applicata): menu "Azioni" testato aperto/chiuso, click su
+voce, chiusura al click esterno, chiusura con `Esc`, sia in tema
+chiaro sia scuro, sia su un documento completo (PDF approvato, ECN,
+approvazione con tabella approvatori) sia su una bozza senza versione
+corrente (menu correttamente ridotto alle sole azioni pertinenti,
+niente "Dettaglio versione"/"Scarica file" quando non applicabili).
+Tutto conforme, nessun problema visivo trovato.
 
 ---
 

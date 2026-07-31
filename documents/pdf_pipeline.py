@@ -14,8 +14,9 @@ ciclo di vita di una DocumentVersion in bozza:
   - confirm_representation_pdf(version, user): l'autore dichiara che il PDF
     di rappresentazione rappresenta correttamente il file sorgente inviato.
 
-Nessuna di queste funzioni invoca programmi esterni: la conversione fallita
-o non disponibile lascia sempre una via di caricamento manuale.
+La conversione automatica (pure-Python o via LibreOffice, TASK-044) può
+fallire o non essere disponibile: lascia sempre una via di caricamento
+manuale, mai un'eccezione non gestita fino all'utente.
 """
 
 import os
@@ -25,6 +26,7 @@ from django.core.files.base import ContentFile
 from django.utils import timezone
 
 from documents.pdf_converters import render_image_to_pdf_bytes, render_text_to_pdf_bytes
+from documents.pdf_converters_external import is_libreoffice_available, render_office_to_pdf_bytes
 from documents.pdf_strategy import PDFConverter, PDFStrategy, determine_pdf_strategy_for_file
 
 _PDF_MAGIC = b'%PDF-'
@@ -46,7 +48,9 @@ def sync_representation_pdf_for_new_source(version):
         version.save(update_fields=['representation_pdf'])
         return None
 
-    decision = determine_pdf_strategy_for_file(source_file)
+    decision = determine_pdf_strategy_for_file(
+        source_file, office_converter_available=is_libreoffice_available(),
+    )
     rep = RepresentationPDF(
         strategy=decision.strategy,
         converter=decision.converter,
@@ -59,10 +63,10 @@ def sync_representation_pdf_for_new_source(version):
         raw = _read_source_bytes(source_file)
         rep.file.save(_pdf_filename(source_file), ContentFile(raw), save=False)
         rep.status = RepresentationPDF.Status.READY
-    elif decision.strategy == PDFStrategy.AUTO_RELIABLE:
+    elif decision.strategy in (PDFStrategy.AUTO_RELIABLE, PDFStrategy.AUTO_EXTERNAL):
         try:
             raw = _read_source_bytes(source_file)
-            pdf_bytes = _convert(decision.converter, raw)
+            pdf_bytes = _convert(decision.converter, raw, extension=source_file.extension)
             rep.file.save(_pdf_filename(source_file), ContentFile(pdf_bytes), save=False)
             rep.status = RepresentationPDF.Status.READY
         except Exception as exc:
@@ -141,11 +145,13 @@ def _invalidate_previous(version):
         previous.save(update_fields=['status', 'updated_at'])
 
 
-def _convert(converter, raw_bytes):
+def _convert(converter, raw_bytes, extension=None):
     if converter == PDFConverter.TEXT_RENDERER:
         return render_text_to_pdf_bytes(raw_bytes)
     if converter == PDFConverter.IMAGE_TO_PDF:
         return render_image_to_pdf_bytes(raw_bytes)
+    if converter == PDFConverter.OFFICE_LIBREOFFICE:
+        return render_office_to_pdf_bytes(raw_bytes, extension)
     raise ValueError(f"Convertitore sconosciuto: {converter!r}")
 
 

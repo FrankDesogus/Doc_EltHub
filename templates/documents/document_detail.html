@@ -13,125 +13,139 @@
   <span>{{ document.code }}</span>
 </nav>
 
-<!-- Header documento -->
-<div class="flex items-start justify-between mb-6 gap-4 flex-wrap">
-  <div>
-    <div class="flex items-center gap-3 mb-1 flex-wrap">
-      <span class="text-2xl font-bold text-brand-900 font-mono">{{ document.code }}</span>
-      {% if document.document_type %}
-      <span class="badge badge-doctype" title="{{ document.get_document_type_display }}">{{ document.document_type }}</span>
-      {% endif %}
-      {% if document.current_version %}
-        {% with s=document.current_version.status %}
-        {% if s == 'approved' %}
-        <span class="badge-status-approved">Approvato</span>
-        {% elif s == 'draft' %}
-        <span class="badge-status-draft">Bozza</span>
-        {% elif s == 'in_approval' %}
-        <span class="badge-status-in_approval">In approvazione</span>
-        {% elif s == 'rejected' %}
-        <span class="badge-status-rejected">Rifiutato</span>
-        {% elif s == 'superseded' %}
-        <span class="badge-status-superseded">Superato</span>
-        {% elif s == 'archived' %}
-        <span class="badge-status-archived">Archiviato</span>
-        {% endif %}
-        {% endwith %}
-      {% endif %}
-    </div>
-    <h1 class="text-xl font-semibold text-gray-800">{{ document.title }}</h1>
-    <div class="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
-      {% if document.document_type %}<span>{{ document.get_document_type_display }}</span>{% endif %}
-      <span>{{ document.get_category_display }}</span>
-      <span>{{ document.owner.get_full_name|default:document.owner.username }}</span>
-      {% if document.project_folder %}
-      <span>📁 {{ document.project_folder.code }}</span>
-      {% endif %}
-      {% if document.requires_ecn_for_revision %}
-      <span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">Modalità revisione: ECN obbligatorio</span>
-      {% else %}
-      <span class="text-xs text-sky-700 bg-sky-50 px-2 py-0.5 rounded">Modalità revisione: approvazione diretta senza ECN</span>
-      {% endif %}
-      {% if document.requires_approved_pdf %}
-      <span class="text-xs text-teal-700 bg-teal-50 px-2 py-0.5 rounded">Richiede copia PDF approvata</span>
-      {% endif %}
-      {% if not document.allow_simple_ecn %}
-      <span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">Solo ECN standard (flusso semplice non consentito)</span>
-      {% endif %}
-    </div>
-    {% if document.description %}
-    <p class="text-sm text-gray-600 mt-2">{{ document.description }}</p>
-    {% endif %}
-  </div>
-
-  <!-- Azioni principali -->
-  <div class="flex items-center gap-2 flex-wrap flex-shrink-0">
-    {% if document.status == 'active' %}
-      {% if document.current_version and document.current_version.status == 'approved' %}
-        {% if document.requires_ecn_for_revision %}
-          {% if show_create_ecn %}
-          <a href="{% url 'document_new_revision' document.pk %}" class="btn-primary">+ Nuova revisione (via ECN)</a>
-          {% endif %}
-        {% else %}
-          {% if show_create_revision %}
-          <a href="{% url 'document_new_revision' document.pk %}" class="btn-primary">+ Nuova revisione</a>
-          {% endif %}
-        {% endif %}
-      {% else %}
-        {% if show_create_revision %}
-        <a href="{% url 'document_new_revision' document.pk %}" class="btn-primary">+ Nuova revisione</a>
-        {% endif %}
-      {% endif %}
-    {% endif %}
-    {% if show_create_ecn %}
-    {% if document.allow_simple_ecn %}
-    <a href="{% url 'ecn:ecn_create_simple' %}?document={{ document.pk }}" class="btn-secondary">+ Crea ECN semplice</a>
-    {% endif %}
-    <a href="{% url 'ecn:ecn_create' %}?document={{ document.pk }}" class="btn-secondary">+ Richiedi ECN standard</a>
-    {% endif %}
-    {% if show_edit_metadata %}
-    <a href="{% url 'document_edit_metadata' document.pk %}" class="btn-secondary">Modifica metadati</a>
-    {% endif %}
-    {% if can_open_archive %}
-    <a href="{% url 'archive_document_detail' document.pk %}" class="btn-secondary">Vedi storico completo</a>
-    {% endif %}
-  </div>
-</div>
-
-<!-- Versione corrente -->
-{% if document.current_version %}
+<!-- Documento + versione corrente: un'unica card (TASK-045) -->
 <div class="card mb-4">
-  <div class="card-header flex items-center justify-between">
-    <h2 class="section-title mb-0">Versione corrente — Rev. {{ document.current_version.revision_label }}</h2>
-    <div class="flex items-center gap-2">
-      <a href="{% url 'version_detail' document.current_version.pk %}" class="btn-secondary btn-sm">Dettaglio versione</a>
-      {% if document.current_version.file %}
-      <a href="{% url 'version_download' document.current_version.pk %}" class="btn-secondary btn-sm">⬇ Scarica</a>
-      {% endif %}
+  <div class="card-header flex items-start justify-between gap-4 flex-wrap">
+    <div>
+      <div class="flex items-center gap-3 mb-1 flex-wrap">
+        <span class="text-2xl font-bold text-brand-900 font-mono">{{ document.code }}</span>
+        {% if document.document_type %}
+        <span class="badge badge-doctype" title="{{ document.get_document_type_display }}">{{ document.document_type }}</span>
+        {% endif %}
+        {% if document.current_version %}
+          {% with s=document.current_version.status %}
+          {% if s == 'approved' %}
+          <span class="badge-status-approved">Approvato</span>
+          {% elif s == 'draft' %}
+          <span class="badge-status-draft">Bozza</span>
+          {% elif s == 'in_approval' %}
+          <span class="badge-status-in_approval">In approvazione</span>
+          {% elif s == 'rejected' %}
+          <span class="badge-status-rejected">Rifiutato</span>
+          {% elif s == 'superseded' %}
+          <span class="badge-status-superseded">Superato</span>
+          {% elif s == 'archived' %}
+          <span class="badge-status-archived">Archiviato</span>
+          {% endif %}
+          {% endwith %}
+        {% endif %}
+      </div>
+      <h1 class="text-xl font-semibold text-gray-800">{{ document.title }}</h1>
     </div>
+
+    {% if show_create_revision or show_create_ecn or show_edit_metadata or can_open_archive or document.current_version %}
+    <div class="dropdown">
+      <button type="button" class="btn-secondary dropdown-trigger" id="document-actions-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="document-actions-menu">
+        Azioni <span aria-hidden="true">▾</span>
+      </button>
+      <div class="dropdown-menu" id="document-actions-menu" role="menu" aria-labelledby="document-actions-trigger" hidden>
+        {% if document.status == 'active' %}
+          {% if document.current_version and document.current_version.status == 'approved' %}
+            {% if document.requires_ecn_for_revision %}
+              {% if show_create_ecn %}
+              <a href="{% url 'document_new_revision' document.pk %}" class="dropdown-item" role="menuitem">+ Nuova revisione (via ECN)</a>
+              {% endif %}
+            {% else %}
+              {% if show_create_revision %}
+              <a href="{% url 'document_new_revision' document.pk %}" class="dropdown-item" role="menuitem">+ Nuova revisione</a>
+              {% endif %}
+            {% endif %}
+          {% else %}
+            {% if show_create_revision %}
+            <a href="{% url 'document_new_revision' document.pk %}" class="dropdown-item" role="menuitem">+ Nuova revisione</a>
+            {% endif %}
+          {% endif %}
+        {% endif %}
+        {% if show_create_ecn %}
+        {% if document.allow_simple_ecn %}
+        <a href="{% url 'ecn:ecn_create_simple' %}?document={{ document.pk }}" class="dropdown-item" role="menuitem">+ Crea ECN semplice</a>
+        {% endif %}
+        <a href="{% url 'ecn:ecn_create' %}?document={{ document.pk }}" class="dropdown-item" role="menuitem">+ Richiedi ECN standard</a>
+        {% endif %}
+        {% if show_edit_metadata %}
+        <a href="{% url 'document_edit_metadata' document.pk %}" class="dropdown-item" role="menuitem">Modifica metadati</a>
+        {% endif %}
+        {% if can_open_archive %}
+        <a href="{% url 'archive_document_detail' document.pk %}" class="dropdown-item" role="menuitem">Vedi storico completo</a>
+        {% endif %}
+        {% if document.current_version %}
+          {% if show_create_revision or show_create_ecn or show_edit_metadata or can_open_archive %}
+          <div class="dropdown-divider"></div>
+          {% endif %}
+          <a href="{% url 'version_detail' document.current_version.pk %}" class="dropdown-item" role="menuitem">Dettaglio versione</a>
+          {% if document.current_version.file %}
+          <a href="{% url 'version_download' document.current_version.pk %}" class="dropdown-item" role="menuitem">⬇ Scarica file</a>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
   </div>
-  <div class="detail-grid">
+
+  {% if document.description %}
+  <p class="text-sm text-gray-600 mb-4">{{ document.description }}</p>
+  {% endif %}
+
+  <div class="detail-grid mb-0">
+    {% if document.document_type %}
     <div class="detail-item">
-      <span class="detail-label">Revisione</span>
+      <span class="detail-label">Tipo documento</span>
+      <span class="detail-value">{{ document.get_document_type_display }}</span>
+    </div>
+    {% endif %}
+    <div class="detail-item">
+      <span class="detail-label">Categoria</span>
+      <span class="detail-value">{{ document.get_category_display }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Proprietario</span>
+      <span class="detail-value">{{ document.owner.get_full_name|default:document.owner.username }}</span>
+    </div>
+    {% if document.project_folder %}
+    <div class="detail-item">
+      <span class="detail-label">Cartella progetto</span>
+      <span class="detail-value">📁 {{ document.project_folder.code }}</span>
+    </div>
+    {% endif %}
+    <div class="detail-item">
+      <span class="detail-label">Modalità revisione</span>
+      <span class="detail-value">
+        {% if document.requires_ecn_for_revision %}
+        <span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">ECN obbligatorio</span>
+        {% else %}
+        <span class="text-xs text-sky-700 bg-sky-50 px-2 py-0.5 rounded">approvazione diretta senza ECN</span>
+        {% endif %}
+      </span>
+    </div>
+    {% if document.requires_approved_pdf %}
+    <div class="detail-item">
+      <span class="detail-label">PDF approvato</span>
+      <span class="detail-value"><span class="text-xs text-teal-700 bg-teal-50 px-2 py-0.5 rounded">Richiede copia PDF approvata</span></span>
+    </div>
+    {% endif %}
+    {% if not document.allow_simple_ecn %}
+    <div class="detail-item">
+      <span class="detail-label">ECN semplice</span>
+      <span class="detail-value"><span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">Solo ECN standard (flusso semplice non consentito)</span></span>
+    </div>
+    {% endif %}
+    {% if document.current_version %}
+    <div class="detail-item">
+      <span class="detail-label">Revisione corrente</span>
       <span class="detail-value">{{ document.current_version.revision_label }} (n. {{ document.current_version.revision_number }})</span>
     </div>
     <div class="detail-item">
-      <span class="detail-label">Stato</span>
-      <span class="detail-value">
-        {% with s=document.current_version.status %}
-        {% if s == 'approved' %}<span class="badge-status-approved">Approvato</span>
-        {% elif s == 'draft' %}<span class="badge-status-draft">Bozza</span>
-        {% elif s == 'in_approval' %}<span class="badge-status-in_approval">In approvazione</span>
-        {% elif s == 'rejected' %}<span class="badge-status-rejected">Rifiutato</span>
-        {% elif s == 'superseded' %}<span class="badge-status-superseded">Superato</span>
-        {% elif s == 'archived' %}<span class="badge-status-archived">Archiviato</span>
-        {% else %}<span>{{ document.current_version.get_status_display }}</span>
-        {% endif %}
-        {% endwith %}
-      </span>
-    </div>
-    <div class="detail-item">
-      <span class="detail-label">Autore</span>
+      <span class="detail-label">Autore versione</span>
       <span class="detail-value">{{ document.current_version.created_by.get_full_name|default:document.current_version.created_by.username }}</span>
     </div>
     {% if document.current_version.approved_at %}
@@ -140,21 +154,51 @@
       <span class="detail-value">{{ document.current_version.approved_at|date:"d/m/Y H:i" }}</span>
     </div>
     {% endif %}
-    {% if document.current_version.change_summary %}
-    <div class="detail-item md:col-span-2">
-      <span class="detail-label">Sommario modifiche</span>
-      <span class="detail-value">{{ document.current_version.change_summary }}</span>
-    </div>
-    {% endif %}
     {% if document.current_version.file %}
     <div class="detail-item">
       <span class="detail-label">File</span>
       <span class="detail-value font-mono text-xs">{{ document.current_version.file.original_filename }}</span>
     </div>
     {% endif %}
+    {% if document.current_version.change_summary %}
+    <div class="detail-item md:col-span-2">
+      <span class="detail-label">Sommario modifiche</span>
+      <span class="detail-value">{{ document.current_version.change_summary }}</span>
+    </div>
+    {% endif %}
+    {% endif %}
   </div>
 </div>
-{% endif %}
+
+<script>
+(function () {
+  var trigger = document.getElementById('document-actions-trigger');
+  var menu = document.getElementById('document-actions-menu');
+  if (!trigger || !menu) { return; }
+
+  function closeMenu() {
+    menu.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+  }
+  function openMenu() {
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+  }
+
+  trigger.addEventListener('click', function (event) {
+    event.stopPropagation();
+    if (menu.hidden) { openMenu(); } else { closeMenu(); }
+  });
+  document.addEventListener('click', function (event) {
+    if (!menu.hidden && !menu.contains(event.target) && event.target !== trigger) {
+      closeMenu();
+    }
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') { closeMenu(); }
+  });
+})();
+</script>
 
 <!-- Approvazione ultima revisione (se approvata) -->
 {% if document.current_version and document.current_version.status == 'approved' %}
@@ -240,11 +284,8 @@
 
 <!-- Ultimo ECN collegato (storico completo → Archivio) -->
 <div class="card mb-4">
-  <div class="card-header flex items-center justify-between">
+  <div class="card-header">
     <h2 class="section-title mb-0">Ultimo ECN / Variante</h2>
-    {% if show_create_ecn %}
-    <a href="{% url 'ecn:ecn_create' %}?document={{ document.pk }}" class="btn-primary btn-sm">+ Richiedi variante</a>
-    {% endif %}
   </div>
   {% if latest_ecn %}
   <div class="detail-grid mb-0">

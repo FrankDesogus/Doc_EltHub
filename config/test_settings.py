@@ -36,3 +36,11 @@ EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
 
 # Isolamento upload di test: mai nella media/ reale (BASE_DIR / 'media').
 MEDIA_ROOT = BASE_DIR / '.test-media'
+
+# La suite non deve dipendere dalla presenza di LibreOffice sulla macchina
+# che esegue i test (TASK-044): disabilitato esplicitamente, indipendente
+# dal default di produzione in config/settings.py. I test che verificano
+# la conversione via LibreOffice si abilitano puntualmente con
+# @override_settings e restano comunque skippati se il binario non è
+# realmente installato (unittest.skipUnless(shutil.which(...))).
+LIBREOFFICE_CONVERSION_ENABLED = False
