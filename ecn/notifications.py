@@ -52,19 +52,28 @@ def _notify_ccb_member(change_notice, user, is_first=False):
 def notify_ecn_created(change_notice):
     """
     Email a owner documento e Quality Manager quando ECN viene creata.
-    Non notifica il proponente (è chi ha creato l'ECN).
+    Non notifica il proponente (è chi ha creato l'ECN) — eccetto in
+    modalità demo per il supervisore demo designato: quell'unico account
+    interpreta contemporaneamente proponente, owner documento e Quality
+    Manager per poter mostrare l'intero flusso end-to-end da una sola
+    casella durante una dimostrazione. Fuori da questo caso la governance
+    resta regolata come da progetto (ruoli separati).
     """
     from django.contrib.auth.models import User
     from notifications.services import _send_and_log
+    from config.demo_utils import is_demo_supervisor
+
+    proposer = change_notice.proposed_by
+    demo_self_notify = is_demo_supervisor(proposer)
 
     recipients = set()
     doc_owner = change_notice.document.owner
-    if doc_owner and doc_owner.pk != change_notice.proposed_by.pk:
+    if doc_owner and (doc_owner.pk != proposer.pk or demo_self_notify):
         recipients.add(doc_owner)
 
     qm_users = User.objects.filter(groups__name='Quality Manager', is_active=True)
     for u in qm_users:
-        if u.pk != change_notice.proposed_by.pk:
+        if u.pk != proposer.pk or demo_self_notify:
             recipients.add(u)
 
     for recipient in recipients:
@@ -111,10 +120,14 @@ def notify_ecn_coordinator_assigned(change_notice):
 
 def notify_ecn_vote_cast(change_notice, voter, decision, comment=''):
     """
-    Dopo ogni voto CCB:
-    - tutti i membri CCB ricevono aggiornamento informativo
-    - SEQUENTIAL e pratica ancora aperta: il prossimo membro riceve anche
-      un messaggio che indica che è il suo turno.
+    Dopo ogni voto CCB, aggiornamento informativo a tutti i membri CCB
+    **tranne** il prossimo in coda (SEQUENTIAL, pratica ancora aperta): quel
+    membro riceve già una email dedicata e azionabile da
+    ecn.services._notify_next_sequential → notify_ecn_next_approver
+    (chiamata separatamente, subito prima di questa funzione, in
+    approve_change_notice). Prima di questo fix il prossimo approvatore
+    riceveva la stessa informazione due volte, in due email diverse
+    (bug reale, non solo teorico — segnalato dall'operatore).
     """
     from ecn.models import ChangeNotice, ChangeNoticeDecision
     from notifications.services import _send_and_log
@@ -145,14 +158,11 @@ def notify_ecn_vote_cast(change_notice, voter, decision, comment=''):
 
     for approver_rel in all_approvers:
         recipient = approver_rel.user
-        is_next = (next_approver_user is not None and recipient.pk == next_approver_user.pk)
 
-        if is_next:
-            next_block = (
-                f"\nÈ ora il tuo turno: accedi al sistema per esprimere la tua decisione su {change_notice.code}.\n"
-            )
-        else:
-            next_block = ""
+        # Salta il prossimo in coda: ha già ricevuto la propria email dedicata
+        # "Richiesta di decisione CCB" (vedi docstring) — evita il doppio invio.
+        if next_approver_user is not None and recipient.pk == next_approver_user.pk:
+            continue
 
         body = (
             f"Gentile {recipient.get_full_name() or recipient.username},\n\n"
@@ -167,7 +177,6 @@ def notify_ecn_vote_cast(change_notice, voter, decision, comment=''):
             f"Policy CCB: {change_notice.get_ccb_policy_display()}\n"
             f"Stato ECN : {change_notice.get_status_display()}\n"
         )
-        body += next_block
         body += (
             f"\nAccedi al sistema documentale per vedere lo stato completo della pratica.\n\n"
             f"Questo messaggio è generato automaticamente, non rispondere a questa email."

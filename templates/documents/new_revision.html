@@ -149,13 +149,6 @@
         {% if form.revision_label.help_text %}<p class="form-help">{{ form.revision_label.help_text }}</p>{% endif %}
         {% for error in form.revision_label.errors %}<p class="form-error">{{ error }}</p>{% endfor %}
       </div>
-      <div class="form-group mb-0">
-        <label class="form-label" for="{{ form.revision_number.id_for_label }}">
-          {{ form.revision_number.label }} <span class="text-red-500">*</span>
-        </label>
-        {{ form.revision_number }}
-        {% for error in form.revision_number.errors %}<p class="form-error">{{ error }}</p>{% endfor %}
-      </div>
       <div class="form-group mb-0 md:col-span-2">
         <label class="form-label" for="{{ form.change_summary.id_for_label }}">{{ form.change_summary.label }}</label>
         {{ form.change_summary }}

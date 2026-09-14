@@ -24,11 +24,43 @@ class DocumentTypeSelect(forms.Select):
         return option
 
 
+class FolderChoiceField(forms.ModelChoiceField):
+    """
+    ModelChoiceField che mostra il percorso gerarchico completo nell'etichetta
+    di ogni opzione (es. "Ingegneria › PRJ-DEMO-001 — Amplificatore RF Demo"),
+    invece del solo codice/nome della cartella foglia.
+
+    Con molte cartelle annidate, una tendina piatta rende difficile capire
+    dove si trova ciascuna voce nell'albero (segnalato dagli operatori).
+    Mostrare il percorso completo, unito a un campo di ricerca lato client
+    (vedi new_document.html) che filtra il testo delle opzioni, risolve il
+    problema senza sostituire il controllo nativo con un widget custom.
+
+    folder_names_by_pk va popolato dal form prima del rendering (nome di
+    ogni cartella per pk, per risolvere gli antenati dal materialized path
+    senza una query per opzione).
+    """
+    folder_names_by_pk: dict = {}
+
+    def label_from_instance(self, obj):
+        if not obj.path:
+            return f"{obj.code} — {obj.name}"
+        ancestor_pks = [int(p) for p in obj.path.split('/') if p][:-1]
+        crumbs = [self.folder_names_by_pk.get(pk, '?') for pk in ancestor_pks]
+        crumbs.append(f"{obj.code} — {obj.name}")
+        return ' › '.join(crumbs)
+
+
 class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
     code = forms.CharField(
         max_length=50,
+        required=False,
         label='Codice documento',
-        help_text='Codice univoco (es. QUA-001)',
+        help_text=(
+            'Lasciare vuoto: il codice viene generato automaticamente secondo la '
+            'procedura aziendale. Compilare solo in modalità sanatoria (codice storico '
+            'reale del documento) o per categoria "Altro" (documenti fuori procedura).'
+        ),
     )
     title = forms.CharField(max_length=255, label='Titolo')
     description = forms.CharField(
@@ -36,15 +68,34 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
         required=False,
         label='Descrizione',
     )
-    category = forms.ChoiceField(choices=Document.Category.choices, label='Categoria')
+    category = forms.ChoiceField(
+        choices=list(Document.Category.choices) + [('OTHER', 'Altro')],
+        label='Categoria',
+    )
+    category_other = forms.CharField(
+        max_length=50,
+        required=False,
+        label='Specifica categoria',
+        help_text='Obbligatorio se la categoria è "Altro": diventa la categoria effettiva del documento.',
+    )
     document_type = forms.ChoiceField(
         choices=[('', '— seleziona prima la categoria —')] + DOCUMENT_TYPE_CHOICES,
         required=False,
         label='Tipo documento',
-        help_text='Le opzioni disponibili dipendono dalla Categoria selezionata sopra.',
+        help_text=(
+            'Le opzioni disponibili dipendono dalla Categoria selezionata sopra. '
+            'Obbligatorio: determina il codice documento generato automaticamente '
+            '(non richiesto per categoria "Altro" o in modalità sanatoria).'
+        ),
         widget=DocumentTypeSelect,
     )
-    project_folder = forms.ModelChoiceField(
+    document_type_other = forms.CharField(
+        max_length=100,
+        required=False,
+        label='Specifica tipo documento',
+        help_text='Obbligatorio se la categoria è "Altro".',
+    )
+    project_folder = FolderChoiceField(
         queryset=ProjectFolder.objects.none(),
         required=True,
         label='Cartella',
@@ -62,11 +113,6 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
         initial='00',
         label='Etichetta prima revisione',
         help_text='Numerica: 00. Alfabetica: A.',
-    )
-    revision_number = forms.IntegerField(
-        min_value=0,
-        initial=0,
-        label='Numero revisione',
     )
     change_summary = forms.CharField(
         widget=forms.Textarea(attrs={'rows': 3}),
@@ -110,15 +156,16 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
     )
     file = forms.FileField(required=False, label='File operativo')
 
-    def __init__(self, *args, user=None, fixed_project_folder=None, current_user=None, **kwargs):
+    def __init__(self, *args, user=None, initial_folder=None, current_user=None, **kwargs):
+        """
+        initial_folder: cartella suggerita dal contesto di provenienza
+        (cartella o progetto di partenza) — è solo una preselezione, non
+        un vincolo: il queryset resta sempre l'intero elenco delle cartelle
+        scrivibili dall'utente, che può scegliere liberamente un'altra
+        destinazione prima di salvare.
+        """
         super().__init__(*args, current_user=current_user, **kwargs)
-        if fixed_project_folder is not None:
-            self.fields['project_folder'].queryset = ProjectFolder.objects.filter(
-                pk=fixed_project_folder.pk
-            )
-            self.fields['project_folder'].initial = fixed_project_folder
-            self.fields['project_folder'].empty_label = None
-        elif user is not None and (user.is_superuser or user.is_staff):
+        if user is not None and (user.is_superuser or user.is_staff):
             qs = ProjectFolder.objects.filter(status='active').order_by('code')
             self.fields['project_folder'].queryset = qs
         elif user is not None:
@@ -127,11 +174,14 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
             qs = ProjectFolder.objects.filter(pk__in=writable_ids, status='active').order_by('code')
             self.fields['project_folder'].queryset = qs
 
-    def clean_code(self):
-        code = self.cleaned_data['code'].strip()
-        if Document.objects.filter(code=code).exists():
-            raise forms.ValidationError(f'Un documento con codice "{code}" esiste già.')
-        return code
+        if initial_folder is not None:
+            self.fields['project_folder'].initial = initial_folder
+
+        # Nomi di tutte le cartelle per risolvere il percorso gerarchico
+        # (FolderChoiceField.label_from_instance) senza una query per opzione.
+        self.fields['project_folder'].folder_names_by_pk = dict(
+            ProjectFolder.objects.values_list('pk', 'name')
+        )
 
     def clean(self):
         cleaned = super().clean()
@@ -147,17 +197,55 @@ class DocumentCreateForm(SanatoriaFieldsMixin, forms.Form):
 
         category = cleaned.get('category', '')
         document_type = cleaned.get('document_type', '')
-        if document_type and not is_valid_document_type_for_category(document_type, category):
+        is_other_category = (category == 'OTHER')
+
+        if is_other_category:
+            category_other = cleaned.get('category_other', '').strip()
+            if not category_other:
+                self.add_error('category_other', 'Specifica la categoria per un documento "Altro".')
+            cleaned['category'] = category_other
+
+            document_type_other = cleaned.get('document_type_other', '').strip()
+            if not document_type_other:
+                self.add_error('document_type_other', 'Specifica il tipo di documento per un documento "Altro".')
+            document_type = document_type_other
+            cleaned['document_type'] = document_type_other
+        elif document_type and not is_valid_document_type_for_category(document_type, category):
             self.add_error(
                 'document_type',
                 'Il tipo selezionato non è valido per la categoria scelta.',
             )
+
+        # Codice documento: automatico salvo modalità sanatoria (codice storico)
+        # o categoria "Altro" (documento fuori procedura) — inserito manualmente
+        # in entrambi i casi. Vedi documents.services.generate_document_code
+        # per il percorso automatico.
+        sanatoria = cleaned.get('sanatoria', False)
+        code = cleaned.get('code', '').strip()
+        if sanatoria or is_other_category:
+            if not code:
+                self.add_error(
+                    'code',
+                    'In modalità sanatoria il codice documento storico è obbligatorio.'
+                    if sanatoria else
+                    'Per un documento di categoria "Altro" il codice va inserito manualmente.',
+                )
+            elif Document.objects.filter(code=code).exists():
+                self.add_error('code', f'Un documento con codice "{code}" esiste già.')
+            cleaned['code'] = code
+        else:
+            cleaned['code'] = ''
+            if not document_type:
+                self.add_error(
+                    'document_type',
+                    'Il tipo documento è obbligatorio per generare automaticamente il codice.',
+                )
+
         return cleaned
 
 
 class DocumentRevisionCreateForm(SanatoriaFieldsMixin, forms.Form):
     revision_label = forms.CharField(max_length=20, label='Etichetta revisione')
-    revision_number = forms.IntegerField(min_value=0, label='Numero revisione')
     change_summary = forms.CharField(
         widget=forms.Textarea(attrs={'rows': 3}),
         required=False,
@@ -183,7 +271,6 @@ class DocumentRevisionCreateForm(SanatoriaFieldsMixin, forms.Form):
 
 class DocumentVersionEditForm(forms.Form):
     revision_label = forms.CharField(max_length=20, label='Etichetta revisione')
-    revision_number = forms.IntegerField(min_value=0, label='Numero revisione')
     change_summary = forms.CharField(
         widget=forms.Textarea(attrs={'rows': 3}),
         required=False,

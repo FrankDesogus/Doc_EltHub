@@ -26,7 +26,7 @@ from documents.permissions import (
     is_quality_manager,
     is_quality_operator,
 )
-from documents.services import create_document_file, create_new_revision
+from documents.services import create_document_file, create_new_revision, generate_document_code
 
 
 @login_required
@@ -172,8 +172,13 @@ def archive_document_detail(request, document_id):
 
     all_versions = doc.versions.select_related(
         'created_by', 'approved_by'
-    ).order_by('-revision_number')
+    ).prefetch_related('ecns_executed').order_by('-revision_number')
     versions = [v for v in all_versions if can_view_version(request.user, v)]
+
+    from ecn.permissions import can_view_ecn
+    for v in versions:
+        origin = next(iter(v.ecns_executed.all()), None)
+        v.originating_ecn = origin if origin and can_view_ecn(request.user, origin) else None
 
     from auditlog.models import AuditLog
     audit_logs = AuditLog.objects.filter(
@@ -265,17 +270,36 @@ def workspace_my_work(request):
         approvers__approver=user,
     ).select_related('document_version__document').distinct().order_by('-requested_at')
 
-    # Decisioni CCB pendenti
+    # Decisioni CCB pendenti — solo le pratiche su cui l'utente può
+    # realmente votare ora: con policy SEQUENTIAL, esclude chi è assegnato
+    # ma non è ancora il turno (altrimenti la scheda mostra un'azione che
+    # non è davvero possibile, riusa can_review_ecn per restare allineata
+    # alla stessa regola applicata nella pagina di dettaglio ECN).
+    from ecn.permissions import can_review_ecn
     decided_ids = set(
         ChangeNoticeDecision.objects.filter(user=user).values_list('approver_id', flat=True)
     )
-    pending_ccb_qs = (
+    pending_ccb_candidates = (
         ChangeNoticeApprover.objects
         .filter(user=user, change_notice__status=ChangeNotice.Status.UNDER_REVIEW)
         .exclude(pk__in=decided_ids)
         .select_related('change_notice')
         .order_by('change_notice__code')
     )
+    pending_ccb_qs = [
+        ca for ca in pending_ccb_candidates if can_review_ecn(user, ca.change_notice)
+    ]
+
+    # Dossier istruttoria CCB assegnati a me come responsabile (ccb_coordinator)
+    # e non ancora compilati — prima mancava da questa pagina: era visibile
+    # solo nella vista collettiva Workspace Qualità, quindi il compito
+    # personale non compariva in "Il mio lavoro" (segnalato durante il
+    # controllo di coerenza interfaccia).
+    my_dossier_to_compile_qs = ChangeNotice.objects.filter(
+        ccb_coordinator=user,
+        status=ChangeNotice.Status.CCB_PREPARATION,
+        ccb_class__isnull=True,
+    ).order_by('proposed_at')
 
     # ECN aperti proposti dall'utente
     my_ecn_qs = ChangeNotice.objects.filter(
@@ -291,6 +315,7 @@ def workspace_my_work(request):
         'my_drafts': my_drafts_qs,
         'pending_approvals': pending_approvals_qs,
         'pending_ccb': pending_ccb_qs,
+        'my_dossier_to_compile': my_dossier_to_compile_qs,
         'my_ecn': my_ecn_qs,
     })
 
@@ -320,17 +345,32 @@ def workspace_quality(request):
         status=ChangeNotice.Status.DRAFT,
     ).exclude(pk__in=configured_ids).order_by('proposed_at')
 
-    # ECN UNDER_REVIEW: decisioni CCB assegnate all'utente e non ancora espresse
+    # ECN con CCB configurata (CCB_PREPARATION) ma dossier non ancora
+    # compilato (ccb_class non impostato) — passo successivo a "ECN da
+    # valutare", distinto: prima si configurano gli approvatori, poi si
+    # compila il dossier istruttorio prima dell'invio al voto.
+    dossier_to_compile_qs = ChangeNotice.objects.filter(
+        status=ChangeNotice.Status.CCB_PREPARATION,
+        ccb_class__isnull=True,
+    ).order_by('proposed_at')
+
+    # ECN UNDER_REVIEW: decisioni CCB assegnate all'utente e non ancora
+    # espresse — solo quelle su cui può votare ora (esclude, con policy
+    # SEQUENTIAL, chi non è ancora il turno; stessa logica di my_work).
+    from ecn.permissions import can_review_ecn
     decided_ids = set(
         ChangeNoticeDecision.objects.filter(user=user).values_list('approver_id', flat=True)
     )
-    pending_ccb_qs = (
+    pending_ccb_candidates = (
         ChangeNoticeApprover.objects
         .filter(user=user, change_notice__status=ChangeNotice.Status.UNDER_REVIEW)
         .exclude(pk__in=decided_ids)
         .select_related('change_notice')
         .order_by('change_notice__code')
     )
+    pending_ccb_qs = [
+        ca for ca in pending_ccb_candidates if can_review_ecn(user, ca.change_notice)
+    ]
 
     # ECN APPROVED con revisione eseguita (da chiudere)
     ecn_to_close_qs = ChangeNotice.objects.filter(
@@ -343,11 +383,31 @@ def workspace_quality(request):
         status=ApprovalRequest.Status.PENDING,
     ).select_related('document_version__document').order_by('-requested_at')
 
+    # Stato generale ECN aziendale — conteggio per stato, incluso lo storico
+    # (approvate/chiuse/rifiutate): la vista precedente mostrava solo le
+    # code "da fare" ma nessun quadro d'insieme con cronologia, come
+    # richiesto per un vero cruscotto di stato (non solo un elenco di
+    # azioni pendenti). Dettaglio completo → Cruscotto ECN.
+    ecn_status_counts = {
+        status.value: ChangeNotice.objects.filter(status=status.value).count()
+        for status in ChangeNotice.Status
+    }
+
+    # Stato generale Approvazioni documento — stesso principio applicato
+    # alle approvazioni: non solo pendenti, anche l'esito storico.
+    approval_status_counts = {
+        status.value: ApprovalRequest.objects.filter(status=status.value).count()
+        for status in ApprovalRequest.Status
+    }
+
     return render(request, 'workspace/quality.html', {
         'ecn_to_review': ecn_to_review_qs,
+        'dossier_to_compile': dossier_to_compile_qs,
         'pending_ccb': pending_ccb_qs,
         'ecn_to_close': ecn_to_close_qs,
         'all_pending_approvals': all_pending_approvals_qs,
+        'ecn_status_counts': ecn_status_counts,
+        'approval_status_counts': approval_status_counts,
     })
 
 
@@ -610,37 +670,59 @@ def my_drafts(request):
 @login_required
 def new_document(request):
     from documents.forms import DocumentCreateForm
-    from projects.models import Project
+    from projects.models import Project, ProjectFolder
     from projects.permissions import can_create_document_in_folder
 
-    # Contesto progetto opzionale: ?project=<id>
+    if not can_create_document(request.user):
+        raise PermissionDenied
+
+    # Contesto di provenienza opzionale: ?project=<id> o ?folder=<id>.
+    # In entrambi i casi è solo una preselezione (vedi DocumentCreateForm):
+    # se la cartella suggerita non è scrivibile per l'utente viene
+    # semplicemente ignorata, non blocca l'accesso alla pagina — l'utente
+    # può comunque creare il documento scegliendo un'altra destinazione.
     from_project = None
-    fixed_folder = None
+    from_folder = None
+    initial_folder = None
+
     project_id_param = request.GET.get('project')
+    folder_id_param = request.GET.get('folder')
     if project_id_param:
         try:
-            from_project = get_object_or_404(Project, pk=int(project_id_param))
+            from_project = Project.objects.filter(pk=int(project_id_param)).first()
         except (ValueError, TypeError):
-            raise PermissionDenied
-        if from_project.root_folder is None or not can_create_document_in_folder(request.user, from_project.root_folder):
-            raise PermissionDenied
-        fixed_folder = from_project.root_folder
-    elif not can_create_document(request.user):
-        raise PermissionDenied
+            from_project = None
+        if (from_project and from_project.root_folder
+                and can_create_document_in_folder(request.user, from_project.root_folder)):
+            initial_folder = from_project.root_folder
+    elif folder_id_param:
+        try:
+            from_folder = ProjectFolder.objects.filter(
+                pk=int(folder_id_param), status=ProjectFolder.Status.ACTIVE,
+            ).first()
+        except (ValueError, TypeError):
+            from_folder = None
+        if from_folder and can_create_document_in_folder(request.user, from_folder):
+            initial_folder = from_folder
 
     if request.method == 'POST':
         form = DocumentCreateForm(
             request.POST, request.FILES,
             user=request.user,
-            fixed_project_folder=fixed_folder,
             current_user=request.user,
         )
         if form.is_valid():
             d = form.cleaned_data
             try:
                 with transaction.atomic():
+                    if d['code']:
+                        # Codice inserito manualmente: sanatoria (storico) o
+                        # categoria "Altro" (documento fuori procedura ufficiale).
+                        code = d['code']
+                    else:
+                        code = generate_document_code(d['document_type'], request.user)
                     doc = Document.objects.create(
-                        code=d['code'],
+                        code=code,
                         title=d['title'],
                         description=d['description'],
                         category=d['category'],
@@ -674,7 +756,7 @@ def new_document(request):
                         document=doc,
                         created_by=request.user,
                         revision_label=d['revision_label'],
-                        revision_number=d['revision_number'],
+                        revision_number=0,
                         file=doc_file,
                         change_summary=d['change_summary'],
                     )
@@ -705,19 +787,39 @@ def new_document(request):
     else:
         form = DocumentCreateForm(
             user=request.user,
-            fixed_project_folder=fixed_folder,
+            initial_folder=initial_folder,
             current_user=request.user,
         )
-        if fixed_folder is None and not form.fields['project_folder'].queryset.exists():
+        if not form.fields['project_folder'].queryset.exists():
             messages.warning(
                 request,
                 'Non hai accesso in scrittura a nessuna cartella. '
                 'Richiedi i permessi necessari a un amministratore.',
             )
 
+    # Dati per il selettore ad albero delle cartelle (vedi new_document.html):
+    # solo le cartelle scrivibili (stesso queryset del campo), organizzate
+    # come una "foresta" — una cartella scrivibile il cui genitore non è a
+    # sua volta scrivibile diventa una radice nell'albero, così la struttura
+    # resta sempre coerente senza mai rivelare cartelle a cui l'utente non
+    # ha accesso in scrittura.
+    folder_field = form.fields['project_folder']
+    writable_ids = set(folder_field.queryset.values_list('pk', flat=True))
+    folder_tree_data = [
+        {
+            'id': f.pk,
+            'label': f"{f.code} — {f.name}",
+            'path': folder_field.label_from_instance(f),
+            'parent_id': f.parent_id if f.parent_id in writable_ids else None,
+        }
+        for f in folder_field.queryset.order_by('code')
+    ]
+
     return render(request, 'documents/new_document.html', {
         'form': form,
         'from_project': from_project,
+        'from_folder': from_folder,
+        'folder_tree_data': folder_tree_data,
     })
 
 
@@ -812,7 +914,7 @@ def new_revision(request, document_id):
                         document=doc,
                         created_by=request.user,
                         revision_label=d['revision_label'],
-                        revision_number=d['revision_number'],
+                        revision_number=next_number,
                         file=doc_file,
                         change_summary=d['change_summary'],
                         ecn=ecn,
@@ -835,7 +937,7 @@ def new_revision(request, document_id):
                     messages.error(request, msg)
     else:
         form = DocumentRevisionCreateForm(
-            initial={'revision_label': next_label, 'revision_number': next_number},
+            initial={'revision_label': next_label},
             revision_scheme=scheme,
             current_user=request.user,
         )
@@ -963,7 +1065,7 @@ def edit_version(request, version_id):
                     version=version,
                     user=request.user,
                     revision_label=d['revision_label'],
-                    revision_number=d['revision_number'],
+                    revision_number=version.revision_number,
                     change_summary=d['change_summary'],
                     new_file=new_file,
                 )
@@ -979,7 +1081,6 @@ def edit_version(request, version_id):
         form = DocumentVersionEditForm(
             initial={
                 'revision_label': version.revision_label,
-                'revision_number': version.revision_number,
                 'change_summary': version.change_summary,
             },
             revision_scheme=scheme,

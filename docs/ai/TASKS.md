@@ -86,6 +86,7 @@ prompt Cursor → test → review → commit gated) riuscito: vedi Completati.
 | TASK-043 | Fix bug CSS: checkbox selezionata visivamente invisibile (spunta bianca su sfondo bianco) | — | 2026-07-31 |
 | TASK-044 | Conversione automatica formati Office → PDF via LibreOffice headless (opzionale, gated a settings) | — | 2026-07-31 |
 | TASK-045 | UI dettaglio documento: card unica documento+versione, azioni raccolte in menu "Azioni" | — | 2026-07-31 |
+| TASK-046 | Un solo ECN aperto per documento (service condiviso, vincolo DB, messaggio filtrato per permessi) | — | 2026-09-14 |
 
 ---
 
@@ -5245,6 +5246,146 @@ approvazione con tabella approvatori) sia su una bozza senza versione
 corrente (menu correttamente ridotto alle sole azioni pertinenti,
 niente "Dettaglio versione"/"Scarica file" quando non applicabili).
 Tutto conforme, nessun problema visivo trovato.
+
+---
+
+### TASK-046 — Un solo ECN aperto per documento — Claude Code
+
+#### Obiettivo
+
+Per ogni `Document` può esistere al più un `ChangeNotice` "aperto" alla
+volta. Aperto = qualsiasi stato diverso da `REJECTED`/`CLOSED` (`DRAFT`,
+`CCB_PREPARATION`, `UNDER_REVIEW`, `APPROVED` — anche se già eseguito ma
+non ancora chiuso). Solo `REJECTED` e `CLOSED` liberano il documento per
+una nuova richiesta. Vale per entrambi i flussi di creazione ECN (standard
+e semplice, TASK-022), è applicato nel service di dominio (non solo nella
+view), ed è protetto da richieste concorrenti.
+
+#### Scope
+
+- `ecn/models.py`: vincolo `UniqueConstraint` parziale su `ChangeNotice`
+  (documento + stato non in rejected/closed), come difesa in profondità.
+- `ecn/services.py`: nuova funzione pubblica `get_open_change_notice`,
+  helper interni `_lock_document_for_ecn_creation`,
+  `_raise_if_open_change_notice`,
+  `_reraise_after_open_change_notice_integrity_error`; `create_change_notice`
+  e `create_simple_ecn` avvolte in `transaction.atomic()` con
+  `select_for_update()` sulla riga `Document` e gestione esplicita di
+  `IntegrityError`.
+- `ecn/views.py`: `ecn_create`/`ecn_create_simple` — messaggio d'errore via
+  nuovo helper `_report_ecn_creation_error`, con link al dettaglio
+  dell'ECN esistente solo se `can_view_ecn` è vero.
+- `ecn/migrations/0009_single_open_change_notice_per_document.py` (nuova).
+- Test aggiunti: `ecn/tests.py::OneOpenChangeNoticePerDocumentTests` (15
+  test). Test fixture aggiornate per rispettare il nuovo vincolo (più ECN
+  aperti simultanei sullo stesso documento, costruiti bypassando il
+  service): `ecn/tests.py` (`ECNViewTests.test_ecn_create_post_creates_ecn_and_redirects`,
+  `ApplicabilityViewTests.test_ecn_list_renders_badge_classes_for_all_categories`,
+  `ApplicabilityViewTests.test_ecn_detail_limited_shows_detail_and_scope_notice_general_does_not`),
+  `documents/tests_ui.py` (`UIECNSearchTests.setUp` — 23 ECN ora su 23
+  documenti distinti invece che tutti sullo stesso).
+- `docs/ai/SIMPLE_ECN_FLOW.md`: corretta un'affermazione ormai superata
+  ("l'ECN semplice non viene mai chiuso") — `auto_close_executed_ecn_if_ready`
+  (2026-07-28, successiva alla stesura del documento) generalizza la
+  chiusura automatica a entrambi i flussi.
+- Non toccati: `documents/services.py` (`create_new_revision` — il gate
+  "un ECN approvato e non ancora usato" resta invariato, riguarda
+  l'esecuzione, non la creazione), workflow CCB (`submit_change_notice`,
+  `approve_change_notice`, `reject_change_notice`, `close_change_notice`,
+  `configure_ccb`, `update_ccb_dossier`), permessi (`ecn/permissions.py`
+  non modificato — solo consultato da `_raise_if_open_change_notice` per
+  filtrare il messaggio).
+
+#### Regola finale
+
+```
+Aperto = status NOT IN (REJECTED, CLOSED)
+       = status IN (DRAFT, CCB_PREPARATION, UNDER_REVIEW, APPROVED)
+```
+
+Un ECN `APPROVED` blocca sempre nuove richieste sullo stesso documento,
+sia prima sia dopo l'esecuzione (`executed_version` valorizzato) — si
+libera solo quando passa a `CLOSED` (manualmente via `close_change_notice`
+o automaticamente via `auto_close_executed_ecn_if_ready`). Un ECN
+semplice (nasce già `APPROVED`) segue esattamente la stessa regola.
+
+#### Concorrenza
+
+`create_change_notice`/`create_simple_ecn` aprono una
+`transaction.atomic()`, bloccano la riga `Document` con
+`select_for_update()` (`_lock_document_for_ecn_creation`), poi verificano
+`get_open_change_notice` — due richieste sullo stesso documento si
+serializzano su questo lock. Raddoppiato da un `UniqueConstraint`
+parziale sul modello (`ecn_single_open_change_notice_per_document`),
+difesa in profondità contro scritture dirette che bypassano il service
+(Admin, comandi di gestione, script). Un `IntegrityError` dal vincolo
+viene intercettato e convertito nello stesso `ValidationError` applicativo
+("amichevole"), mai propagato grezzo.
+
+**Limite SQLite (DB di sviluppo di questa copia) vs PostgreSQL**:
+`select_for_update()` è un no-op silenzioso su SQLite (`DatabaseFeatures.has_select_for_update
+= False` nel backend `sqlite3` di Django — nessun errore, ma nessun
+row-lock reale). La correttezza sotto race genuina su SQLite si appoggia
+quindi al modello a scrittore singolo del motore (una sola transazione
+scrive alla volta sul file) più il vincolo `UniqueConstraint`: due
+richieste concorrenti possono entrambe superare il pre-check applicativo,
+ma solo un `INSERT` può avere successo — l'altro fallisce con
+`IntegrityError`, gestito come sopra. Su PostgreSQL il lock riga-per-riga
+è reale (`has_select_for_update = True`): la seconda richiesta si blocca
+sulla `select_for_update()` finché la prima non committa, poi rilegge lo
+stato aggiornato e fallisce in modo pulito senza mai tentare l'`INSERT`.
+Stesso esito applicativo finale su entrambi i motori, percorso di codice
+diverso — documentato anche nel docstring di modulo di `ecn/services.py`.
+
+#### Dati storici incoerenti individuati (non modificati in questo task)
+
+Il DB di sviluppo (`db.sqlite3` di questa copia) contiene oggi un
+documento demo (`DEMO-ECN-BASE`, id 9) con **4 ECN aperti
+contemporaneamente** (`ECN-S-01` draft, `ECN-S-02` ccb_preparation,
+`ECN-S-03` under_review, `ECN-S-04` approved — oltre a `ECN-S-05`
+rejected e `ECN-S-06` closed, questi ultimi due legittimi). È lo
+scenario demo intenzionale "ECN in tutti e 6 gli stati"
+(`documents/management/commands/demo_full.py`, `_scenario_ecn_all_states`,
+citato in `PROJECT_HANDOFF.md`), non un bug applicativo: prima di questo
+task il sistema non impediva più ECN aperti sullo stesso documento, quindi
+questo scenario demo era valido. **Con la nuova regola non lo è più**:
+`manage.py migrate` su questo `db.sqlite3` fallirebbe applicando la
+migrazione `0009` finché questi dati non vengono sistemati a mano (es.
+`demo_full --reset`, che ricrea il DB da zero, o chiudendo/rifiutando
+manualmente 3 dei 4 ECN aperti di quel documento). **Non modificato in
+questo task** (nessuna migrazione dati, nessun accesso in scrittura al
+`db.sqlite3` reale) — la migrazione `0009` non è stata applicata a questo
+file, solo generata e verificata su database di test. Nessun'altra
+duplicazione trovata nel resto del DB (`SELECT document_id, COUNT(*) ...
+GROUP BY document_id HAVING COUNT(*) > 1` sugli stati aperti — un solo
+gruppo, quello sopra).
+
+#### Problemi rimasti da affrontare (fuori scope qui)
+
+- `documents/management/commands/demo_full.py`,
+  `_scenario_ecn_all_states`: da aggiornare per non violare più la nuova
+  regola (es. distribuire i 6 ECN demo su documenti diversi, o mostrare
+  solo stati compatibili con "un solo aperto"). Non è coperto da alcun
+  test automatico (nessun file `tests.py` lo esercita), quindi non
+  scoperto dalla suite — solo dall'ispezione diretta del `db.sqlite3` di
+  sviluppo fatta in questo task.
+- Migrazione `0009` non ancora applicata al `db.sqlite3` reale di questa
+  copia (vedi sopra) — richiede prima la bonifica dei dati demo
+  incoerenti sul documento 9.
+
+#### Test eseguiti
+
+```
+python manage.py check                        → 0 problemi
+python manage.py makemigrations --check --dry-run → nessuna modifica in sospeso
+ecn.tests.OneOpenChangeNoticePerDocumentTests  → 15/15 PASS (nuovi)
+ecn (intera app)                               → vedi RUN_LOG.md per il numero finale
+```
+
+Suite globale non lanciata automaticamente in questa sessione (non
+richiesta esplicitamente e non necessaria: la modifica è confinata
+all'app `ecn` più tre fixture di test in `documents/tests_ui.py`, tutte
+riverificate mirate).
 
 ---
 

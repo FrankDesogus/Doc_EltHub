@@ -17,12 +17,150 @@ Politiche CCB (ccb_policy):
   ANY        – basta un approvatore che approvi → ECN APPROVATO
   ALL        – tutti gli approvatori devono approvare (un rifiuto = ECN RIFIUTATO)
   SEQUENTIAL – gli approvatori decidono in ordine; email al successivo dopo ogni approvazione
+
+Un solo ECN aperto per documento:
+  create_change_notice e create_simple_ecn condividono lo stesso controllo
+  (_raise_if_open_change_notice) — un documento con un ECN in DRAFT,
+  CCB_PREPARATION, UNDER_REVIEW o APPROVED (anche se già eseguito ma non
+  ancora chiuso) non può ricevere un secondo ECN. Solo REJECTED e CLOSED
+  liberano il documento. Il controllo è atomico rispetto a richieste
+  concorrenti (transaction.atomic + select_for_update sulla riga Document,
+  vedi _lock_document_for_ecn_creation) ed è raddoppiato da un vincolo DB
+  (ecn.models.ChangeNotice.Meta.constraints) come difesa in profondità
+  contro scritture che bypassano il service.
+
+  Nota SQLite vs PostgreSQL: select_for_update() su SQLite è un no-op
+  silenzioso (features.has_select_for_update = False nel backend sqlite3
+  di Django — nessun errore, ma nessun row-lock reale). La correttezza su
+  SQLite (DB di sviluppo di questo progetto) si appoggia quindi al modello
+  a scrittore singolo di SQLite (una sola transazione può scrivere alla
+  volta sull'intero file) più il vincolo UNIQUE parziale sul modello: due
+  richieste davvero concorrenti possono entrambe superare il controllo
+  applicativo, ma solo una delle due INSERT può avere successo, l'altra
+  fallisce con IntegrityError — intercettato qui sotto e convertito nello
+  stesso messaggio applicativo. Su PostgreSQL (features.has_select_for_update
+  = True) il lock riga-per-riga è reale: la seconda richiesta si blocca
+  sulla select_for_update() finché la prima non committa, poi rilegge lo
+  stato aggiornato e fallisce in modo pulito con ValidationError, senza
+  mai arrivare a tentare l'INSERT. Stesso esito applicativo finale su
+  entrambi i motori (mai due ECN aperti sullo stesso documento), percorso
+  di codice diverso.
 """
 
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Max
 from django.utils import timezone
+
+
+# ---------------------------------------------------------------------------
+# Vincolo "un solo ECN aperto per documento"
+# ---------------------------------------------------------------------------
+
+def get_open_change_notice(document, for_update=False):
+    """
+    Ritorna l'eventuale ChangeNotice ancora "aperta" per `document`, o None.
+
+    Aperta = qualsiasi stato diverso da REJECTED/CLOSED: DRAFT,
+    CCB_PREPARATION, UNDER_REVIEW o APPROVED — inclusa un'ECN approvata ma
+    non ancora eseguita e chiusa (vedi get_close_readiness/close_change_notice/
+    auto_close_executed_ecn_if_ready). Solo REJECTED e CLOSED liberano il
+    documento per una nuova richiesta.
+
+    for_update=True aggiunge select_for_update(): usato dal controllo
+    atomico in create_change_notice/create_simple_ecn, sempre dentro una
+    transaction.atomic() già aperta dal chiamante insieme al lock sulla
+    riga Document (vedi _lock_document_for_ecn_creation) — senza quel lock
+    aggiuntivo, select_for_update() da solo non basta quando il documento
+    non ha ancora nessun ChangeNotice: non c'è nessuna riga da bloccare, e
+    due richieste concorrenti potrebbero entrambe vedere "nessun ECN
+    aperto" prima che una delle due committi.
+    """
+    from ecn.models import ChangeNotice
+
+    qs = ChangeNotice.objects.filter(document=document).exclude(
+        status__in=(ChangeNotice.Status.REJECTED, ChangeNotice.Status.CLOSED),
+    )
+    if for_update:
+        qs = qs.select_for_update()
+    return qs.order_by('-proposed_at').first()
+
+
+def _lock_document_for_ecn_creation(document):
+    """
+    Blocca la riga Document (select_for_update) dentro la transaction.atomic()
+    del chiamante, per serializzare due richieste di creazione ECN
+    concorrenti sullo stesso documento: la seconda attende che la prima
+    committi (o vada in rollback) prima di rileggere lo stato e decidere.
+    Il Document esiste sempre (a differenza di un eventuale ChangeNotice
+    aperto), quindi chiude la finestra di race descritta in
+    get_open_change_notice.
+    """
+    from documents.models import Document
+
+    return Document.objects.select_for_update().get(pk=document.pk)
+
+
+def _raise_if_open_change_notice(document, viewer):
+    """
+    Solleva ValidationError se `document` ha già un ECN aperto (vedi
+    get_open_change_notice). Va chiamata DOPO _lock_document_for_ecn_creation,
+    dentro la stessa transaction.atomic() — è così che il controllo diventa
+    atomico rispetto a creazioni concorrenti.
+
+    Il messaggio rivela codice/stato/richiedente/data dell'ECN esistente
+    solo se `viewer` ha visibilità su di esso (can_view_ecn) — non deve mai
+    rivelare informazioni a un utente che non potrebbe aprirne il dettaglio.
+    L'eccezione porta comunque l'ECN trovato in `existing_ecn`: la view può
+    usarlo per un link al dettaglio, mostrato anch'esso solo se can_view_ecn
+    è vero.
+    """
+    existing = get_open_change_notice(document, for_update=True)
+    if existing is None:
+        return
+
+    from ecn.permissions import can_view_ecn
+
+    if can_view_ecn(viewer, existing):
+        requester = existing.proposed_by.get_full_name() or existing.proposed_by.username
+        proposed_date = timezone.localtime(existing.proposed_at).strftime('%d/%m/%Y')
+        message = (
+            f"Non è possibile creare un nuovo ECN per questo documento. "
+            f"È già presente l'ECN {existing.code}, richiesto da {requester} il "
+            f"{proposed_date}, attualmente nello stato «{existing.get_status_display()}»."
+        )
+    else:
+        message = (
+            "Non è possibile creare un nuovo ECN per questo documento: "
+            "è già presente un ECN in corso."
+        )
+
+    error = ValidationError(message)
+    error.existing_ecn = existing
+    raise error
+
+
+def _reraise_after_open_change_notice_integrity_error(document, viewer):
+    """
+    Chiamata nell'except IntegrityError attorno all'atomic block di
+    create_change_notice/create_simple_ecn: il vincolo DB
+    (ecn_single_open_change_notice_per_document) è scattato — su SQLite
+    questo è l'esito reale di una race genuina tra due richieste
+    concorrenti, non solo una difesa teorica (vedi nota SQLite vs
+    PostgreSQL in cima al modulo). A questo punto l'atomic() fallito è già
+    andato in rollback: rileggiamo lo stato (ora stabile, l'altra
+    transazione ha vinto) e solleviamo lo stesso ValidationError "amichevole"
+    che avremmo sollevato se l'avessimo vista subito col pre-check.
+    """
+    _raise_if_open_change_notice(document, viewer)
+    # Finestra estrema: il vincolo è scattato ma non troviamo più un ECN
+    # aperto (es. l'ECN concorrente vincitore è stato chiuso/rifiutato nel
+    # brevissimo intervallo fra il rollback e questa rilettura). Messaggio
+    # generico invece di propagare un IntegrityError non gestito.
+    raise ValidationError(
+        "Non è possibile creare un nuovo ECN per questo documento in questo "
+        "momento: un'altra richiesta è appena stata elaborata. Riprova."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -69,30 +207,37 @@ def create_change_notice(
             )
         document_version = document.current_version
 
-    if code is None:
-        code = _generate_ecn_code()
+    try:
+        with transaction.atomic():
+            _lock_document_for_ecn_creation(document)
+            _raise_if_open_change_notice(document, proposed_by)
 
-    ecn = ChangeNotice.objects.create(
-        code=code,
-        title=title,
-        description=description,
-        motivation=motivation,
-        motivation_detail=motivation_detail,
-        commessa=commessa,
-        document=document,
-        document_version=document_version,
-        project=project,
-        proposed_by=proposed_by,
-        created_by=created_by,
-    )
+            if code is None:
+                code = _generate_ecn_code()
 
-    _write_audit(
-        actor=proposed_by,
-        action='ECN_CREATED',
-        ecn=ecn,
-        old_status=None,
-        new_status=ecn.status,
-    )
+            ecn = ChangeNotice.objects.create(
+                code=code,
+                title=title,
+                description=description,
+                motivation=motivation,
+                motivation_detail=motivation_detail,
+                commessa=commessa,
+                document=document,
+                document_version=document_version,
+                project=project,
+                proposed_by=proposed_by,
+                created_by=created_by,
+            )
+
+            _write_audit(
+                actor=proposed_by,
+                action='ECN_CREATED',
+                ecn=ecn,
+                old_status=None,
+                new_status=ecn.status,
+            )
+    except IntegrityError:
+        _reraise_after_open_change_notice_integrity_error(document, proposed_by)
 
     if send_notifications:
         _notify_silently('notify_ecn_created', ecn)
@@ -106,7 +251,7 @@ def create_change_notice(
 
 
 def create_simple_ecn(document, proposed_by, title, description='', created_by=None,
-                      send_notifications=True):
+                      commessa='', project=None, send_notifications=True):
     """
     Crea ed autoapprova immediatamente un ECN a flusso semplice (TASK-022):
     nessuna CCB, nessuna istruttoria, nessuna convocazione. Pensato per
@@ -145,31 +290,39 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
 
     now = timezone.now()
 
-    with transaction.atomic():
-        ecn = ChangeNotice.objects.create(
-            code=_generate_simple_ecn_code(),
-            title=title,
-            description=description,
-            motivation=ChangeNotice.Motivation.OTHER,
-            document=document,
-            document_version=document.current_version,
-            proposed_by=proposed_by,
-            created_by=created_by,
-            flow_type=ChangeNotice.FlowType.SIMPLE,
-            status=ChangeNotice.Status.APPROVED,
-            ccb_reviewed_by=proposed_by,
-            ccb_reviewed_at=now,
-            ccb_notes='Autoapprovato — flusso ECN semplice, nessuna istruttoria CCB.',
-        )
+    try:
+        with transaction.atomic():
+            _lock_document_for_ecn_creation(document)
+            _raise_if_open_change_notice(document, proposed_by)
 
-        _write_audit(
-            actor=created_by, action='ECN_CREATED', ecn=ecn,
-            old_status=None, new_status=ChangeNotice.Status.DRAFT,
-        )
-        _write_audit(
-            actor=created_by, action='ECN_APPROVED', ecn=ecn,
-            old_status=ChangeNotice.Status.DRAFT, new_status=ChangeNotice.Status.APPROVED,
-        )
+            ecn = ChangeNotice.objects.create(
+                code=_generate_simple_ecn_code(),
+                title=title,
+                description=description,
+                motivation=ChangeNotice.Motivation.OTHER,
+                commessa=commessa,
+                project=project,
+                document=document,
+                document_version=document.current_version,
+                proposed_by=proposed_by,
+                created_by=created_by,
+                flow_type=ChangeNotice.FlowType.SIMPLE,
+                status=ChangeNotice.Status.APPROVED,
+                ccb_reviewed_by=proposed_by,
+                ccb_reviewed_at=now,
+                ccb_notes='Autoapprovato — flusso ECN semplice, nessuna istruttoria CCB.',
+            )
+
+            _write_audit(
+                actor=created_by, action='ECN_CREATED', ecn=ecn,
+                old_status=None, new_status=ChangeNotice.Status.DRAFT,
+            )
+            _write_audit(
+                actor=created_by, action='ECN_APPROVED', ecn=ecn,
+                old_status=ChangeNotice.Status.DRAFT, new_status=ChangeNotice.Status.APPROVED,
+            )
+    except IntegrityError:
+        _reraise_after_open_change_notice_integrity_error(document, proposed_by)
 
     if send_notifications:
         _notify_silently('notify_ecn_created', ecn)
@@ -179,13 +332,20 @@ def create_simple_ecn(document, proposed_by, title, description='', created_by=N
 
 
 def update_change_notice(change_notice, actor, title, motivation,
-                         description='', motivation_detail='', commessa='', project=None):
+                         description='', motivation_detail=''):
     """
     Aggiorna i dati base di un ECN in stato DRAFT.
 
-    Modificabili: title, motivation, motivation_detail, description, commessa,
-    project. Lo stato deve essere DRAFT (il service non verifica il
-    permesso: lo fa la view).
+    Modificabili: title, motivation, motivation_detail, description. Lo
+    stato deve essere DRAFT (il service non verifica il permesso: lo fa
+    la view).
+
+    commessa/project NON sono più modificabili qui: sono derivati una sola
+    volta dal progetto del documento al momento della creazione
+    (ecn_create) e restano fissi per tutta la vita dell'ECN, esattamente
+    come il documento collegato non cambia mai — coerente con la scelta
+    che la commessa sia un dato del progetto, non dell'ECN (vedi
+    Project.commessa).
 
     Non tocca l'applicabilità: è compilata dalla CCB nel dossier istruttorio
     (vedi update_ccb_dossier), non un dato base del proponente (TASK-037).
@@ -205,18 +365,14 @@ def update_change_notice(change_notice, actor, title, motivation,
         'motivation': change_notice.motivation,
         'description': change_notice.description,
         'motivation_detail': change_notice.motivation_detail,
-        'commessa': change_notice.commessa,
-        'project_id': change_notice.project_id,
     }
 
     change_notice.title = title
     change_notice.motivation = motivation
     change_notice.description = description
     change_notice.motivation_detail = motivation_detail
-    change_notice.commessa = commessa
-    change_notice.project = project
     change_notice.save(update_fields=[
-        'title', 'motivation', 'description', 'motivation_detail', 'commessa', 'project',
+        'title', 'motivation', 'description', 'motivation_detail',
     ])
 
     new_values = {
@@ -224,8 +380,6 @@ def update_change_notice(change_notice, actor, title, motivation,
         'motivation': change_notice.motivation,
         'description': change_notice.description,
         'motivation_detail': change_notice.motivation_detail,
-        'commessa': change_notice.commessa,
-        'project_id': change_notice.project_id,
     }
 
     try:
@@ -480,29 +634,33 @@ def submit_change_notice(change_notice, user, send_notifications=True):
 def approve_change_notice(
     change_notice,
     user,
-    ccb_class=None,
-    ccb_requirements='',
-    ccb_technical_impact='',
-    ccb_cost_impact='',
-    ccb_time_impact='',
-    ccb_quality_impact='',
-    ccb_other_impact='',
-    ccb_notes='',
     comment='',
     send_notifications=True,
 ):
     """
     Un approvatore CCB approva l'ECN.
 
-    Crea un ChangeNoticeDecision(APPROVE).
-    Salva i campi CCB sul ChangeNotice (chi approva per ultimo vince).
-    Verifica la policy per decidere se l'ECN è finalizzato (→ APPROVED).
+    Crea un ChangeNoticeDecision(APPROVE). Verifica la policy per decidere
+    se l'ECN è finalizzato (→ APPROVED).
 
-    ccb_class è obbligatorio solo quando l'approvazione finalizza l'ECN.
+    Il dossier istruttorio CCB (ccb_class, ccb_requirements,
+    ccb_technical_impact, ccb_cost_impact, ccb_time_impact,
+    ccb_quality_impact, ccb_other_impact, ccb_notes) è compilato **solo**
+    tramite update_ccb_dossier, prima dell'invio al voto — questa funzione
+    non li accetta e non li tocca in alcun modo. Il vecchio schema, in cui
+    l'approvatore stesso scriveva quei campi al momento del voto, è stato
+    eliminato: era l'unica funzione del progetto a poterli sovrascrivere
+    fuori dal dossier, e lo faceva incondizionatamente ad ogni voto (bug
+    reale corretto qui — vedi ApprovalDossierIntegrityTests), azzerando
+    silenziosamente l'analisi già compilata dal responsabile istruttoria.
+
+    ccb_class deve già essere valorizzato sul dossier quando l'approvazione
+    finalizza l'ECN (nessun modo di fornirlo qui).
 
     Raises:
       PermissionDenied: se l'utente non è un approvatore assegnato.
-      ValidationError: se lo stato non è UNDER_REVIEW, o ccb_class manca al finalizzare.
+      ValidationError: se lo stato non è UNDER_REVIEW, o il dossier non ha
+        ancora una classificazione (ccb_class) al momento di finalizzare.
     """
     from ecn.models import ChangeNotice, ChangeNoticeApprover, ChangeNoticeDecision
     from ecn.permissions import can_review_ecn
@@ -547,24 +705,6 @@ def approve_change_notice(
     now = timezone.now()
 
     with transaction.atomic():
-        # Salva i campi CCB analisi sul ChangeNotice (l'ultimo che approva vince)
-        update_fields_ccb = [
-            'ccb_requirements', 'ccb_technical_impact', 'ccb_cost_impact',
-            'ccb_time_impact', 'ccb_quality_impact', 'ccb_other_impact',
-            'ccb_notes',
-        ]
-        change_notice.ccb_requirements    = ccb_requirements
-        change_notice.ccb_technical_impact = ccb_technical_impact
-        change_notice.ccb_cost_impact     = ccb_cost_impact
-        change_notice.ccb_time_impact     = ccb_time_impact
-        change_notice.ccb_quality_impact  = ccb_quality_impact
-        change_notice.ccb_other_impact    = ccb_other_impact
-        change_notice.ccb_notes           = ccb_notes
-        if ccb_class:
-            change_notice.ccb_class = ccb_class
-            update_fields_ccb.append('ccb_class')
-        change_notice.save(update_fields=update_fields_ccb)
-
         # Crea la decisione individuale
         ChangeNoticeDecision.objects.create(
             change_notice=change_notice,
@@ -578,21 +718,11 @@ def approve_change_notice(
         finalized = _check_policy_after_approve(change_notice)
 
         if finalized:
-            if not ccb_class and not change_notice.ccb_class:
+            if not change_notice.ccb_class:
                 raise ValidationError(
-                    "La classe variante (Classe 1 / Classe 2) è obbligatoria per approvare l'ECN."
+                    "La classe variante (Classe 1 / Classe 2) è obbligatoria per approvare l'ECN. "
+                    "Compila il dossier istruttorio prima di finalizzare il voto."
                 )
-            # NOTA (TASK-037): a differenza di ccb_class, l'applicabilità NON
-            # viene ri-verificata qui alla finalizzazione. Stesso trattamento
-            # già riservato a ccb_requirements/ccb_technical_impact: obbligatoria
-            # solo attraverso il percorso moderno del dossier istruttorio
-            # (submit_change_notice, quando si parte da CCB_PREPARATION), non
-            # sul percorso legacy DRAFT→UNDER_REVIEW mantenuto per
-            # retrocompatibilità con la suite di test preesistente. Duplicare
-            # qui lo stesso controllo rigido di ccb_class romperebbe ogni test
-            # di approvazione già esistente nel progetto, che non ha motivo di
-            # conoscere l'applicabilità (concetto introdotto solo con questa
-            # funzionalità, non presente quando quei test sono stati scritti).
             old_status = change_notice.status
             change_notice.status         = ChangeNotice.Status.APPROVED
             change_notice.ccb_reviewed_by = user

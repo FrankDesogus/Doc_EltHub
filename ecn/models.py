@@ -378,6 +378,33 @@ class ChangeNotice(models.Model):
         verbose_name        = 'ECN / Variante'
         verbose_name_plural = 'ECN / Varianti'
         ordering            = ['-proposed_at']
+        constraints = [
+            # Un solo ECN "aperto" per documento alla volta. Aperto = uno
+            # qualsiasi stato diverso da rejected/closed (draft,
+            # ccb_preparation, under_review, approved — anche approvato ma
+            # non ancora eseguito/chiuso). Stringhe letterali invece di
+            # Status.X: un nested Meta non vede i nomi del corpo classe
+            # esterno (Status è definito lì, non qui), e i valori .value
+            # sono comunque le stringhe salvate su questa colonna.
+            #
+            # Difesa in profondità rispetto al controllo applicativo in
+            # ecn.services._raise_if_open_change_notice (che usa
+            # select_for_update sulla riga Document per serializzare le
+            # richieste concorrenti): questo vincolo copre anche eventuali
+            # scritture dirette che bypassano il service (Django Admin,
+            # script, comandi di gestione).
+            models.UniqueConstraint(
+                fields=['document'],
+                condition=models.Q(
+                    status__in=['draft', 'ccb_preparation', 'under_review', 'approved'],
+                ),
+                name='ecn_single_open_change_notice_per_document',
+                violation_error_message=(
+                    'Esiste già un ECN aperto per questo documento. '
+                    'Deve essere rifiutato o chiuso prima di crearne uno nuovo.'
+                ),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.code} — {self.title} [{self.get_status_display()}]"

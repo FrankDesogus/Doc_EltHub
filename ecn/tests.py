@@ -2,8 +2,9 @@ import datetime
 
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 
 from documents.models import Document, DocumentVersion
 from auditlog.models import AuditLog
@@ -187,6 +188,11 @@ class ChangeNoticeModelTests(TestCase):
 
     def test_ordering_is_by_proposed_at_descending(self):
         ecn1 = _make_ecn(self.document, self.version, self.user, code='ECN-ORD-A')
+        # Un solo ECN aperto per documento: chiude il primo prima di crearne
+        # un secondo — questo test verifica solo l'ordinamento, non lo
+        # stato "aperto/chiuso".
+        ecn1.status = ChangeNotice.Status.CLOSED
+        ecn1.save(update_fields=['status'])
         ecn2 = _make_ecn(self.document, self.version, self.user, code='ECN-ORD-B')
         qs = list(ChangeNotice.objects.filter(code__startswith='ECN-ORD'))
         # Più recente (creato dopo) deve essere il primo
@@ -548,8 +554,13 @@ class ApplicabilityValidationTests(TestCase):
         }
         for category, expected_class in expected_classes.items():
             with self.subTest(category=category):
+                # Un solo ECN aperto per documento: un documento per
+                # categoria (il test verifica proprietà del singolo ECN,
+                # non un'interazione fra più ECN sullo stesso documento).
+                doc = _make_document(self.user, self.folder, code=f'APPL-PROP-DOC-{category}')
+                version = _make_version(doc, self.user)
                 ecn = _make_ecn(
-                    self.document, self.version, self.user,
+                    doc, version, self.user,
                     code=f'APPL-PROP-{category}',
                     applicability_category=category,
                     applicability_detail='Dettaglio valido' if category == ChangeNotice.Applicability.LIMITED else '',
@@ -1230,6 +1241,12 @@ class ECNServiceWorkflowTests(TestCase):
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
             code=code,
         )
+        # ccb_class va sul dossier istruttorio (update_ccb_dossier), mai più
+        # passato al voto di approvazione (vecchio schema eliminato): questi
+        # test di workflow non riguardano il dossier, quindi lo impostano
+        # direttamente sul record, come farebbe update_ccb_dossier.
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         # ECN-E: assegna almeno un approvatore (ccb) prima di submit
         set_change_notice_approvers(ecn, [self.ccb])
         return ecn
@@ -1242,8 +1259,7 @@ class ECNServiceWorkflowTests(TestCase):
         ecn = self._to_under_review(code)
         return approve_change_notice(
             ecn, self.ccb,
-            ccb_class=ChangeNotice.CCBClass.CLASS1,
-            ccb_notes='Approvata dal CCB.',
+            comment='Approvata dal CCB.',
         )
 
     def _to_approved_with_exec_version(self, code='ECN-WF-APP-EX'):
@@ -1309,23 +1325,34 @@ class ECNServiceWorkflowTests(TestCase):
 
     def test_approve_changes_status_to_approved(self):
         ecn = self._to_under_review('ECN-WF-APR')
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS2)
+        approve_change_notice(ecn, self.ccb)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
-    def test_approve_saves_ccb_fields(self):
+    def test_approve_does_not_alter_dossier_fields(self):
+        """
+        Regressione: approve_change_notice accettava un tempo ccb_class/
+        ccb_requirements/ecc. come parametri e li sovrascriveva
+        incondizionatamente ad ogni voto ('chi approva per ultimo vince'),
+        azzerando silenziosamente il dossier compilato dal responsabile
+        istruttoria quando la vista (ecn_review) non li ripassava — bug
+        reale, riprodotto e corretto. Il vecchio schema è stato eliminato:
+        questi campi vivono solo su update_ccb_dossier, mai qui.
+        """
         ecn = self._to_under_review('ECN-WF-APR-FIELDS')
-        approve_change_notice(
-            ecn, self.ccb,
-            ccb_class=ChangeNotice.CCBClass.CLASS1,
-            ccb_requirements='Conformi.',
-            ccb_technical_impact='Minore.',
-            ccb_cost_impact='Nessun costo.',
-            ccb_time_impact='1 settimana.',
-            ccb_quality_impact='Miglioramento.',
-            ccb_other_impact='Nessuno.',
-            ccb_notes='Approvato senza riserve.',
-        )
+        # Simula un dossier già compilato dal responsabile istruttoria
+        # (in produzione via update_ccb_dossier, prima dell'invio al voto).
+        ecn.ccb_requirements = 'Conformi.'
+        ecn.ccb_technical_impact = 'Minore.'
+        ecn.ccb_cost_impact = 'Nessun costo.'
+        ecn.ccb_time_impact = '1 settimana.'
+        ecn.ccb_quality_impact = 'Miglioramento.'
+        ecn.ccb_other_impact = 'Nessuno.'
+        ecn.ccb_notes = 'Note istruttoria.'
+        ecn.save()
+
+        approve_change_notice(ecn, self.ccb, comment='Approvato senza riserve.')
+
         ecn.refresh_from_db()
         self.assertEqual(ecn.ccb_class, ChangeNotice.CCBClass.CLASS1)
         self.assertEqual(ecn.ccb_requirements, 'Conformi.')
@@ -1334,14 +1361,22 @@ class ECNServiceWorkflowTests(TestCase):
         self.assertEqual(ecn.ccb_time_impact, '1 settimana.')
         self.assertEqual(ecn.ccb_quality_impact, 'Miglioramento.')
         self.assertEqual(ecn.ccb_other_impact, 'Nessuno.')
-        self.assertEqual(ecn.ccb_notes, 'Approvato senza riserve.')
+        self.assertEqual(ecn.ccb_notes, 'Note istruttoria.')
         self.assertEqual(ecn.ccb_reviewed_by.pk, self.ccb.pk)
         self.assertIsNotNone(ecn.ccb_reviewed_at)
 
+    def test_approve_rejects_unexpected_dossier_kwargs(self):
+        """
+        Regressione: la funzione non deve più accettare in alcun modo i
+        parametri del vecchio schema (rimossi, non solo ignorati).
+        """
+        ecn = self._to_under_review('ECN-WF-APR-NOKWARGS')
+        with self.assertRaises(TypeError):
+            approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS2)
+
     def test_approve_creates_decision_record(self):
         ecn = self._to_under_review('ECN-WF-APR-DEC')
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1,
-                              comment='LGTM')
+        approve_change_notice(ecn, self.ccb, comment='LGTM')
         dec = ChangeNoticeDecision.objects.filter(change_notice=ecn).first()
         self.assertIsNotNone(dec)
         self.assertEqual(dec.decision, ChangeNoticeDecision.Decision.APPROVE)
@@ -1351,17 +1386,32 @@ class ECNServiceWorkflowTests(TestCase):
     def test_approve_fails_if_not_under_review(self):
         ecn = self._create_draft('ECN-WF-APR-FAIL')
         with self.assertRaises(ValidationError):
-            approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+            approve_change_notice(ecn, self.ccb)
 
     def test_approve_fails_without_ccb_class(self):
-        ecn = self._to_under_review('ECN-WF-APR-NO-CLASS')
+        """
+        A differenza degli altri test di questa classe, questo NON usa
+        _create_draft (che imposta ccb_class di default): serve un ECN il
+        cui dossier non è mai stato compilato, per verificare che la
+        finalizzazione blocchi un voto senza classificazione — nessun modo
+        di fornirla al momento del voto stesso (vecchio schema eliminato).
+        """
+        ecn = create_change_notice(
+            document=self.document,
+            proposed_by=self.proposer,
+            title='ECN senza dossier',
+            motivation=ChangeNotice.Motivation.OTHER,
+            code='ECN-WF-APR-NO-CLASS',
+        )
+        set_change_notice_approvers(ecn, [self.ccb])
+        submit_change_notice(ecn, self.manager)
         with self.assertRaises(ValidationError):
-            approve_change_notice(ecn, self.ccb, ccb_class=None)
+            approve_change_notice(ecn, self.ccb)
 
     def test_approve_fails_for_non_assigned_user(self):
         ecn = self._to_under_review('ECN-WF-APR-PERM')
         with self.assertRaises(PermissionDenied):
-            approve_change_notice(ecn, self.stranger, ccb_class=ChangeNotice.CCBClass.CLASS1)
+            approve_change_notice(ecn, self.stranger)
 
     def test_manager_can_approve_when_assigned(self):
         """manager può approvare se è stato assegnato come approvatore."""
@@ -1373,15 +1423,17 @@ class ECNServiceWorkflowTests(TestCase):
             code='ECN-WF-APR-MGR2',
         )
         set_change_notice_approvers(ecn, [self.manager])
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         submit_change_notice(ecn, self.manager)
-        approve_change_notice(ecn, self.manager, ccb_class=ChangeNotice.CCBClass.CLASS2)
+        approve_change_notice(ecn, self.manager)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
     def test_approve_writes_auditlog(self):
         ecn = self._to_under_review('ECN-WF-APR-LOG')
         AuditLog.objects.all().delete()
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, self.ccb)
         log = AuditLog.objects.filter(action='ECN_APPROVED').first()
         self.assertIsNotNone(log)
         self.assertEqual(log.changes['new_values']['status'], ChangeNotice.Status.APPROVED)
@@ -1390,12 +1442,12 @@ class ECNServiceWorkflowTests(TestCase):
     def test_approve_duplicate_decision_raises(self):
         """Approvare due volte con lo stesso utente deve sollevare ValidationError."""
         ecn = self._to_under_review('ECN-WF-APR-DUP')
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, self.ccb)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
         # Ora l'ECN è APPROVED, non UNDER_REVIEW → ValidationError per stato
         with self.assertRaises(ValidationError):
-            approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+            approve_change_notice(ecn, self.ccb)
 
     # --- Policy ANY ---------------------------------------------------------
 
@@ -1410,9 +1462,11 @@ class ECNServiceWorkflowTests(TestCase):
         )
         ccb2 = _make_user_in_groups('wf_ccb2', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='any')
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         submit_change_notice(ecn, self.manager)
         # Primo approvatore approva → APPROVED subito
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, self.ccb)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -1429,13 +1483,15 @@ class ECNServiceWorkflowTests(TestCase):
         )
         ccb2 = _make_user_in_groups('wf_ccb2b', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='all')
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         submit_change_notice(ecn, self.manager)
         # Primo approva: NOT yet approved
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, self.ccb)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
         # Secondo approva: ora APPROVED
-        approve_change_notice(ecn, ccb2, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, ccb2)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -1455,7 +1511,7 @@ class ECNServiceWorkflowTests(TestCase):
         submit_change_notice(ecn, self.manager)
         # ccb2 (order=2) tenta di approvare prima di ccb (order=1) → PermissionDenied
         with self.assertRaises(PermissionDenied):
-            approve_change_notice(ecn, ccb2, ccb_class=ChangeNotice.CCBClass.CLASS1)
+            approve_change_notice(ecn, ccb2)
 
     def test_policy_sequential_full_flow(self):
         """Policy SEQUENTIAL: approvazione in ordine → APPROVED."""
@@ -1468,13 +1524,15 @@ class ECNServiceWorkflowTests(TestCase):
         )
         ccb2 = _make_user_in_groups('wf_ccb2d', GROUP_CCB)
         set_change_notice_approvers(ecn, [self.ccb, ccb2], policy='sequential')
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         submit_change_notice(ecn, self.manager)
         # Primo approva: UNDER_REVIEW
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, self.ccb)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
         # Secondo approva: APPROVED
-        approve_change_notice(ecn, ccb2, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, ccb2)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -1569,6 +1627,13 @@ class ECNServiceWorkflowTests(TestCase):
             DocumentVersion.Status.REJECTED,
         ):
             with self.subTest(status=status):
+                # Un solo ECN aperto per documento: qui l'ECN resta APPROVED
+                # di proposito (la chiusura deve fallire), quindi non si
+                # libera mai da solo fra un'iterazione e l'altra — un
+                # documento dedicato per iterazione evita il conflitto.
+                self.document, self.version = _make_approved_document(
+                    self.manager, self.folder, f'DOC-WF-CLOSE-NOTYET-{status}',
+                )
                 ecn = self._to_approved(f'ECN-WF-CLOSE-NOTYET-{status}')
                 _make_executed_version(ecn, self.proposer, status=status)
                 with self.assertRaises(ValidationError) as ctx:
@@ -1624,13 +1689,15 @@ class ECNServiceWorkflowTests(TestCase):
             code='ECN-WF-FULL',
         )
         set_change_notice_approvers(ecn, [self.ccb])
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
 
         submit_change_notice(ecn, self.manager)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
 
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+        approve_change_notice(ecn, self.ccb)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -1655,7 +1722,7 @@ class ECNServiceWorkflowTests(TestCase):
         self.assertEqual(ecn.status, ChangeNotice.Status.REJECTED)
         # Terminale: non si può più approvare
         with self.assertRaises(ValidationError):
-            approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1)
+            approve_change_notice(ecn, self.ccb)
 
     # --- auditlog per-documento ---------------------------------------------
 
@@ -1670,8 +1737,10 @@ class ECNServiceWorkflowTests(TestCase):
             code='ECN-WF-AUD-ALL',
         )
         set_change_notice_approvers(ecn, [self.ccb])
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS1
+        ecn.save(update_fields=['ccb_class'])
         submit_change_notice(ecn, self.manager)
-        approve_change_notice(ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS2)
+        approve_change_notice(ecn, self.ccb)
         _make_executed_version(ecn, self.proposer)
         close_change_notice(ecn, self.manager)
 
@@ -1785,8 +1854,24 @@ class ECNViewTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertContains(r, 'ECN-VIEW-001')
 
-    def test_ecn_list_manager_sees_all(self):
+    def test_ecn_list_quality_manager_does_not_see_uninvolved_ecn(self):
+        """
+        La lista ECN è personale: essere Quality Manager non basta più a
+        vedere ECN in cui non si è coinvolti (proponente/coordinatore/
+        approvatore assegnato). Lo stato generale aziendale è responsabilità
+        esclusiva di Workspace Qualità / Cruscotto ECN, non di questa lista.
+        """
         self.client.force_login(self.manager)
+        r = self.client.get('/ecn/')
+        self.assertEqual(r.status_code, 200)
+        self.assertNotContains(r, 'ECN-VIEW-001')
+
+    def test_ecn_list_superuser_sees_all(self):
+        """Il superuser resta un bypass di sistema, coerente con il resto del codice."""
+        su = _make_user('view_superuser')
+        su.is_superuser = True
+        su.save(update_fields=['is_superuser'])
+        self.client.force_login(su)
         r = self.client.get('/ecn/')
         self.assertEqual(r.status_code, 200)
         self.assertContains(r, 'ECN-VIEW-001')
@@ -1798,13 +1883,13 @@ class ECNViewTests(TestCase):
         self.assertNotContains(r, 'ECN-VIEW-001')
 
     def test_ecn_list_status_filter(self):
-        self.client.force_login(self.manager)
+        self.client.force_login(self.proposer)
         r = self.client.get('/ecn/?status=draft')
         self.assertEqual(r.status_code, 200)
         self.assertContains(r, 'ECN-VIEW-001')
 
     def test_ecn_list_status_filter_excludes_other_states(self):
-        self.client.force_login(self.manager)
+        self.client.force_login(self.proposer)
         r = self.client.get('/ecn/?status=closed')
         self.assertEqual(r.status_code, 200)
         self.assertNotContains(r, 'ECN-VIEW-001')
@@ -1900,6 +1985,12 @@ class ECNViewTests(TestCase):
 
     def test_ecn_create_post_creates_ecn_and_redirects(self):
         """Il proponente/manager crea ECN senza approvatori (CCB verrà configurata separatamente)."""
+        # setUp lascia già un ECN aperto (self.ecn, DRAFT) sullo stesso
+        # documento: con la regola "un solo ECN aperto per documento" va
+        # liberato prima, altrimenti la POST viene bloccata (comportamento
+        # verificato a parte in OneOpenChangeNoticePerDocumentTests).
+        self.ecn.status = ChangeNotice.Status.CLOSED
+        self.ecn.save(update_fields=['status'])
         self.client.force_login(self.manager)
         r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
             'document': self.document.pk,
@@ -2177,6 +2268,11 @@ class ECNViewTests(TestCase):
 
     def test_ecn_configure_ccb_post_assigns_approvers(self):
         """POST con approvatori validi (formset) → redirect e approvatori assegnati."""
+        # setUp lascia già un ECN aperto (self.ecn) sullo stesso documento:
+        # va liberato per poter creare qui un secondo ECN DRAFT senza
+        # approvatori (un solo ECN aperto per documento).
+        self.ecn.status = ChangeNotice.Status.CLOSED
+        self.ecn.save(update_fields=['status'])
         ecn_no_appr = _make_ecn(
             self.document, self.version, self.proposer,
             code='ECN-VIEW-CONF',
@@ -2192,6 +2288,8 @@ class ECNViewTests(TestCase):
 
     def test_ecn_configure_ccb_post_sets_policy(self):
         """POST con formset aggiorna la policy dell'ECN."""
+        self.ecn.status = ChangeNotice.Status.CLOSED
+        self.ecn.save(update_fields=['status'])
         ecn_cfg = _make_ecn(
             self.document, self.version, self.proposer,
             code='ECN-VIEW-CFG-POL',
@@ -2206,6 +2304,8 @@ class ECNViewTests(TestCase):
 
     def test_ecn_configure_ccb_post_without_approvers_shows_error(self):
         """POST formset senza approvatori → messaggio errore (200)."""
+        self.ecn.status = ChangeNotice.Status.CLOSED
+        self.ecn.save(update_fields=['status'])
         ecn_no_appr = _make_ecn(
             self.document, self.version, self.proposer,
             code='ECN-VIEW-CFG-NOAPPR',
@@ -2475,12 +2575,25 @@ class ECNEditPermissionTests(TestCase):
             motivation=ChangeNotice.Motivation.CUSTOMER,
             description='Nuova descrizione',
             motivation_detail='Dettaglio motivazione',
-            commessa='C-2025-99',
         )
         self.assertEqual(updated.title, 'Nuovo titolo')
         self.assertEqual(updated.motivation, ChangeNotice.Motivation.CUSTOMER)
         self.assertEqual(updated.description, 'Nuova descrizione')
-        self.assertEqual(updated.commessa, 'C-2025-99')
+
+    def test_update_change_notice_does_not_accept_commessa_or_project(self):
+        """
+        Regressione: commessa/progetto non sono più modificabili tramite
+        update_change_notice — sono derivati una sola volta dal progetto
+        del documento alla creazione dell'ECN (vedi ecn_create) e restano
+        fissi, esattamente come la commessa è un dato del progetto fissato
+        alla sua creazione (Project.commessa), non un campo libero dell'ECN.
+        """
+        with self.assertRaises(TypeError):
+            self.update_change_notice(
+                self.ecn, actor=self.manager,
+                title='X', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+                commessa='NUOVA',
+            )
 
     def test_update_change_notice_fails_if_not_draft(self):
         self.ecn.status = ChangeNotice.Status.UNDER_REVIEW
@@ -3396,17 +3509,17 @@ class CCBPolicyTests(TestCase):
     # 1. ANY: prima approvazione → ECN approvato
     def test_policy_any_first_approval_finalizes(self):
         ecn = self._make_ecn_ready('any', 'ECN-POL-ANY')
-        approve_change_notice(ecn, self.ccb1, ccb_class='class1')
+        approve_change_notice(ecn, self.ccb1)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
     # 2. ALL: tutti devono approvare
     def test_policy_all_requires_all(self):
         ecn = self._make_ecn_ready('all', 'ECN-POL-ALL')
-        approve_change_notice(ecn, self.ccb1, ccb_class='class1')
+        approve_change_notice(ecn, self.ccb1)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
-        approve_change_notice(ecn, self.ccb2, ccb_class='class1')
+        approve_change_notice(ecn, self.ccb2)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -3414,7 +3527,7 @@ class CCBPolicyTests(TestCase):
     def test_policy_sequential_second_cannot_vote_before_first(self):
         ecn = self._make_ecn_ready('sequential', 'ECN-POL-SEQ')
         with self.assertRaises(PermissionDenied):
-            approve_change_notice(ecn, self.ccb2, ccb_class='class1')
+            approve_change_notice(ecn, self.ccb2)
 
     # 4. SEQUENTIAL: POST manuale fuori turno respinta (permesso)
     def test_policy_sequential_out_of_turn_post_forbidden(self):
@@ -3431,10 +3544,10 @@ class CCBPolicyTests(TestCase):
     # 5. SEQUENTIAL: full flow
     def test_policy_sequential_full_flow(self):
         ecn = self._make_ecn_ready('sequential', 'ECN-POL-SEQ-FULL')
-        approve_change_notice(ecn, self.ccb1, ccb_class='class1')
+        approve_change_notice(ecn, self.ccb1)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
-        approve_change_notice(ecn, self.ccb2, ccb_class='class1')
+        approve_change_notice(ecn, self.ccb2)
         ecn.refresh_from_db()
         self.assertEqual(ecn.status, ChangeNotice.Status.APPROVED)
 
@@ -3517,11 +3630,29 @@ class CCBEmailNotificationTests(TestCase):
         from django.core import mail
         ecn = self._submit_ecn('sequential', 'ECN-EM-SEQ2')
         mail.outbox = []
-        approve_change_notice(ecn, self.ccb1, ccb_class='class1', comment='OK')
+        approve_change_notice(ecn, self.ccb1, comment='OK')
         ecn.refresh_from_db()
         if ecn.status == ChangeNotice.Status.UNDER_REVIEW:
             recipients = [m.to[0] for m in mail.outbox if m.to]
             self.assertIn('ccb2@test.com', recipients)
+
+    # 4b. Regressione: il prossimo in coda riceve una sola email, non due
+    # (bug reale corretto: prima riceveva sia la "richiesta di decisione"
+    # dedicata sia il "voto espresso" broadcast con lo stesso contenuto —
+    # segnalato dall'operatore dopo verifica manuale).
+    def test_sequential_next_approver_receives_exactly_one_email(self):
+        from django.core import mail
+        ecn = self._submit_ecn('sequential', 'ECN-EM-SEQ2B')
+        mail.outbox = []
+        approve_change_notice(ecn, self.ccb1, comment='OK')
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
+        sent_to_ccb2 = [m for m in mail.outbox if m.to and 'ccb2@test.com' in m.to]
+        self.assertEqual(
+            len(sent_to_ccb2), 1,
+            f"ccb2 deve ricevere una sola email dopo il voto di ccb1, trovate {len(sent_to_ccb2)}: "
+            f"{[m.subject for m in sent_to_ccb2]}",
+        )
 
     # 5. Proponente notificato all'approvazione finale
     def test_proposer_notified_on_approval(self):
@@ -3530,10 +3661,74 @@ class CCBEmailNotificationTests(TestCase):
         self.qm.save(update_fields=['email'])
         ecn = self._submit_ecn('any', 'ECN-EM-APPR')
         mail.outbox = []
-        approve_change_notice(ecn, self.ccb1, ccb_class='class1', comment='OK')
+        approve_change_notice(ecn, self.ccb1, comment='OK')
         ecn.refresh_from_db()
         recipients = [m.to[0] for m in mail.outbox if m.to]
         self.assertIn('qm@test.com', recipients)
+
+
+# ---------------------------------------------------------------------------
+# Notifica creazione ECN — deroga demo (l'unico account demo interpreta
+# proponente + owner documento + Quality Manager contemporaneamente)
+# ---------------------------------------------------------------------------
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class EcnCreatedNotificationDemoTests(TestCase):
+    """
+    notify_ecn_created esclude sempre il proponente dai destinatari (non ha
+    senso notificare a sé stessi). In modalità demo però l'unico account
+    supervisor_demo interpreta proponente, owner documento e Quality
+    Manager insieme: senza deroga nessuno riceverebbe mai l'email e non
+    sarebbe possibile dimostrare l'intero flusso da una sola casella.
+    """
+
+    def setUp(self):
+        from django.core import mail
+        mail.outbox = []
+        self.demo_user = _make_quality_manager('supervisor_demo')
+        self.demo_user.email = 'supervisor_demo@test.com'
+        self.demo_user.save(update_fields=['email'])
+        self.folder = _make_folder(self.demo_user, 'FOLD-ECN-CREATED-DEMO')
+        self.document, self.version = _make_approved_document(
+            self.demo_user, self.folder, 'DOC-ECN-CREATED-DEMO',
+        )
+
+    def _create_ecn(self, code):
+        return create_change_notice(
+            document=self.document, proposed_by=self.demo_user,
+            title='ECN creazione demo', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code=code,
+        )
+
+    @override_settings(DOCUMENTALE_DEMO_MODE=False)
+    def test_proposer_who_is_also_owner_and_qm_gets_no_email_outside_demo(self):
+        from django.core import mail
+        self._create_ecn('ECN-CREATED-NODEMO')
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(
+        DOCUMENTALE_DEMO_MODE=True,
+        DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='supervisor_demo',
+    )
+    def test_demo_supervisor_receives_own_ecn_created_email(self):
+        from django.core import mail
+        self._create_ecn('ECN-CREATED-DEMO')
+        recipients = [m.to[0] for m in mail.outbox if m.to]
+        self.assertIn('supervisor_demo@test.com', recipients)
+        # Un solo invio (deduplica su pk), non uno per ruolo (owner + QM).
+        self.assertEqual(
+            len([m for m in mail.outbox if m.to and 'supervisor_demo@test.com' in m.to]),
+            1,
+        )
+
+    @override_settings(
+        DOCUMENTALE_DEMO_MODE=True,
+        DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='altro_supervisore',
+    )
+    def test_demo_mode_active_but_different_supervisor_username_no_email(self):
+        from django.core import mail
+        self._create_ecn('ECN-CREATED-DEMO-OTHER')
+        self.assertEqual(len(mail.outbox), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -3597,7 +3792,7 @@ class CCBAuditTests(TestCase):
                            ccb_requirements='OK', ccb_technical_impact='OK')
         submit_change_notice(self.ecn, self.qm)
         AuditLog.objects.all().delete()
-        approve_change_notice(self.ecn, self.ccb1, ccb_class='class1')
+        approve_change_notice(self.ecn, self.ccb1)
         self.assertTrue(AuditLog.objects.filter(action='ECN_APPROVED').exists())
 
     # 5. ECN_REJECTED
@@ -3764,8 +3959,14 @@ class ApplicabilityServiceLifecycleTests(TestCase):
         ]
         for state in states:
             with self.subTest(state=state):
+                # Un solo ECN aperto per documento: un documento per stato
+                # testato (due dei quattro stati di questo loop sono
+                # "aperti" — under_review, approved — e si accumulerebbero
+                # sullo stesso documento senza mai liberarlo).
+                doc = _make_document(self.manager, self.folder, code=f'APPL-IMM-DOC-{state}')
+                version = _make_version(doc, self.manager)
                 ecn = _make_ecn(
-                    self.document, self.version, self.manager,
+                    doc, version, self.manager,
                     code=f'APPL-IMM-{state}',
                     applicability_category=ChangeNotice.Applicability.FUTURE,
                 )
@@ -3829,7 +4030,7 @@ class ApplicabilityServiceLifecycleTests(TestCase):
         AuditLog.objects.all().delete()
 
         approve_change_notice(
-            ecn, self.ccb, ccb_class=ChangeNotice.CCBClass.CLASS1,
+            ecn, self.ccb,
             send_notifications=False,
         )
 
@@ -3954,9 +4155,15 @@ class ApplicabilityViewTests(TestCase):
         self.assertIsNone(new_ecn.applicability_category)
 
     def test_ecn_list_renders_badge_classes_for_all_categories(self):
-        for category in ChangeNotice.Applicability:
+        # Un documento diverso per categoria: un solo ECN aperto per
+        # documento (vedi OneOpenChangeNoticePerDocumentTests) — qui serve
+        # solo che i 3 ECN esistano con categorie diverse, non che siano
+        # sullo stesso documento.
+        for i, category in enumerate(ChangeNotice.Applicability):
+            doc = _make_document(self.manager, self.folder, code=f'APPL-LIST-DOC-{i}')
+            version = _make_version(doc, self.manager)
             _make_ecn(
-                self.document, self.version, self.manager,
+                doc, version, self.manager,
                 code=f'APPL-LIST-{category.value}',
                 applicability_category=category,
                 applicability_detail='Solo commessa ABC' if category == ChangeNotice.Applicability.LIMITED else '',
@@ -3970,6 +4177,12 @@ class ApplicabilityViewTests(TestCase):
         self.assertContains(response, 'badge-applicability-limited')
 
     def test_ecn_detail_limited_shows_detail_and_scope_notice_general_does_not(self):
+        # Un solo ECN aperto per documento: il secondo ECN vive su un
+        # documento separato (il test verifica il rendering per ECN, non
+        # un'interazione fra i due sullo stesso documento).
+        other_document = _make_document(self.manager, self.folder, code='APPL-DETAIL-DOC-2')
+        other_version = _make_version(other_document, self.manager)
+
         limited = _make_ecn(
             self.document, self.version, self.manager,
             code='APPL-DETAIL-LIMITED',
@@ -3977,7 +4190,7 @@ class ApplicabilityViewTests(TestCase):
             applicability_detail='Solo commessa ABC',
         )
         general = _make_ecn(
-            self.document, self.version, self.manager,
+            other_document, other_version, self.manager,
             code='APPL-DETAIL-GENERAL',
             applicability_category=ChangeNotice.Applicability.GENERAL,
         )
@@ -4576,3 +4789,386 @@ class ECNActionPageLockTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.ecn.refresh_from_db()
         self.assertEqual(self.ecn.locked_by, self.ccb2)
+
+
+# ---------------------------------------------------------------------------
+# "Un solo ECN aperto per documento" (2026-09-14)
+# ---------------------------------------------------------------------------
+
+class OneOpenChangeNoticePerDocumentTests(TestCase):
+    """
+    Un documento può avere al massimo un ECN "aperto" alla volta — qualsiasi
+    stato diverso da REJECTED/CLOSED (draft, ccb_preparation, under_review,
+    approved). Copre create_change_notice e create_simple_ecn, che
+    condividono lo stesso controllo (ecn.services._raise_if_open_change_notice),
+    il messaggio d'errore filtrato per visibilità (can_view_ecn), e la
+    difesa in profondità del vincolo DB.
+    """
+
+    def setUp(self):
+        self.proposer = _make_user('open_ecn_proposer')
+        self.stranger = _make_user('open_ecn_stranger')
+        # can_create_ecn (permesso di *view*, non del service, testato qui
+        # solo per i test end-to-end #11/#12): gruppo globale, non legato
+        # alla cartella — serve solo a superare il gate della view.
+        self.proposer.groups.add(Group.objects.get_or_create(name=GROUP_AUTHORS)[0])
+        self.folder = _make_folder(self.proposer, code='OPEN-ECN-FOLD')
+        self.document, self.version = _make_approved_document(
+            self.proposer, self.folder, 'OPEN-ECN-DOC-001',
+        )
+
+    # 1. Primo ECN aperto su un documento pulito: nessun blocco.
+    def test_first_open_ecn_is_allowed(self):
+        ecn = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        self.assertEqual(ecn.status, ChangeNotice.Status.DRAFT)
+
+    # 2. Secondo ECN standard mentre il primo è ancora aperto → bloccato,
+    #    il primo resta invariato.
+    def test_second_standard_ecn_blocked_while_first_open(self):
+        first = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        with self.assertRaises(ValidationError):
+            create_change_notice(
+                document=self.document, proposed_by=self.proposer,
+                title='Secondo ECN', motivation=ChangeNotice.Motivation.OTHER,
+                send_notifications=False,
+            )
+        self.assertEqual(
+            ChangeNotice.objects.filter(document=self.document).count(), 1,
+        )
+        first.refresh_from_db()
+        self.assertEqual(first.status, ChangeNotice.Status.DRAFT)
+
+    # 3. Messaggio con codice/stato/richiedente/data, quando il chiamante
+    #    ha visibilità sull'ECN esistente (qui: è lui stesso il proponente).
+    def test_error_message_contains_code_status_requester_date_when_visible(self):
+        first = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code='ECN-VISIBLE-001', send_notifications=False,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            create_change_notice(
+                document=self.document, proposed_by=self.proposer,
+                title='Secondo ECN', motivation=ChangeNotice.Motivation.OTHER,
+                send_notifications=False,
+            )
+        message = str(ctx.exception.messages[0])
+        self.assertIn(first.code, message)
+        self.assertIn(self.proposer.username, message)  # get_full_name() vuoto -> username
+        expected_date = timezone.localtime(first.proposed_at).strftime('%d/%m/%Y')
+        self.assertIn(expected_date, message)
+        self.assertIn('Bozza', message)  # get_status_display() di DRAFT
+        self.assertEqual(ctx.exception.existing_ecn.pk, first.pk)
+
+    # 3b. Utente senza visibilità sull'ECN esistente (can_view_ecn=False):
+    #     messaggio generico, nessun dato riservato.
+    def test_error_message_hides_details_for_user_without_view_permission(self):
+        create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code='ECN-HIDDEN-001', send_notifications=False,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            create_change_notice(
+                document=self.document, proposed_by=self.stranger,
+                title='Tentativo stranger', motivation=ChangeNotice.Motivation.OTHER,
+                send_notifications=False,
+            )
+        message = str(ctx.exception.messages[0])
+        self.assertNotIn('ECN-HIDDEN-001', message)
+        self.assertNotIn(self.proposer.username, message)
+
+    # 4. Consentito dopo REJECTED.
+    def test_new_ecn_allowed_after_previous_rejected(self):
+        first = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        first.status = ChangeNotice.Status.REJECTED
+        first.save(update_fields=['status'])
+        second = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Secondo ECN dopo rifiuto', motivation=ChangeNotice.Motivation.OTHER,
+            send_notifications=False,
+        )
+        self.assertEqual(second.status, ChangeNotice.Status.DRAFT)
+
+    # 5. Consentito dopo CLOSED.
+    def test_new_ecn_allowed_after_previous_closed(self):
+        first = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        first.status = ChangeNotice.Status.CLOSED
+        first.save(update_fields=['status'])
+        second = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Secondo ECN dopo chiusura', motivation=ChangeNotice.Motivation.OTHER,
+            send_notifications=False,
+        )
+        self.assertEqual(second.status, ChangeNotice.Status.DRAFT)
+
+    # 6. Bloccato quando il precedente è APPROVED ma non ancora eseguito.
+    def test_new_ecn_blocked_when_previous_approved_but_not_executed(self):
+        first = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        first.status = ChangeNotice.Status.APPROVED
+        first.save(update_fields=['status'])
+        self.assertIsNone(first.executed_version_id)
+        with self.assertRaises(ValidationError):
+            create_change_notice(
+                document=self.document, proposed_by=self.proposer,
+                title='Secondo ECN', motivation=ChangeNotice.Motivation.OTHER,
+                send_notifications=False,
+            )
+
+    # 7. Consentito dopo esecuzione + chiusura (automatica): ancora bloccato
+    #    subito dopo l'esecuzione (eseguito ma non chiuso), libero dopo.
+    def test_new_ecn_allowed_after_execution_and_auto_close(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready
+
+        first = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        first.status = ChangeNotice.Status.APPROVED
+        first.save(update_fields=['status'])
+
+        new_version = create_new_revision(
+            self.document, self.proposer, '01', 1, ecn=first,
+            change_summary='Esecuzione ECN',
+        )
+        with self.assertRaises(ValidationError):
+            create_change_notice(
+                document=self.document, proposed_by=self.proposer,
+                title='Secondo ECN troppo presto', motivation=ChangeNotice.Motivation.OTHER,
+                send_notifications=False,
+            )
+
+        old_current = self.document.current_version
+        DocumentVersion.objects.filter(pk=old_current.pk).update(
+            status=DocumentVersion.Status.SUPERSEDED, is_current=False,
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.is_current = True
+        new_version.save(update_fields=['status', 'is_current'])
+        self.document.current_version = new_version
+        self.document.save(update_fields=['current_version'])
+
+        auto_close_executed_ecn_if_ready(new_version, self.proposer)
+        first.refresh_from_db()
+        self.assertEqual(first.status, ChangeNotice.Status.CLOSED)
+
+        third = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Terzo ECN dopo chiusura', motivation=ChangeNotice.Motivation.OTHER,
+            send_notifications=False,
+        )
+        self.assertEqual(third.status, ChangeNotice.Status.DRAFT)
+
+    # 8. Stesso comportamento per l'ECN a flusso semplice: nasce già
+    #    APPROVED e blocca finché non è eseguito e chiuso.
+    def test_simple_ecn_blocks_new_ecn_while_open_and_frees_after_close(self):
+        from documents.services import create_new_revision
+        from ecn.services import auto_close_executed_ecn_if_ready, create_simple_ecn
+
+        simple = create_simple_ecn(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN semplice', send_notifications=False,
+        )
+        self.assertEqual(simple.status, ChangeNotice.Status.APPROVED)
+
+        with self.assertRaises(ValidationError):
+            create_simple_ecn(
+                document=self.document, proposed_by=self.proposer,
+                title='ECN semplice 2', send_notifications=False,
+            )
+        with self.assertRaises(ValidationError):
+            create_change_notice(
+                document=self.document, proposed_by=self.proposer,
+                title='ECN standard mentre semplice aperto',
+                motivation=ChangeNotice.Motivation.OTHER, send_notifications=False,
+            )
+
+        new_version = create_new_revision(
+            self.document, self.proposer, '01', 1, ecn=simple,
+            change_summary='Esecuzione ECN semplice',
+        )
+        old_current = self.document.current_version
+        DocumentVersion.objects.filter(pk=old_current.pk).update(
+            status=DocumentVersion.Status.SUPERSEDED, is_current=False,
+        )
+        new_version.status = DocumentVersion.Status.APPROVED
+        new_version.is_current = True
+        new_version.save(update_fields=['status', 'is_current'])
+        self.document.current_version = new_version
+        self.document.save(update_fields=['current_version'])
+        auto_close_executed_ecn_if_ready(new_version, self.proposer)
+        simple.refresh_from_db()
+        self.assertEqual(simple.status, ChangeNotice.Status.CLOSED)
+
+        freed = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN dopo chiusura semplice',
+            motivation=ChangeNotice.Motivation.OTHER, send_notifications=False,
+        )
+        self.assertEqual(freed.status, ChangeNotice.Status.DRAFT)
+
+    # 9. ECN aperti su documenti diversi non interferiscono.
+    def test_open_ecn_on_different_document_does_not_block(self):
+        other_document, _ = _make_approved_document(
+            self.proposer, self.folder, 'OPEN-ECN-DOC-002',
+        )
+        create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN sul primo documento', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        ecn_other = create_change_notice(
+            document=other_document, proposed_by=self.proposer,
+            title='ECN sul secondo documento', motivation=ChangeNotice.Motivation.OTHER,
+            send_notifications=False,
+        )
+        self.assertEqual(ecn_other.status, ChangeNotice.Status.DRAFT)
+
+    # 10. Due richieste concorrenti non producono due ECN aperti: verifica
+    #     diretta del vincolo DB (difesa in profondità), bypassando il
+    #     service — è l'esito reale di una race su SQLite, dove
+    #     select_for_update() è un no-op silenzioso (vedi nota in cima a
+    #     ecn/services.py): la correttezza sotto race si appoggia al
+    #     vincolo UNIQUE, non al row-lock applicativo.
+    def test_db_constraint_rejects_second_open_ecn_bypassing_service(self):
+        ChangeNotice.objects.create(
+            code='ECN-RACE-001', title='Prima riga (bypass service)',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            document=self.document, document_version=self.version,
+            proposed_by=self.proposer, created_by=self.proposer,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ChangeNotice.objects.create(
+                    code='ECN-RACE-002', title='Seconda riga (bypass service)',
+                    motivation=ChangeNotice.Motivation.OTHER,
+                    document=self.document, document_version=self.version,
+                    proposed_by=self.proposer, created_by=self.proposer,
+                )
+        self.assertEqual(
+            ChangeNotice.objects.filter(document=self.document).count(), 1,
+        )
+
+    # 10b. Il service converte un IntegrityError "a sorpresa" (constraint
+    #      scattato dopo il pre-check applicativo) nello stesso errore
+    #      applicativo pulito, non lo propaga come IntegrityError grezzo.
+    def test_integrity_error_conversion_helper_raises_friendly_validation_error(self):
+        from ecn.services import _reraise_after_open_change_notice_integrity_error
+
+        existing = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN esistente', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            send_notifications=False,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            _reraise_after_open_change_notice_integrity_error(self.document, self.proposer)
+        self.assertIn(existing.code, str(ctx.exception.messages[0]))
+
+    # 11. Il controllo funziona anche dalla view (non solo dal service):
+    #     stesso comportamento end-to-end via client di test.
+    def test_view_blocks_second_ecn_and_shows_error_message(self):
+        self.client.force_login(self.proposer)
+        self.client.post(f'/ecn/new/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Primo ECN via view',
+            'motivation': ChangeNotice.Motivation.IMPROVEMENT,
+            'motivation_detail': '',
+            'description': '',
+            'commessa': '',
+        })
+        self.assertEqual(
+            ChangeNotice.objects.filter(document=self.document).count(), 1,
+        )
+
+        r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Secondo ECN via view',
+            'motivation': ChangeNotice.Motivation.OTHER,
+            'motivation_detail': '',
+            'description': '',
+            'commessa': '',
+        })
+        # Bloccato: nessun redirect, il form viene ri-mostrato con l'errore.
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            ChangeNotice.objects.filter(document=self.document).count(), 1,
+        )
+        from django.contrib.messages import get_messages
+        msgs = [str(m) for m in get_messages(r.wsgi_request)]
+        self.assertTrue(any('già presente' in m for m in msgs))
+        # Il proponente ha visibilità sul proprio ECN: la view aggiunge un
+        # link al dettaglio.
+        self.assertTrue(any('Apri il dettaglio' in m for m in msgs))
+
+    def test_view_blocks_second_simple_ecn_and_shows_error_message(self):
+        self.client.force_login(self.proposer)
+        self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'ECN semplice via view',
+            'description': '',
+        })
+        self.assertEqual(
+            ChangeNotice.objects.filter(document=self.document).count(), 1,
+        )
+
+        r = self.client.post(f'/ecn/new-simple/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Secondo ECN semplice via view',
+            'description': '',
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            ChangeNotice.objects.filter(document=self.document).count(), 1,
+        )
+
+    # 12. Utenti senza visibilità sull'ECN esistente non ricevono dati non
+    #     autorizzati, anche dalla view (nessun link al dettaglio, nessun
+    #     codice nel messaggio).
+    def test_view_hides_details_and_link_for_user_without_view_permission(self):
+        create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Primo ECN', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            code='ECN-VIEW-HIDDEN-001', send_notifications=False,
+        )
+        # can_create_ecn è un gruppo globale (GROUP_AUTHORS), non legato alla
+        # cartella: lo stranger può quindi arrivare al controllo di questo
+        # task senza per questo ottenere can_view_ecn sull'ECN esistente
+        # (che richiede invece un ruolo *per cartella* — get_folder_role —
+        # che questo utente non ha su self.folder).
+        self.stranger.groups.add(Group.objects.get_or_create(name=GROUP_AUTHORS)[0])
+        self.client.force_login(self.stranger)
+        r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Tentativo stranger via view',
+            'motivation': ChangeNotice.Motivation.OTHER,
+            'motivation_detail': '',
+            'description': '',
+            'commessa': '',
+        })
+        self.assertEqual(r.status_code, 200)
+        from django.contrib.messages import get_messages
+        msgs = [str(m) for m in get_messages(r.wsgi_request)]
+        self.assertFalse(any('ECN-VIEW-HIDDEN-001' in m for m in msgs))
+        self.assertFalse(any('Apri il dettaglio' in m for m in msgs))

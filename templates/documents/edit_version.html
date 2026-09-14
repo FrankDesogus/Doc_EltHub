@@ -58,22 +58,13 @@
   <!-- Etichetta e numero revisione -->
   <div class="form-section">
     <div class="form-section-title">Dati revisione</div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 gap-4">
       <div class="form-group mb-0">
         <label class="form-label" for="{{ form.revision_label.id_for_label }}">
           {{ form.revision_label.label }}
         </label>
         {{ form.revision_label }}
         {% for error in form.revision_label.errors %}
-        <p class="form-error">{{ error }}</p>
-        {% endfor %}
-      </div>
-      <div class="form-group mb-0">
-        <label class="form-label" for="{{ form.revision_number.id_for_label }}">
-          {{ form.revision_number.label }}
-        </label>
-        {{ form.revision_number }}
-        {% for error in form.revision_number.errors %}
         <p class="form-error">{{ error }}</p>
         {% endfor %}
       </div>

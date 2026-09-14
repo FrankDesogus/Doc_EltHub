@@ -69,6 +69,10 @@ def _make_ecn(document, version, proposed_by, code='ECN-T001'):
         description='Descrizione test',
         motivation=ChangeNotice.Motivation.IMPROVEMENT,
         applicability_category=ChangeNotice.Applicability.GENERAL,
+        # ccb_class è ora l'unica fonte per approve_change_notice (il vecchio
+        # schema in cui l'approvatore lo passava al voto è stato eliminato):
+        # questo helper bypassa il service, quindi lo imposta direttamente.
+        ccb_class=ChangeNotice.CCBClass.CLASS1,
         document=document,
         document_version=version,
         proposed_by=proposed_by,
@@ -398,7 +402,7 @@ class EcnApprovedEmailTest(TestCase):
     def test_approved_all_recipients_notified(self):
         """ECN approvato → proponente, doc_owner, coordinator, membri CCB, QM ricevono email."""
         mail.outbox.clear()
-        approve_change_notice(self.ecn, self.member1, ccb_class='class1')
+        approve_change_notice(self.ecn, self.member1)
 
         recipients = [m.to[0] for m in mail.outbox]
         self.assertIn(self.proposer.email, recipients)
@@ -410,7 +414,7 @@ class EcnApprovedEmailTest(TestCase):
     def test_approved_no_duplicates(self):
         """ECN approvato → nessun duplicato email per lo stesso utente."""
         mail.outbox.clear()
-        approve_change_notice(self.ecn, self.member1, ccb_class='class1')
+        approve_change_notice(self.ecn, self.member1)
 
         all_recipients = [m.to[0] for m in mail.outbox]
         # Verifica unicità
@@ -420,7 +424,7 @@ class EcnApprovedEmailTest(TestCase):
     def test_approved_message_contains_can_create_revision(self):
         """Email approvazione ECN al proponente contiene il messaggio sulla revisione."""
         mail.outbox.clear()
-        approve_change_notice(self.ecn, self.member1, ccb_class='class1')
+        approve_change_notice(self.ecn, self.member1)
 
         proposer_mails = [m for m in mail.outbox if self.proposer.email in m.to]
         self.assertTrue(proposer_mails)
@@ -429,7 +433,7 @@ class EcnApprovedEmailTest(TestCase):
     def test_approved_message_contains_applicability_label(self):
         """TASK-036-4 Parte G: email approvazione ECN include l'applicabilità."""
         mail.outbox.clear()
-        approve_change_notice(self.ecn, self.member1, ccb_class='class1')
+        approve_change_notice(self.ecn, self.member1)
 
         self.assertTrue(mail.outbox)
         self.assertIn('Applicabilità : Applicazione generale', mail.outbox[0].body)

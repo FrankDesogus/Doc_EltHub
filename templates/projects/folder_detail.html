@@ -201,7 +201,7 @@
 <div class="flex items-center justify-between mb-3">
   <h2 class="section-title mb-0">Documenti</h2>
   {% if can_create %}
-  <a href="{% url 'document_new' %}" class="btn-primary btn-sm">+ Nuovo documento</a>
+  <a href="{% url 'document_new' %}?folder={{ folder.pk }}" class="btn-primary btn-sm">+ Nuovo documento</a>
   {% endif %}
 </div>
 {% if documents %}
@@ -251,7 +251,7 @@
     <div class="empty-state-title">Nessun documento</div>
     <div class="empty-state-desc">Nessun documento associato a questa cartella.</div>
     {% if can_create %}
-    <a href="{% url 'document_new' %}" class="btn-primary mt-4 btn-sm">+ Nuovo documento</a>
+    <a href="{% url 'document_new' %}?folder={{ folder.pk }}" class="btn-primary mt-4 btn-sm">+ Nuovo documento</a>
     {% endif %}
   </div>
 </div>

@@ -14,7 +14,7 @@
     } catch (err) {}
   })();
 </script>
-<link rel="stylesheet" href="{% static 'css/tailwind.css' %}">
+<link rel="stylesheet" href="{% static_versioned 'css/tailwind.css' %}">
 {% block extra_head %}{% endblock %}
 </head>
 <body class="theme-elt h-full">
@@ -42,6 +42,7 @@
     {% nav_my_drafts user as sb_n_drafts %}
     {% nav_my_ecn_open user as sb_n_ecn %}
     {% nav_ecn_to_review user as sb_n_ecn_review %}
+    {% nav_dossier_to_compile user as sb_n_dossier %}
     {% nav_ecn_to_close user as sb_n_ecn_close %}
     {% user_can_quality_workspace user as sb_can_quality %}
     {% user_can_view_archive user as sb_can_archive %}
@@ -101,12 +102,6 @@
           {% if sb_n_tot %}<span class="sidebar-count sidebar-count-warn">{{ sb_n_tot }}</span>{% endif %}
         {% endwith %}
       </a>
-
-      <a href="{% url 'my_drafts' %}"
-         class="sidebar-link justify-between {% if p == '/my-drafts/' %}sidebar-link-active{% endif %}">
-        <span class="flex items-center gap-2.5"><span>📝</span> Mie bozze</span>
-        {% if sb_n_drafts %}<span class="sidebar-count sidebar-count-warn">{{ sb_n_drafts }}</span>{% endif %}
-      </a>
       </div>
 
       {% if sb_can_quality %}
@@ -115,7 +110,7 @@
       <a href="{% url 'workspace_quality' %}"
          class="sidebar-link justify-between {% if p == '/workspace/quality/' %}sidebar-link-active{% endif %}">
         <span class="flex items-center gap-2.5"><span>⚙️</span> Workspace Qualità</span>
-        {% with sb_n_q=sb_n_ecn_review|add:sb_n_ecn_close|add:sb_n_ccb %}
+        {% with sb_n_q=sb_n_ecn_review|add:sb_n_ecn_close|add:sb_n_ccb|add:sb_n_dossier %}
           {% if sb_n_q %}<span class="sidebar-count sidebar-count-warn">{{ sb_n_q }}</span>{% endif %}
         {% endwith %}
       </a>

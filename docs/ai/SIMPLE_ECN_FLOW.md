@@ -22,7 +22,7 @@ processo di istruttoria/CCB, esistono ora **due flussi ECN**:
 | Convocazione CCB | Sì (se necessaria) | No |
 | Approvatori multipli | Sì (ANY/ALL/SEQUENTIAL) | No |
 | Stato dopo la creazione | `DRAFT` | `APPROVED` (immediato) |
-| Chiusura Qualità | Sì (`close_change_notice`) | No (resta `APPROVED`) |
+| Chiusura | Manuale (`close_change_notice`) o automatica | Automatica (`auto_close_executed_ecn_if_ready`) |
 | Codice | `ECN-NNNN` | `ECN-S-<anno>-NNNN` |
 | Traccia audit/storico | Sì | Sì (identica) |
 
@@ -63,10 +63,20 @@ come marcatore di chi/quando ha autoapprovato, senza passare da
 `ChangeNoticeApprover`/`ChangeNoticeDecision`: non c'è nessuna CCB da
 votare.
 
-L'ECN semplice non viene mai chiuso (`close_change_notice`): resta
-`APPROVED` in modo permanente — per design, "approvato" è già lo stato
-finale equivalente per questo flusso (non c'è verifica qualità di
-chiusura da fare).
+**Nota di aggiornamento (task "un solo ECN aperto per documento",
+2026-09-14):** l'affermazione originale di questa sezione — "l'ECN
+semplice non viene mai chiuso, resta APPROVED in modo permanente" — è
+superata da `auto_close_executed_ecn_if_ready` (`ecn/services.py`,
+introdotta il 2026-07-28, **dopo** la stesura di questo documento):
+generalizza a entrambi i flussi (standard e semplice) la chiusura
+automatica quando la revisione di esecuzione collegata viene approvata
+definitivamente e diventa corrente. Un ECN semplice **resta APPROVED
+solo finché non è stato eseguito e la sua revisione approvata** — dopo
+di che passa a `CLOSED` come un ECN standard, senza intervento
+manuale. Questo è anche il motivo per cui, con la nuova regola "un
+solo ECN aperto per documento" (vedi `get_open_change_notice` in
+`ecn/services.py`), un ECN semplice APPROVED blocca comunque nuove
+richieste ECN sullo stesso documento finché non arriva a CLOSED.
 
 ## Come si collega alla revisione documento
 

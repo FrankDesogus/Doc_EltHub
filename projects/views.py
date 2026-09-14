@@ -515,7 +515,7 @@ def project_detail(request, project_id):
     # completo (tutti gli snapshot, confronto baseline, storico eventi) è
     # confinato in Archivio progetti — qui resta solo il riferimento corrente.
     current_baseline = project.revisions.filter(
-        is_current=True, snapshot_type='revision',
+        is_current=True,
     ).select_related('issued_by').first()
 
     from projects.permissions import can_create_document_in_folder, can_view_archived_project
@@ -559,7 +559,7 @@ def project_detail(request, project_id):
 @login_required
 def archive_project_detail(request, project_id):
     """
-    Storico completo del progetto (TASK-026): tutti gli snapshot versione/
+    Storico completo del progetto (TASK-026): tutti gli snapshot di
     revisione, confronto con la baseline corrente, storico eventi. Accesso
     gated da can_view_archived_project — non raggiungibile da project_detail
     se non autorizzati (stesso permesso più alto di can_view_audit, non
@@ -575,17 +575,10 @@ def archive_project_detail(request, project_id):
     if not can_view_archived_project(request.user, project):
         raise Http404
 
-    version_snapshots = project.revisions.filter(
-        snapshot_type='version'
-    ).order_by('-revision_number')
-    revision_snapshots = project.revisions.filter(
-        snapshot_type='revision'
-    ).order_by('-revision_number')
+    revision_snapshots = project.revisions.order_by('-revision_number')
 
     from projects.services import build_project_baseline_comparison
-    current_baseline, comparison_rows = build_project_baseline_comparison(
-        project, snapshot_type='revision'
-    )
+    current_baseline, comparison_rows = build_project_baseline_comparison(project)
 
     from auditlog.models import AuditLog
     from documents.models import Document as _Doc
@@ -612,19 +605,16 @@ def archive_project_detail(request, project_id):
         )
 
     from django.urls import reverse as _reverse
-    _save_version_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk}) + '?snapshot_type=version'
-    _save_revision_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk}) + '?snapshot_type=revision'
+    _save_revision_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk})
 
     return render(request, 'projects/archive_project_detail.html', {
         'project': project,
-        'version_snapshots': version_snapshots,
         'revision_snapshots': revision_snapshots,
         'current_baseline': current_baseline,
         'comparison_rows': comparison_rows,
         'audit_logs': audit_logs,
         'project_ecns': project_ecns,
         'can_manage': _can_manage_project(request.user),
-        'save_version_url': _save_version_url,
         'save_revision_url': _save_revision_url,
     })
 
@@ -687,8 +677,6 @@ def project_edit(request, project_id):
                     name=d['name'],
                     description=d.get('description', ''),
                     manager=d.get('manager'),
-                    version_scheme=d.get('version_scheme'),
-                    version=d.get('version'),
                     revision_scheme=d.get('revision_scheme'),
                     revision=d.get('revision'),
                     updated_by=request.user,
@@ -706,14 +694,13 @@ def project_edit(request, project_id):
         form = ProjectUpdateForm(instance=project, current_user=request.user)
 
     from django.urls import reverse as _reverse
-    _base = _reverse('project_snapshot_create', kwargs={'project_id': project.pk})
+    _save_revision_url = _reverse('project_snapshot_create', kwargs={'project_id': project.pk})
 
     return render(request, 'projects/project_edit.html', {
         'form': form,
         'project': project,
         'snapshot_urls_available': True,
-        'save_version_url': _base + '?snapshot_type=version',
-        'save_revision_url': _base + '?snapshot_type=revision',
+        'save_revision_url': _save_revision_url,
         'sanatoria_available': can_use_sanatoria(request.user),
     })
 
@@ -757,11 +744,10 @@ def project_create(request):
                     code=d['code'],
                     name=d['name'],
                     description=d.get('description', ''),
+                    commessa=d.get('commessa', ''),
                     project_type=d['project_type'],
                     manager=d.get('manager'),
                     created_by=request.user,
-                    version_scheme=d.get('version_scheme', 'numeric'),
-                    version=d.get('version', '00'),
                     revision_scheme=d.get('revision_scheme', 'numeric'),
                     revision=d.get('revision', '00'),
                 )
@@ -795,8 +781,7 @@ def project_create(request):
 @login_required
 def project_snapshot_create(request, project_id):
     """
-    Crea uno snapshot VERSION o REVISION per il progetto.
-    Il snapshot_type è determinato dal parametro GET/POST 'snapshot_type'.
+    Crea uno snapshot di revisione per il progetto.
     La form chiede solo titolo, descrizione e note.
     """
     from django.db import transaction
@@ -809,12 +794,7 @@ def project_snapshot_create(request, project_id):
     if not _can_manage_project(request.user):
         raise PermissionDenied
 
-    snapshot_type = request.GET.get('snapshot_type') or request.POST.get('snapshot_type') or 'revision'
-    if snapshot_type not in ('version', 'revision'):
-        snapshot_type = 'revision'
-
-    type_label = 'Versione' if snapshot_type == 'version' else 'Revisione'
-    auto_label = project.version if snapshot_type == 'version' else project.revision
+    auto_label = project.revision
 
     if request.method == 'POST':
         form = ProjectSnapshotForm(request.POST, current_user=request.user)
@@ -825,8 +805,7 @@ def project_snapshot_create(request, project_id):
                     snap = create_project_revision(
                         project=project,
                         created_by=request.user,
-                        snapshot_type=snapshot_type,
-                        title=d.get('title') or f'{type_label} salvata {auto_label}',
+                        title=d.get('title') or f'Revisione salvata {auto_label}',
                         description=d.get('description', ''),
                         notes=d.get('notes', ''),
                     )
@@ -834,21 +813,16 @@ def project_snapshot_create(request, project_id):
                 if added == 0:
                     messages.warning(
                         request,
-                        f'{type_label} {snap.revision_label} salvata senza documenti: '
+                        f'Revisione {snap.revision_label} salvata senza documenti: '
                         'nessun documento approvato trovato nelle cartelle del progetto.',
                     )
                 else:
                     messages.success(
                         request,
-                        f'{type_label} {snap.revision_label} salvata con {added} documenti.',
+                        f'Revisione {snap.revision_label} salvata con {added} documenti.',
                     )
-                event_type = (
-                    HistoricalRecord.EventType.PROJECT_VERSION_SAVED
-                    if snapshot_type == 'version'
-                    else HistoricalRecord.EventType.PROJECT_REVISION_SAVED
-                )
                 form.maybe_create_historical_record(
-                    event_type=event_type,
+                    event_type=HistoricalRecord.EventType.PROJECT_REVISION_SAVED,
                     target_instance=snap,
                     recorded_by=request.user,
                 )
@@ -861,8 +835,6 @@ def project_snapshot_create(request, project_id):
     return render(request, 'projects/project_snapshot_form.html', {
         'form': form,
         'project': project,
-        'snapshot_type': snapshot_type,
-        'type_label': type_label,
         'auto_label': auto_label,
         'sanatoria_available': can_use_sanatoria(request.user),
     })
@@ -871,7 +843,7 @@ def project_snapshot_create(request, project_id):
 @login_required
 def project_revision_create(request, project_id):
     """Vista legacy — redirige al nuovo flusso snapshot."""
-    return redirect(f'/projects/{project_id}/snapshot/new/?snapshot_type=revision')
+    return redirect(f'/projects/{project_id}/snapshot/new/')
 
 
 @login_required
@@ -922,10 +894,9 @@ def project_revision_issue(request, revision_id):
         sanatoria_valid = form.is_valid()
         try:
             issue_project_revision(revision, request.user)
-            type_label = revision.get_snapshot_type_display()
             messages.success(
                 request,
-                f'{type_label} {revision.revision_label} emessa.',
+                f'Revisione {revision.revision_label} emessa.',
             )
             if sanatoria_valid:
                 form.maybe_create_historical_record(

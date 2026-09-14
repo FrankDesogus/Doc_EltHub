@@ -168,6 +168,16 @@ class Command(BaseCommand):
         self._step('Utenti reparto: mario.rossi (autore), lucia.bianchi (approv./QM), '
                    'giorgio.verdi (autore/CCB), anna.neri (approv./CCB), marco.esposito (lettore/auditor)')
 
+        # ── Codici operatore fittizi (demo) ────────────────────────────
+        self._ensure_operator_code(supervisor, '01')
+        self._ensure_operator_code(admin, '02')
+        self._ensure_operator_code(mario, '10')
+        self._ensure_operator_code(lucia, '11')
+        self._ensure_operator_code(giorgio, '12')
+        self._ensure_operator_code(anna, '13')
+        self._ensure_operator_code(marco, '14')
+        self._step('Codici operatore demo assegnati (01-02 supervisor/admin, 10-14 reparto).')
+
         # ── Cartelle aziendali ────────────────────────────────────────
         from projects.models import ProjectFolder, ProjectFolderMembership
         from projects.services import set_folder_path
@@ -456,18 +466,16 @@ class Command(BaseCommand):
             code=PRJ_CODE,
             name='Amplificatore RF Demo',
             description='Progetto demo: sviluppo amplificatore RF per presentazioni.',
+            commessa='COM-2026-0042',
             project_type='engineering',
             manager=supervisor,
             created_by=supervisor,
-            version_scheme='numeric',
-            version='00',
             revision_scheme='numeric',
             revision='00',
         )
         self._step(
             f'{PRJ_CODE}: progetto creato con root folder {prj.root_folder.code} '
-            f'(Ver. {prj.version} ({prj.get_version_scheme_display()}) · '
-            f'Rev. {prj.revision} ({prj.get_revision_scheme_display()})).'
+            f'(Rev. {prj.revision} ({prj.get_revision_scheme_display()})).'
         )
 
         # Sottocartelle del progetto
@@ -562,15 +570,12 @@ class Command(BaseCommand):
             project_type='internal',
             manager=supervisor,
             created_by=supervisor,
-            version_scheme='alphabetic',
-            version='A',
             revision_scheme='alphabetic',
             revision='A',
         )
         self._step(
             f'{PRJ_CODE}: progetto alfabetico creato '
-            f'(Ver. {prj.version} ({prj.get_version_scheme_display()}) · '
-            f'Rev. {prj.revision} ({prj.get_revision_scheme_display()})).'
+            f'(Rev. {prj.revision} ({prj.get_revision_scheme_display()})).'
         )
         return prj
 
@@ -618,6 +623,15 @@ class Command(BaseCommand):
         label = 'creato' if created else 'già esistente'
         self.stdout.write(f'  {username:<25} ({label})')
         return user
+
+    def _ensure_operator_code(self, user, code):
+        """
+        Codice operatore fittizio a 2 cifre per la demo (in produzione lo
+        assegna un amministratore da Django Admin — vedi accounts.OperatorCode).
+        Usato dalla generazione automatica di Document.code.
+        """
+        from accounts.models import OperatorCode
+        OperatorCode.objects.update_or_create(user=user, defaults={'code': code})
 
     def _ensure_folder(self, code, name, kind, owner, parent=None):
         from projects.models import ProjectFolder

@@ -63,31 +63,26 @@
     </div>
   </div>
 
-  <!-- Informazioni aggiuntive -->
+  {% if ecn.project or ecn.commessa %}
+  <!-- Informazioni aggiuntive (sola lettura: derivate dal documento alla creazione, non modificabili) -->
   <div class="form-section">
     <div class="form-section-title">Informazioni aggiuntive</div>
-
-    <div class="form-group">
-      <label class="form-label" for="id_commessa">{{ form.commessa.label }}</label>
-      {{ form.commessa }}
-      {% if form.commessa.errors %}
-      <p class="form-error">{{ form.commessa.errors|join:", " }}</p>
+    <div class="detail-grid mb-0">
+      {% if ecn.project %}
+      <div class="detail-item">
+        <span class="detail-label">Progetto</span>
+        <span class="detail-value">{{ ecn.project.code }} — {{ ecn.project.name }}</span>
+      </div>
       {% endif %}
-    </div>
-
-    <div class="form-group mb-0">
-      <label class="form-label" for="id_project">{{ form.project.label }}</label>
-      <select name="project" id="id_project" class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-        <option value="">— nessun progetto —</option>
-        {% for proj in form.fields.project.queryset %}
-        <option value="{{ proj.pk }}"{% if form.project.value == proj.pk|stringformat:"s" %} selected{% endif %}>{{ proj.code }} — {{ proj.name }}</option>
-        {% endfor %}
-      </select>
-      {% if form.project.errors %}
-      <p class="form-error">{{ form.project.errors|join:", " }}</p>
+      {% if ecn.commessa %}
+      <div class="detail-item">
+        <span class="detail-label">Commessa / ordine</span>
+        <span class="detail-value font-mono">{{ ecn.commessa }}</span>
+      </div>
       {% endif %}
     </div>
   </div>
+  {% endif %}
 
   <div class="form-actions">
     <button type="submit" class="btn-primary">Salva modifiche</button>

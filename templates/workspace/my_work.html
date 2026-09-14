@@ -3,11 +3,43 @@
 {% block content %}
 <div class="page-header">
   <h1>Il mio lavoro</h1>
-  <p class="page-header-sub">Attività aperte, approvazioni e richieste ECN da seguire</p>
+  <p class="page-header-sub">Tutto quello che hai da fare: approvazioni, decisioni CCB, dossier, bozze ed ECN che segui</p>
+</div>
+
+<!-- Riepilogo rapido — stesso componente .kpi-card della Dashboard.
+     Passaggi intermedi (2 poi 3 colonne) per restare leggibili anche
+     quando lo spazio reale (viewport meno sidebar) è più stretto della
+     soglia "md" di Tailwind; 5 in riga solo quando c'è davvero spazio. -->
+<div class="grid grid-cols-1 sm:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
+  <a href="#da-approvare" class="kpi-card border-t-4 border-amber-300/50 no-underline">
+    <span class="kpi-icon">📋</span>
+    <span class="kpi-value">{{ pending_approvals|length }}</span>
+    <span class="kpi-label">Da approvare</span>
+  </a>
+  <a href="#decisioni-ccb" class="kpi-card border-t-4 border-sky-300/60 no-underline">
+    <span class="kpi-icon">🏛️</span>
+    <span class="kpi-value">{{ pending_ccb|length }}</span>
+    <span class="kpi-label">Decisioni CCB</span>
+  </a>
+  <a href="#dossier-da-compilare" class="kpi-card border-t-4 border-elt-blue-600 no-underline">
+    <span class="kpi-icon">📘</span>
+    <span class="kpi-value">{{ my_dossier_to_compile|length }}</span>
+    <span class="kpi-label">Dossier</span>
+  </a>
+  <a href="#mie-bozze" class="kpi-card border-t-4 border-slate-400/50 no-underline">
+    <span class="kpi-icon">📝</span>
+    <span class="kpi-value">{{ my_drafts|length }}</span>
+    <span class="kpi-label">Bozze</span>
+  </a>
+  <a href="#mie-ecn" class="kpi-card border-t-4 border-elt-cyan-500/70 no-underline">
+    <span class="kpi-icon">🔄</span>
+    <span class="kpi-value">{{ my_ecn|length }}</span>
+    <span class="kpi-label">Mie ECN</span>
+  </a>
 </div>
 
 <!-- ── Approvazioni documento pendenti ── -->
-<div class="form-section">
+<div class="form-section" id="da-approvare">
   <div class="flex items-center gap-2 mb-3">
     <h2 class="text-base font-semibold text-brand-800">Da approvare</h2>
     {% if pending_approvals %}<span class="badge-status-in_approval ml-1.5">{{ pending_approvals|length }}</span>{% endif %}
@@ -43,12 +75,17 @@
     </table>
   </div>
   {% else %}
-  <p class="meta">Nessuna approvazione in attesa.</p>
+  <div class="card">
+    <div class="empty-state py-8">
+      <div class="empty-state-icon">📋</div>
+      <div class="empty-state-title">Nessuna approvazione in attesa</div>
+    </div>
+  </div>
   {% endif %}
 </div>
 
 <!-- ── Decisioni CCB pendenti ── -->
-<div class="form-section">
+<div class="form-section" id="decisioni-ccb">
   <div class="flex items-center gap-2 mb-3">
     <h2 class="text-base font-semibold text-brand-800">Decisioni CCB pendenti</h2>
     {% if pending_ccb %}<span class="badge-ecn-under_review ml-1.5">{{ pending_ccb|length }}</span>{% endif %}
@@ -79,15 +116,65 @@
     </table>
   </div>
   {% else %}
-  <p class="meta">Nessuna decisione CCB pendente.</p>
+  <div class="card">
+    <div class="empty-state py-8">
+      <div class="empty-state-icon">🏛️</div>
+      <div class="empty-state-title">Nessuna decisione CCB pendente</div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Dossier istruttoria CCB da compilare ── -->
+<div class="form-section" id="dossier-da-compilare">
+  <div class="flex items-center gap-2 mb-3">
+    <h2 class="text-base font-semibold text-brand-800">Dossier da compilare</h2>
+    {% if my_dossier_to_compile %}<span class="badge-ecn-ccb_prep ml-1.5">{{ my_dossier_to_compile|length }}</span>{% endif %}
+  </div>
+  {% if my_dossier_to_compile %}
+  <p class="meta mb-3">ECN per cui sei responsabile istruttoria — compila il dossier prima dell'invio al voto.</p>
+  <div class="table-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ECN</th>
+          <th>Titolo</th>
+          <th>Proposta del</th>
+          <th class="w-40"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ecn in my_dossier_to_compile %}
+        <tr>
+          <td><a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="font-mono font-semibold text-brand-800 hover:underline">{{ ecn.code }}</a></td>
+          <td>{{ ecn.title }}</td>
+          <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
+          <td>
+            <a href="{% url 'ecn:ecn_ccb_dossier' ecn.pk %}" class="btn-primary btn-sm">Compila dossier</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card">
+    <div class="empty-state py-8">
+      <div class="empty-state-icon">📘</div>
+      <div class="empty-state-title">Nessun dossier da compilare</div>
+    </div>
+  </div>
   {% endif %}
 </div>
 
 <!-- ── Mie bozze ── -->
-<div class="form-section">
-  <div class="flex items-center gap-2 mb-3">
-    <h2 class="text-base font-semibold text-brand-800">Mie bozze e rifiutate</h2>
-    {% if my_drafts %}<span class="badge-status-draft ml-1.5">{{ my_drafts|length }}</span>{% endif %}
+<div class="form-section" id="mie-bozze">
+  <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+    <div class="flex items-center gap-2">
+      <h2 class="text-base font-semibold text-brand-800">Mie bozze e rifiutate</h2>
+      {% if my_drafts %}<span class="badge-status-draft ml-1.5">{{ my_drafts|length }}</span>{% endif %}
+    </div>
+    <a href="{% url 'document_new' %}" class="btn-primary btn-sm">+ Nuovo documento</a>
   </div>
   {% if my_drafts %}
   <div class="table-container">
@@ -131,12 +218,18 @@
     </table>
   </div>
   {% else %}
-  <p class="meta">Nessuna bozza o revisione rifiutata.</p>
+  <div class="card">
+    <div class="empty-state py-8">
+      <div class="empty-state-icon">📝</div>
+      <div class="empty-state-title">Nessuna bozza o revisione rifiutata</div>
+      <a href="{% url 'document_new' %}" class="btn-primary mt-4 btn-sm">Crea il primo documento</a>
+    </div>
+  </div>
   {% endif %}
 </div>
 
 <!-- ── Le mie ECN ── -->
-<div class="form-section">
+<div class="form-section" id="mie-ecn">
   <div class="flex items-center gap-2 mb-3">
     <h2 class="text-base font-semibold text-brand-800">Le mie ECN aperte</h2>
     {% if my_ecn %}<span class="badge-ecn-under_review ml-1.5">{{ my_ecn|length }}</span>{% endif %}
@@ -180,8 +273,12 @@
     </table>
   </div>
   {% else %}
-  <p class="meta">Nessuna ECN aperta.</p>
+  <div class="card">
+    <div class="empty-state py-8">
+      <div class="empty-state-icon">🔄</div>
+      <div class="empty-state-title">Nessuna ECN aperta</div>
+    </div>
+  </div>
   {% endif %}
 </div>
-
 {% endblock %}

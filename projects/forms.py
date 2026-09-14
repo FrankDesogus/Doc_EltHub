@@ -30,7 +30,6 @@ class ProjectUpdateForm(SanatoriaFieldsMixin, forms.ModelForm):
     class Meta:
         model = Project
         fields = ['name', 'description', 'manager',
-                  'version_scheme', 'version',
                   'revision_scheme', 'revision']
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),
@@ -43,12 +42,6 @@ class ProjectUpdateForm(SanatoriaFieldsMixin, forms.ModelForm):
         ).order_by('last_name', 'first_name', 'username')
         self.fields['manager'].required = False
         self.fields['manager'].empty_label = '— nessuno —'
-        self.fields['version_scheme'].label = 'Schema versione'
-        self.fields['version'].label = 'Versione'
-        self.fields['version'].help_text = (
-            'Numerica: 00, 01… — Alfabetica: A, B… '
-            'Modificabile manualmente. Cambiando schema inserire un valore coerente.'
-        )
         self.fields['revision_scheme'].label = 'Schema revisione'
         self.fields['revision'].label = 'Revisione'
         self.fields['revision'].help_text = (
@@ -58,21 +51,17 @@ class ProjectUpdateForm(SanatoriaFieldsMixin, forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        for scheme_field, value_field, label in [
-            ('version_scheme', 'version', 'La versione'),
-            ('revision_scheme', 'revision', 'La revisione'),
-        ]:
-            scheme = cleaned.get(scheme_field, SequenceScheme.NUMERIC)
-            value = cleaned.get(value_field, '')
-            if value:
-                try:
-                    value = normalize_sequence_value(value, scheme)
-                    validate_sequence_value(value, scheme)
-                    cleaned[value_field] = value
-                except Exception as exc:
-                    self.add_error(value_field, str(exc))
-            elif value_field in cleaned:
-                self.add_error(value_field, f'{label} non può essere vuota.')
+        scheme = cleaned.get('revision_scheme', SequenceScheme.NUMERIC)
+        value = cleaned.get('revision', '')
+        if value:
+            try:
+                value = normalize_sequence_value(value, scheme)
+                validate_sequence_value(value, scheme)
+                cleaned['revision'] = value
+            except Exception as exc:
+                self.add_error('revision', str(exc))
+        elif 'revision' in cleaned:
+            self.add_error('revision', 'La revisione non può essere vuota.')
         return cleaned
 
 
@@ -103,6 +92,16 @@ class ProjectCreateForm(SanatoriaFieldsMixin, forms.Form):
         required=False,
         label='Descrizione',
     )
+    commessa = forms.CharField(
+        max_length=100,
+        required=False,
+        label='Commessa / ordine',
+        help_text=(
+            'Riferimento commessa/ordine esterno, se applicabile. '
+            'Impostabile solo ora: i documenti e gli ECN di questo progetto la '
+            'erediteranno automaticamente, senza doverla ripetere.'
+        ),
+    )
     project_type = forms.ChoiceField(
         choices=Project.ProjectType.choices,
         initial=Project.ProjectType.OTHER,
@@ -113,20 +112,6 @@ class ProjectCreateForm(SanatoriaFieldsMixin, forms.Form):
         required=False,
         label='Responsabile',
         empty_label='— nessuno —',
-    )
-    version_scheme = forms.ChoiceField(
-        choices=SequenceScheme.choices,
-        initial=SequenceScheme.NUMERIC,
-        required=True,
-        label='Schema versione',
-        help_text='Numerica (00, 01…) o Alfabetica (A, B…).',
-    )
-    version = forms.CharField(
-        max_length=32,
-        initial='00',
-        required=True,
-        label='Versione',
-        help_text='Numerica: 00. Alfabetica: A.',
     )
     revision_scheme = forms.ChoiceField(
         choices=SequenceScheme.choices,
@@ -165,31 +150,26 @@ class ProjectCreateForm(SanatoriaFieldsMixin, forms.Form):
 
     def clean(self):
         cleaned = super().clean()
-        for scheme_field, value_field, label in [
-            ('version_scheme', 'version', 'La versione'),
-            ('revision_scheme', 'revision', 'La revisione'),
-        ]:
-            scheme = cleaned.get(scheme_field, SequenceScheme.NUMERIC)
-            value = cleaned.get(value_field, '')
-            if value:
-                try:
-                    value = normalize_sequence_value(value, scheme)
-                    validate_sequence_value(value, scheme)
-                    cleaned[value_field] = value
-                except Exception as exc:
-                    self.add_error(value_field, str(exc))
-            elif value_field in cleaned:
-                self.add_error(value_field, f'{label} non può essere vuota.')
+        scheme = cleaned.get('revision_scheme', SequenceScheme.NUMERIC)
+        value = cleaned.get('revision', '')
+        if value:
+            try:
+                value = normalize_sequence_value(value, scheme)
+                validate_sequence_value(value, scheme)
+                cleaned['revision'] = value
+            except Exception as exc:
+                self.add_error('revision', str(exc))
+        elif 'revision' in cleaned:
+            self.add_error('revision', 'La revisione non può essere vuota.')
         return cleaned
 
 
 class ProjectSnapshotForm(SanatoriaFieldsMixin, forms.Form):
     """
-    Form semplificato per creare uno snapshot (VERSION o REVISION).
+    Form semplificato per creare uno snapshot di revisione.
 
-    Non chiede revision_label, revision_number né snapshot_type:
-    - snapshot_type viene dal pulsante (parametro GET/POST)
-    - revision_label deriva da project.version o project.revision
+    Non chiede revision_label né revision_number:
+    - revision_label deriva da project.revision
     - revision_number viene calcolato automaticamente
     """
     title = forms.CharField(
@@ -223,9 +203,8 @@ class ProjectRevisionForm(forms.ModelForm):
             'revision_number': 'Numero progressivo',
         }
 
-    def __init__(self, *args, project=None, snapshot_type='revision', **kwargs):
+    def __init__(self, *args, project=None, **kwargs):
         self._project = project
-        self._snapshot_type = snapshot_type
         super().__init__(*args, **kwargs)
 
     def clean_revision_label(self):
@@ -233,7 +212,6 @@ class ProjectRevisionForm(forms.ModelForm):
         if self._project and label:
             qs = ProjectRevision.objects.filter(
                 project=self._project,
-                snapshot_type=self._snapshot_type,
                 revision_label=label,
             )
             if self.instance and self.instance.pk:
@@ -249,7 +227,6 @@ class ProjectRevisionForm(forms.ModelForm):
         if self._project and number is not None:
             qs = ProjectRevision.objects.filter(
                 project=self._project,
-                snapshot_type=self._snapshot_type,
                 revision_number=number,
             )
             if self.instance and self.instance.pk:

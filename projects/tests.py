@@ -507,8 +507,6 @@ class ProjectCreateViewTests(TestCase):
             'code': 'PRJ-NEW-001',
             'name': 'Nuovo Progetto',
             'project_type': 'internal',
-            'version_scheme': 'numeric',
-            'version': '00',
             'revision_scheme': 'numeric',
             'revision': '00',
         })
@@ -737,7 +735,7 @@ class ProjectRevisionViewTests(TestCase):
         self.client.login(username='rv_mgr', password='pw')
         response = self.client.post(
             reverse('project_snapshot_create', args=[self.project.pk]),
-            {'snapshot_type': 'revision', 'title': 'First baseline', 'description': ''},
+            {'title': 'First baseline', 'description': ''},
         )
         rev = ProjectRevision.objects.get(project=self.project, revision_label='00')
         self.assertRedirects(response, reverse('project_revision_detail', args=[rev.pk]))
@@ -747,7 +745,7 @@ class ProjectRevisionViewTests(TestCase):
         self.client.login(username='rv_out', password='pw')
         response = self.client.post(
             reverse('project_snapshot_create', args=[self.project.pk]),
-            {'snapshot_type': 'revision', 'title': 'X', 'description': ''},
+            {'title': 'X', 'description': ''},
         )
         self.assertEqual(response.status_code, 403)
 
@@ -903,7 +901,7 @@ class BaselineBugFixTests(TestCase):
         # Il nuovo flusso espone auto_label nel contesto (da project.revision), non in form.initial.
         self.client.login(username='bbf_mgr', password='pw')
         response = self.client.get(
-            reverse('project_snapshot_create', args=[self.project.pk]) + '?snapshot_type=revision'
+            reverse('project_snapshot_create', args=[self.project.pk])
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn('form', response.context)
@@ -919,7 +917,7 @@ class BaselineBugFixTests(TestCase):
         self.project.save(update_fields=['revision'])
         self.client.login(username='bbf_mgr', password='pw')
         response = self.client.get(
-            reverse('project_snapshot_create', args=[self.project.pk]) + '?snapshot_type=revision'
+            reverse('project_snapshot_create', args=[self.project.pk])
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['auto_label'], '01')
@@ -934,7 +932,7 @@ class BaselineBugFixTests(TestCase):
         self.client.login(username='bbf_mgr', password='pw')
         response = self.client.post(
             reverse('project_snapshot_create', args=[self.project.pk]),
-            {'snapshot_type': 'revision', 'title': 'Dup', 'description': ''},
+            {'title': 'Dup', 'description': ''},
         )
         # Deve restare sulla pagina (200) con messaggio di errore, non IntegrityError (500)
         self.assertEqual(response.status_code, 200)
@@ -949,7 +947,7 @@ class BaselineBugFixTests(TestCase):
         self.client.login(username='bbf_mgr', password='pw')
         response = self.client.post(
             reverse('project_snapshot_create', args=[self.project.pk]),
-            {'snapshot_type': 'revision', 'title': 'Dup label', 'description': ''},
+            {'title': 'Dup label', 'description': ''},
         )
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in get_messages(response.wsgi_request)]
@@ -964,7 +962,7 @@ class BaselineBugFixTests(TestCase):
         # auto-derivata da project.revision (default '00').
         self.client.post(
             reverse('project_snapshot_create', args=[self.project.pk]),
-            {'snapshot_type': 'revision', 'title': 'B00', 'description': ''},
+            {'title': 'B00', 'description': ''},
         )
         rev = ProjectRevision.objects.get(project=self.project, revision_label='00')
         self.assertEqual(rev.items.count(), 1)
@@ -1184,9 +1182,11 @@ class NewDocumentFromProjectTests(TestCase):
     def setUp(self):
         from django.contrib.auth.models import Group
         # MB1: is_staff non concede più privilegi applicativi; aggiungiamo Document Managers
+        from accounts.models import OperatorCode
         self.manager = User.objects.create_user('ndp_mgr', password='pw', is_staff=True)
         self.author = User.objects.create_user('ndp_author', password='pw')
         self.outsider = User.objects.create_user('ndp_out', password='pw')
+        OperatorCode.objects.create(user=self.manager, code='20')
 
         g_authors = Group.objects.get_or_create(name='Document Authors')[0]
         g_managers = Group.objects.get_or_create(name='Document Managers')[0]
@@ -1252,7 +1252,7 @@ class NewDocumentFromProjectTests(TestCase):
             'code': 'NDP-DOC-001',
             'title': 'Documento da progetto',
             'category': 'QUALITY',
-            'document_type': '',
+            'document_type': 'SYSP',
             'description': '',
             'project_folder': self.folder.pk,
             'revision_scheme': 'numeric',
@@ -1260,8 +1260,8 @@ class NewDocumentFromProjectTests(TestCase):
             'revision_number': 0,
             'change_summary': '',
         })
-        self.assertTrue(Document.objects.filter(code='NDP-DOC-001').exists())
-        doc = Document.objects.get(code='NDP-DOC-001')
+        self.assertTrue(Document.objects.filter(title='Documento da progetto').exists())
+        doc = Document.objects.get(title='Documento da progetto')
         self.assertEqual(doc.project_folder, self.folder)
         # redirect al documento creato
         self.assertRedirects(response, reverse('document_detail', args=[doc.pk]))
@@ -3797,14 +3797,11 @@ class ProjectEditTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
     def _post_edit(self, name, description='', manager_pk=None,
-                   version_scheme='numeric', version='00',
                    revision_scheme='numeric', revision='00'):
         """Helper per POST a project_edit con i campi obbligatori."""
         data = {
             'name': name,
             'description': description,
-            'version_scheme': version_scheme,
-            'version': version,
             'revision_scheme': revision_scheme,
             'revision': revision,
         }
@@ -4512,195 +4509,11 @@ class ProjectVersionRevisionTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# VH-1 — Project.version e Project.version_scheme
-# ---------------------------------------------------------------------------
-
-class ProjectVersionFieldTests(TestCase):
-    """Test VH-1: reintroduzione Project.version e Project.version_scheme."""
-
-    def setUp(self):
-        from django.contrib.auth.models import Group
-        from documents.permissions import GROUP_MANAGERS
-        self.manager = User.objects.create_user('vh1_mgr', password='pw', is_staff=True)
-        Group.objects.get_or_create(name=GROUP_MANAGERS)[0].user_set.add(self.manager)
-        self.dept = ProjectFolder.objects.create(
-            code='VH1-DEPT', name='VH1 Dept',
-            folder_kind=ProjectFolder.FolderKind.DEPARTMENT,
-            owner=self.manager, status=ProjectFolder.Status.ACTIVE,
-        )
-
-    def _make_project(self, code='VH1-001', version_scheme='numeric', version='00',
-                      revision_scheme='numeric', revision='00'):
-        from projects.services import create_project_with_root_folder
-        return create_project_with_root_folder(
-            parent_folder=self.dept,
-            code=code,
-            name=f'Test {code}',
-            project_type='internal',
-            manager=self.manager,
-            created_by=self.manager,
-            version_scheme=version_scheme,
-            version=version,
-            revision_scheme=revision_scheme,
-            revision=revision,
-        )
-
-    # 1. default numeric / "00"
-    def test_default_version_scheme_numeric(self):
-        """Nuovo progetto ha version_scheme='numeric' di default."""
-        prj = self._make_project()
-        self.assertEqual(prj.version_scheme, 'numeric')
-
-    def test_default_version_is_00(self):
-        """Nuovo progetto ha version='00' di default."""
-        prj = self._make_project()
-        self.assertEqual(prj.version, '00')
-
-    # 2. schema alfabetico esplicito
-    def test_alphabetic_version_scheme_stored(self):
-        """Version_scheme='alphabetic' con version='A' viene salvato correttamente."""
-        prj = self._make_project(code='VH1-002', version_scheme='alphabetic', version='A')
-        prj.refresh_from_db()
-        self.assertEqual(prj.version_scheme, 'alphabetic')
-        self.assertEqual(prj.version, 'A')
-
-    # 3. validazione mismatch
-    def test_update_form_rejects_version_mismatch(self):
-        """ProjectUpdateForm rifiuta versione numerica con schema alfabetico."""
-        from projects.forms import ProjectUpdateForm
-        prj = self._make_project(code='VH1-003')
-        form = ProjectUpdateForm(
-            data={
-                'name': prj.name,
-                'version_scheme': 'alphabetic',
-                'version': '01',           # numerico, schema alfabetico → errore
-                'revision_scheme': 'numeric',
-                'revision': '00',
-            },
-            instance=prj,
-        )
-        self.assertFalse(form.is_valid())
-        self.assertIn('version', form.errors)
-
-    # 4. create service
-    def test_create_service_saves_version_fields(self):
-        """create_project_with_root_folder persiste version e version_scheme."""
-        prj = self._make_project(code='VH1-004', version_scheme='alphabetic', version='B')
-        prj.refresh_from_db()
-        self.assertEqual(prj.version_scheme, 'alphabetic')
-        self.assertEqual(prj.version, 'B')
-
-    # 5. update service
-    def test_update_service_saves_version_fields(self):
-        """update_project_metadata aggiorna version e version_scheme."""
-        from projects.services import update_project_metadata
-        prj = self._make_project(code='VH1-005')
-        update_project_metadata(
-            project=prj, name=prj.name,
-            version_scheme='alphabetic', version='C',
-            updated_by=self.manager,
-        )
-        prj.refresh_from_db()
-        self.assertEqual(prj.version_scheme, 'alphabetic')
-        self.assertEqual(prj.version, 'C')
-
-    def test_update_service_writes_auditlog_version(self):
-        """update_project_metadata scrive AuditLog con version e version_scheme."""
-        from projects.services import update_project_metadata
-        from auditlog.models import AuditLog
-        prj = self._make_project(code='VH1-006')
-        update_project_metadata(
-            project=prj, name=prj.name,
-            version_scheme='alphabetic', version='D',
-            updated_by=self.manager,
-        )
-        log = AuditLog.objects.filter(
-            action='update_project_metadata', object_id=str(prj.pk),
-        ).order_by('-id').first()
-        self.assertIsNotNone(log)
-        self.assertEqual(log.changes.get('version_scheme'), 'alphabetic')
-        self.assertEqual(log.changes.get('version'), 'D')
-
-    # 6. form create
-    def test_create_form_has_version_scheme_field(self):
-        """ProjectCreateForm espone il campo version_scheme."""
-        from projects.forms import ProjectCreateForm
-        self.assertIn('version_scheme', ProjectCreateForm().fields)
-
-    def test_create_form_has_version_field(self):
-        """ProjectCreateForm espone il campo version."""
-        from projects.forms import ProjectCreateForm
-        self.assertIn('version', ProjectCreateForm().fields)
-
-    # 7. form edit
-    def test_update_form_has_version_scheme_field(self):
-        """ProjectUpdateForm espone il campo version_scheme."""
-        from projects.forms import ProjectUpdateForm
-        self.assertIn('version_scheme', ProjectUpdateForm().fields)
-
-    def test_update_form_has_version_field(self):
-        """ProjectUpdateForm espone il campo version."""
-        from projects.forms import ProjectUpdateForm
-        self.assertIn('version', ProjectUpdateForm().fields)
-
-    # 8. detail / list
-    def test_project_detail_shows_version(self):
-        """project_detail mostra la versione corrente (Ver. XX)."""
-        prj = self._make_project(code='VH1-007', version='01')
-        self.client.force_login(self.manager)
-        response = self.client.get(reverse('project_detail', args=[prj.pk]))
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Ver. 01')
-
-    def test_project_list_shows_version(self):
-        """project_list mostra la versione nella colonna dedicata."""
-        prj = self._make_project(code='VH1-008', version='02')
-        self.client.force_login(self.manager)
-        response = self.client.get(reverse('project_list'))
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, '02')
-
-    def test_project_edit_shows_version_scheme_and_version_fields(self):
-        """project_edit contiene i campi id_version_scheme e id_version."""
-        prj = self._make_project(code='VH1-009')
-        self.client.force_login(self.manager)
-        response = self.client.get(reverse('project_edit', args=[prj.pk]))
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'id_version_scheme')
-        self.assertContains(response, 'id_version')
-
-    # 9. demo project
-    @override_settings(DEBUG=True, DATABASES={
-        'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'},
-    })
-    def test_demo_project_has_version_00(self):
-        """demo_company crea PRJ-DEMO-001 con version='00' e version_scheme='numeric'."""
-        from io import StringIO
-        from django.core.management import call_command
-        call_command('demo_company', reset=True, no_email=True, stdout=StringIO(), stderr=StringIO())
-        prj = Project.objects.get(code='PRJ-DEMO-001')
-        self.assertEqual(prj.version, '00')
-        self.assertEqual(prj.version_scheme, 'numeric')
-
-    @override_settings(DEBUG=True, DATABASES={
-        'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'},
-    })
-    def test_demo_alpha_project_has_version_A(self):
-        """demo_company crea PRJ-DEMO-ALPHA con version='A' e version_scheme='alphabetic'."""
-        from io import StringIO
-        from django.core.management import call_command
-        call_command('demo_company', reset=True, no_email=True, stdout=StringIO(), stderr=StringIO())
-        prj = Project.objects.get(code='PRJ-DEMO-ALPHA')
-        self.assertEqual(prj.version, 'A')
-        self.assertEqual(prj.version_scheme, 'alphabetic')
-
-
-# ---------------------------------------------------------------------------
-# VH-2 — ProjectRevision snapshot_type + metadati congelati
+# VH-2 — ProjectRevision metadati congelati
 # ---------------------------------------------------------------------------
 
 class ProjectSnapshotTypeTests(TestCase):
-    """Test VH-2: snapshot VERSION / REVISION, metadati congelati, is_current per tipo."""
+    """Test VH-2: snapshot di revisione, metadati congelati."""
 
     def setUp(self):
         from django.contrib.auth.models import Group
@@ -4720,8 +4533,6 @@ class ProjectSnapshotTypeTests(TestCase):
             project_type='internal',
             manager=self.manager,
             created_by=self.manager,
-            version_scheme='numeric',
-            version='01',
             revision_scheme='alphabetic',
             revision='B',
         )
@@ -4747,136 +4558,87 @@ class ProjectSnapshotTypeTests(TestCase):
         doc.refresh_from_db()
         return doc, doc.current_version
 
-    # 1. VERSION snapshot
-    def test_create_version_snapshot(self):
-        """create_project_revision con snapshot_type='version' crea snapshot VERSION."""
-        from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='version')
-        self.assertEqual(snap.snapshot_type, 'version')
-
-    # 2. REVISION snapshot
+    # 1. snapshot revisione
     def test_create_revision_snapshot(self):
-        """create_project_revision con snapshot_type='revision' crea snapshot REVISION."""
+        """create_project_revision usa la revisione corrente del progetto come label."""
         from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
-        self.assertEqual(snap.snapshot_type, 'revision')
+        snap = create_project_revision(self.project, self.manager)
+        self.assertEqual(snap.revision_label, 'B')
 
-    # 3. metadata congelati
-    def test_version_snapshot_copies_project_metadata(self):
-        """Snapshot VERSION congela nome, versione, revisione del progetto."""
+    # 2. metadata congelati
+    def test_snapshot_copies_project_metadata(self):
+        """Lo snapshot congela nome e revisione del progetto."""
         from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='version')
+        snap = create_project_revision(self.project, self.manager)
         self.assertEqual(snap.snapshot_project_name, 'VH2 Project')
-        self.assertEqual(snap.snapshot_project_version, '01')
-        self.assertEqual(snap.snapshot_project_version_scheme, 'numeric')
         self.assertEqual(snap.snapshot_project_revision, 'B')
         self.assertEqual(snap.snapshot_project_revision_scheme, 'alphabetic')
 
-    def test_revision_snapshot_label_is_project_revision(self):
-        """Snapshot REVISION usa project.revision come revision_label."""
-        from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
-        self.assertEqual(snap.revision_label, 'B')
-
-    def test_version_snapshot_label_is_project_version(self):
-        """Snapshot VERSION usa project.version come revision_label."""
-        from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='version')
-        self.assertEqual(snap.revision_label, '01')
-
-    # 4. document metadata congelati
+    # 3. document metadata congelati
     def test_item_snapshot_fields_populated(self):
         """populate_project_revision_from_current_documents popola i campi denormalizzati."""
         from projects.services import create_project_revision, populate_project_revision_from_current_documents
         doc, ver = self._make_approved_doc('VH2-DOC-001')
-        snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
+        snap = create_project_revision(self.project, self.manager)
         populate_project_revision_from_current_documents(snap)
         item = snap.items.get(document_version=ver)
         self.assertEqual(item.snapshot_document_code, 'VH2-DOC-001')
         self.assertEqual(item.snapshot_document_revision_label, '00')
         self.assertNotEqual(item.snapshot_folder_path, '')
 
-    # 5. path congelato
+    # 4. path congelato
     def test_item_snapshot_folder_path_set(self):
         """Il snapshot_folder_path dell'item è il path materializzato della cartella al momento del freeze."""
         from projects.services import create_project_revision, populate_project_revision_from_current_documents
         doc, ver = self._make_approved_doc('VH2-DOC-002')
-        snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
+        snap = create_project_revision(self.project, self.manager)
         populate_project_revision_from_current_documents(snap)
         item = snap.items.get(document_version=ver)
         self.assertEqual(item.snapshot_folder_path, self.project.root_folder.path)
 
-    # 6. progetto modificato dopo freeze → storico invariato
+    # 5. progetto modificato dopo freeze → storico invariato
     def test_project_change_after_freeze_does_not_affect_snapshot(self):
         """Modificare project.name dopo il freeze non cambia snapshot_project_name."""
         from projects.services import create_project_revision, update_project_metadata
-        snap = create_project_revision(self.project, self.manager, snapshot_type='version')
+        snap = create_project_revision(self.project, self.manager)
         update_project_metadata(
             project=self.project, name='Nome Modificato',
-            version='02', version_scheme='numeric',
+            revision='C', revision_scheme='alphabetic',
             updated_by=self.manager,
         )
         snap.refresh_from_db()
         self.assertEqual(snap.snapshot_project_name, 'VH2 Project')
-        self.assertEqual(snap.snapshot_project_version, '01')
+        self.assertEqual(snap.snapshot_project_revision, 'B')
 
-    # 7. documento modificato dopo freeze → storico invariato
+    # 6. documento modificato dopo freeze → storico invariato
     def test_document_change_after_freeze_does_not_affect_item_snapshot(self):
         """Modificare il titolo del documento dopo il freeze non cambia snapshot_document_title."""
         from projects.services import create_project_revision, populate_project_revision_from_current_documents
         from documents.models import Document
         doc, ver = self._make_approved_doc('VH2-DOC-003')
-        snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
+        snap = create_project_revision(self.project, self.manager)
         populate_project_revision_from_current_documents(snap)
         Document.objects.filter(pk=doc.pk).update(title='Titolo Modificato')
         item = snap.items.get(document_version=ver)
         self.assertEqual(item.snapshot_document_title, f'Doc VH2-DOC-003')
 
-    # 8. ordering numerico
-    def test_revision_number_numeric_ordering(self):
-        """Schema numerico: '01' → revision_number=1."""
-        from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='version')
-        self.assertEqual(snap.revision_number, 1)  # project.version='01'
-
-    # 9. ordering alfabetico
+    # 7. ordering alfabetico
     def test_revision_number_alphabetic_ordering(self):
         """Schema alfabetico: 'B' → revision_number=2."""
         from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
+        snap = create_project_revision(self.project, self.manager)
         self.assertEqual(snap.revision_number, 2)  # project.revision='B'
 
-    # 10. is_current indipendente per tipo
-    def test_issue_version_does_not_affect_revision_is_current(self):
-        """Emettere uno snapshot VERSION non tocca is_current degli snapshot REVISION."""
-        from projects.services import create_project_revision, issue_project_revision
-        # Crea e emetti REVISION
-        rev_snap = create_project_revision(self.project, self.manager, snapshot_type='revision')
-        issue_project_revision(rev_snap, self.manager)
-        # Crea e emetti VERSION (con label diversa per evitare unique conflict)
-        from projects.services import update_project_metadata
-        update_project_metadata(project=self.project, name=self.project.name,
-                                version='02', updated_by=self.manager)
-        ver_snap = create_project_revision(self.project, self.manager, snapshot_type='version')
-        issue_project_revision(ver_snap, self.manager)
-        # REVISION snapshot rimane is_current=True
-        rev_snap.refresh_from_db()
-        ver_snap.refresh_from_db()
-        self.assertTrue(rev_snap.is_current)
-        self.assertTrue(ver_snap.is_current)
-
-    # 11. constraint DB
-    def test_db_constraint_one_current_per_type(self):
-        """Il DB rifiuta due snapshot is_current=True dello stesso tipo per lo stesso progetto."""
+    # 8. constraint DB
+    def test_db_constraint_one_current_per_project(self):
+        """Il DB rifiuta due snapshot is_current=True per lo stesso progetto."""
         from django.db import IntegrityError, transaction
         from projects.services import create_project_revision
-        snap1 = create_project_revision(self.project, self.manager, snapshot_type='version')
+        snap1 = create_project_revision(self.project, self.manager)
         snap1.is_current = True
         snap1.save(update_fields=['is_current'])
-        # Prova a impostare is_current su un secondo snapshot dello stesso tipo via SQL diretto
         snap2 = ProjectRevision.objects.create(
             project=self.project,
-            snapshot_type='version',
             revision_label='99',
             revision_number=99,
             title='Secondo corrente',
@@ -4907,21 +4669,15 @@ class ProjectSnapshotViewTests(TestCase):
             created_by=self.manager,
         )
 
-    def _url(self, snapshot_type='revision'):
-        return reverse('project_snapshot_create', kwargs={'project_id': self.project.pk}) + f'?snapshot_type={snapshot_type}'
+    def _url(self):
+        return reverse('project_snapshot_create', kwargs={'project_id': self.project.pk})
 
     # 1. GET form — utente manager
     def test_get_form_revision(self):
         self.client.login(username='vh3_manager', password='pw')
-        resp = self.client.get(self._url('revision'))
+        resp = self.client.get(self._url())
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Revisione')
-
-    def test_get_form_version(self):
-        self.client.login(username='vh3_manager', password='pw')
-        resp = self.client.get(self._url('version'))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Versione')
 
     # 2. Utente non autorizzato viene bloccato
     def test_non_manager_cannot_access(self):
@@ -4929,59 +4685,41 @@ class ProjectSnapshotViewTests(TestCase):
         resp = self.client.get(self._url())
         self.assertEqual(resp.status_code, 403)
 
-    # 3. POST crea snapshot REVISION
+    # 3. POST crea snapshot di revisione
     def test_post_creates_revision_snapshot(self):
         self.client.login(username='vh3_manager', password='pw')
         resp = self.client.post(
             reverse('project_snapshot_create', kwargs={'project_id': self.project.pk}),
-            {'snapshot_type': 'revision', 'title': 'Rev test', 'description': '', 'notes': ''},
+            {'title': 'Rev test', 'description': '', 'notes': ''},
         )
-        self.assertEqual(ProjectRevision.objects.filter(project=self.project, snapshot_type='revision').count(), 1)
-        snap = ProjectRevision.objects.get(project=self.project, snapshot_type='revision')
+        self.assertEqual(ProjectRevision.objects.filter(project=self.project).count(), 1)
+        snap = ProjectRevision.objects.get(project=self.project)
         self.assertRedirects(resp, reverse('project_revision_detail', kwargs={'revision_id': snap.pk}))
 
-    # 4. POST crea snapshot VERSION
-    def test_post_creates_version_snapshot(self):
-        self.client.login(username='vh3_manager', password='pw')
-        self.client.post(
-            reverse('project_snapshot_create', kwargs={'project_id': self.project.pk}),
-            {'snapshot_type': 'version', 'title': '', 'description': '', 'notes': ''},
-        )
-        self.assertEqual(ProjectRevision.objects.filter(project=self.project, snapshot_type='version').count(), 1)
-
-    # 5. snapshot_type invalido ricade su 'revision'
-    def test_invalid_snapshot_type_defaults_to_revision(self):
-        self.client.login(username='vh3_manager', password='pw')
-        url = reverse('project_snapshot_create', kwargs={'project_id': self.project.pk}) + '?snapshot_type=bogus'
-        self.client.post(url, {'snapshot_type': 'bogus', 'title': '', 'description': '', 'notes': ''})
-        snap = ProjectRevision.objects.filter(project=self.project).first()
-        self.assertIsNotNone(snap)
-        self.assertEqual(snap.snapshot_type, 'revision')
-
-    # 6. archive_project_detail mostra due sezioni separate (TASK-026: spostate da project_detail)
-    def test_project_detail_shows_two_sections(self):
+    # 4. archive_project_detail mostra solo la sezione revisioni (l'opzione "versione" è stata rimossa)
+    def test_project_detail_shows_only_revision_section(self):
         self.client.login(username='vh3_manager', password='pw')
         resp = self.client.get(reverse('archive_project_detail', kwargs={'project_id': self.project.pk}))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Versioni salvate')
         self.assertContains(resp, 'Revisioni salvate')
+        self.assertNotContains(resp, 'Versioni salvate')
 
-    # 7. archive_project_detail ha i pulsanti Salva versione / Salva revisione per manager
-    def test_project_detail_has_snapshot_buttons(self):
+    # 5. archive_project_detail ha solo il pulsante Salva revisione per manager
+    def test_project_detail_has_snapshot_button(self):
         self.client.login(username='vh3_manager', password='pw')
         resp = self.client.get(reverse('archive_project_detail', kwargs={'project_id': self.project.pk}))
-        self.assertContains(resp, 'Salva versione')
         self.assertContains(resp, 'Salva revisione')
+        self.assertNotContains(resp, 'Salva versione')
 
-    # 8. project_revision_detail mostra tipo snapshot e metadati congelati
-    def test_revision_detail_shows_snapshot_type_and_metadata(self):
+    # 6. project_revision_detail mostra i metadati congelati
+    def test_revision_detail_shows_metadata(self):
         from projects.services import create_project_revision
-        snap = create_project_revision(self.project, self.manager, snapshot_type='version', title='VH3 ver')
+        snap = create_project_revision(self.project, self.manager, title='VH3 rev')
         self.client.login(username='vh3_manager', password='pw')
         resp = self.client.get(reverse('project_revision_detail', kwargs={'revision_id': snap.pk}))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Versione')
         self.assertContains(resp, snap.revision_label)
+        self.assertContains(resp, 'VH3 rev')
 
 
 class ProjectSnapshotImmutabilityTests(TestCase):
@@ -4997,10 +4735,9 @@ class ProjectSnapshotImmutabilityTests(TestCase):
             parent_folder=parent, code='VH4', name='VH4 Progetto', created_by=self.manager,
         )
 
-    def _make_snap(self, label='00', snap_type='revision', status='draft'):
+    def _make_snap(self, label='00', status='draft'):
         snap = ProjectRevision.objects.create(
             project=self.project,
-            snapshot_type=snap_type,
             revision_label=label,
             revision_number=int(label),
             title=f'Snap {label}',
@@ -5149,8 +4886,6 @@ class ProjectSanatoriaTests(TestCase):
             'code': 'SAN5-NEW-001',
             'name': 'Progetto Sanatoria',
             'project_type': 'internal',
-            'version_scheme': 'numeric',
-            'version': '00',
             'revision_scheme': 'numeric',
             'revision': '00',
         }
@@ -5162,8 +4897,6 @@ class ProjectSanatoriaTests(TestCase):
         data = {
             'name': 'Progetto SAN-5 Aggiornato',
             'description': '',
-            'version_scheme': 'numeric',
-            'version': '00',
             'revision_scheme': 'numeric',
             'revision': '00',
         }
@@ -5290,35 +5023,6 @@ class ProjectSanatoriaTests(TestCase):
         self.assertEqual(rec.historical_actor_name, 'Mario Rossi')
 
     # -----------------------------------------------------------------------
-    # Sanatoria: project_snapshot_create (version) → HistoricalRecord
-    # -----------------------------------------------------------------------
-
-    @override_settings(
-        DOCUMENTALE_DEMO_MODE=True,
-        DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='supervisor_demo',
-    )
-    def test_save_version_sanatoria_creates_historical_record(self):
-        """Salva versione in sanatoria → HistoricalRecord PROJECT_VERSION_SAVED."""
-        from auditlog.models import HistoricalRecord
-        self.client.login(username='supervisor_demo', password='demo1234')
-        data = {
-            'snapshot_type': 'version',
-            'title': 'Versione storica',
-            'description': '',
-            **self._sanatoria_post_data(),
-        }
-        response = self.client.post(
-            reverse('project_snapshot_create', args=[self.project.pk]),
-            data,
-        )
-        self.assertEqual(response.status_code, 302)
-        rec = HistoricalRecord.objects.filter(
-            event_type=HistoricalRecord.EventType.PROJECT_VERSION_SAVED,
-        ).first()
-        self.assertIsNotNone(rec)
-        self.assertEqual(rec.historical_actor_name, 'Mario Rossi')
-
-    # -----------------------------------------------------------------------
     # Sanatoria: project_snapshot_create (revision) → HistoricalRecord
     # -----------------------------------------------------------------------
 
@@ -5331,7 +5035,6 @@ class ProjectSanatoriaTests(TestCase):
         from auditlog.models import HistoricalRecord
         self.client.login(username='supervisor_demo', password='demo1234')
         data = {
-            'snapshot_type': 'revision',
             'title': 'Revisione storica',
             'description': '',
             **self._sanatoria_post_data(),
@@ -5439,15 +5142,14 @@ class ProjectHistoryViewTests(TestCase):
     def test_archive_project_detail_shows_full_snapshot_list(self):
         from projects.services import create_project_revision
         create_project_revision(self.project, self.supervisor, 'A', 0, 'Baseline A')
-        create_project_revision(self.project, self.supervisor, '01', 0, 'Ver 01', snapshot_type='version')
+        create_project_revision(self.project, self.supervisor, '01', 1, 'Baseline 01')
         response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
-        self.assertEqual(len(response.context['revision_snapshots']), 1)
-        self.assertEqual(len(response.context['version_snapshots']), 1)
+        self.assertEqual(len(response.context['revision_snapshots']), 2)
 
     def test_archive_project_detail_empty_state(self):
         response = self.client.get(reverse('archive_project_detail', args=[self.project.pk]))
-        self.assertContains(response, 'Nessuna versione salvata')
         self.assertContains(response, 'Nessuna revisione salvata')
+        self.assertNotContains(response, 'Nessuna versione salvata')
 
     def test_archive_project_detail_404_for_ordinary_user(self):
         """Un utente autenticato qualsiasi (senza gruppo/grant view_history) prende 404."""

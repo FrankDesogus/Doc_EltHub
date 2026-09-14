@@ -113,6 +113,7 @@
       <thead><tr>
         <th>Revisione</th>
         <th>N.</th>
+        <th>Variante</th>
         <th>Stato</th>
         <th>Corrente</th>
         <th>Autore</th>
@@ -126,6 +127,13 @@
             <a href="{% url 'version_detail' v.pk %}" class="text-brand-700 hover:underline">{{ v.revision_label }}</a>
           </td>
           <td class="text-gray-500">{{ v.revision_number }}</td>
+          <td onclick="event.stopPropagation()">
+            {% if v.originating_ecn %}
+            <a href="{% url 'ecn:ecn_detail' v.originating_ecn.pk %}" class="text-brand-700 hover:underline" title="{{ v.originating_ecn.code }}">{{ v.originating_ecn.title }}</a>
+            {% else %}
+            <span class="meta">—</span>
+            {% endif %}
+          </td>
           <td>
             {% if v.status == 'approved' %}<span class="badge-status-approved">Approvato</span>
             {% elif v.status == 'draft' %}<span class="badge-status-draft">Bozza</span>

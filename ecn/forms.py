@@ -18,6 +18,12 @@ class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
     istruttoria — non una dichiarazione del proponente al momento della
     richiesta (correzione rispetto alla versione iniziale della funzionalità,
     che la chiedeva qui per errore).
+
+    Non include commessa/progetto: non sono più un dato che il proponente
+    digita — vengono derivati automaticamente dal progetto del documento
+    (se il documento appartiene a un progetto) nella view ecn_create,
+    esattamente come la commessa è fissata una sola volta alla creazione
+    del progetto stesso. Nessun campo da compilare qui.
     """
 
     title = forms.CharField(
@@ -40,15 +46,6 @@ class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
         required=False,
         label='Descrizione modifica proposta',
         help_text='Descrizione della modifica tecnica proposta.',
-    )
-    commessa = forms.CharField(
-        max_length=100,
-        required=False,
-        label='Commessa / ordine',
-    )
-    project = forms.IntegerField(
-        required=False,
-        widget=forms.HiddenInput,
     )
 
 
@@ -371,6 +368,10 @@ class ChangeNoticeEditForm(forms.Form):
     Identici campi di ChangeNoticeForm, usato per la view /ecn/<pk>/edit/.
     Non include l'applicabilità (vedi ChangeNoticeForm) — è compilata dalla
     CCB nel dossier istruttorio, non dal proponente.
+
+    Non include commessa/progetto: sono derivati dal documento (fissato
+    alla creazione dell'ECN, il documento stesso non cambia mai in
+    modifica) — non ha senso poterli riassegnare qui, vedi ChangeNoticeForm.
     """
 
     title = forms.CharField(
@@ -394,22 +395,6 @@ class ChangeNoticeEditForm(forms.Form):
         label='Descrizione modifica proposta',
         help_text='Descrizione della modifica tecnica proposta.',
     )
-    commessa = forms.CharField(
-        max_length=100,
-        required=False,
-        label='Commessa / ordine',
-    )
-    project = forms.ModelChoiceField(
-        queryset=None,
-        required=False,
-        label='Progetto',
-        empty_label='— nessun progetto —',
-    )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        from projects.models import Project
-        self.fields['project'].queryset = Project.objects.order_by('code')
 
 
 class ChangeNoticeReopenCCBForm(forms.Form):

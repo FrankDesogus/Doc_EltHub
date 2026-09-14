@@ -7,7 +7,9 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import format_html
 
 from auditlog.historical_forms import should_send_notifications
 from auditlog.locking import acquire_lock, lock_holder, release_lock
@@ -32,6 +34,33 @@ from ecn.permissions import (
 )
 
 
+def _report_ecn_creation_error(request, exc):
+    """
+    Mostra i messaggi di un ValidationError sollevato da create_change_notice/
+    create_simple_ecn (es. "un solo ECN aperto per documento").
+
+    Se l'eccezione porta un ECN esistente (attributo `existing_ecn`, vedi
+    ecn.services._raise_if_open_change_notice) e l'utente corrente ha
+    visibilità su di esso (can_view_ecn), aggiunge un link al suo dettaglio
+    — mai mostrato a un utente che non potrebbe comunque aprire quella
+    pagina (coerente col messaggio testuale, già filtrato dallo stesso
+    controllo di visibilità lato service).
+    """
+    for msg in exc.messages:
+        messages.error(request, msg)
+
+    existing = getattr(exc, 'existing_ecn', None)
+    if existing is not None and can_view_ecn(request.user, existing):
+        messages.error(
+            request,
+            format_html(
+                'Apri il dettaglio: <a href="{}" class="underline font-semibold">ECN {}</a>',
+                reverse('ecn:ecn_detail', args=[existing.pk]),
+                existing.code,
+            ),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Lista ECN
 # ---------------------------------------------------------------------------
@@ -39,18 +68,21 @@ from ecn.permissions import (
 @login_required
 def ecn_list(request):
     """
-    Lista degli ECN visibili all'utente corrente.
+    Lista personale degli ECN: solo le proprie richieste e quelle in cui
+    l'utente è coinvolto o deve agire (proposte, coordinamento CCB istruttoria,
+    voto CCB assegnato). Lo stato generale di tutte le ECN aziendali è
+    responsabilità esclusiva del cruscotto Workspace Qualità/Cruscotto ECN
+    (gated da _can_consult_all_ecn) — qui resta sempre e solo la situazione
+    personale, indipendentemente dal ruolo, per non duplicare la stessa
+    informazione in due schede con scopi diversi.
 
-    Superuser/staff/manager/auditor/CCB vedono tutto.
-    Gli altri vedono solo i propri ECN (proposed_by o created_by) più
-    quelli su documenti delle cartelle dove hanno un ruolo.
+    Superuser: bypass di sistema, vede tutto (convenzione applicata in tutto
+    il resto del codice: can_view_ecn, can_configure_ccb, ecc.).
     """
     from django.db.models import Q
     user = request.user
 
-    # Quality Manager / Quality Operator / Direction / superuser → vedono tutto
-    # is_staff, Document Manager, Document Auditor, CCB globale → NON vedono tutto
-    if _can_consult_all_ecn(user):
+    if user.is_superuser:
         qs = ChangeNotice.objects.select_related(
             'document', 'proposed_by', 'document_version',
         ).order_by('-proposed_at')
@@ -269,19 +301,18 @@ def ecn_create(request):
     if not can_create_ecn(request.user, document):
         raise PermissionDenied
 
+    # Commessa/progetto: derivati dal documento, mai chiesti al proponente —
+    # la commessa è un dato del progetto, fissato una volta alla sua
+    # creazione (Project.commessa); i documenti non di progetto non ne hanno
+    # una (get_project_for_folder ritorna None, commessa resta '').
+    from projects.services import get_project_for_folder
+    ecn_project = get_project_for_folder(document.project_folder)
+    ecn_commessa = ecn_project.commessa if ecn_project else ''
+
     if request.method == 'POST':
         form = ChangeNoticeForm(request.POST, current_user=request.user)
         if form.is_valid():
             d = form.cleaned_data
-            # project opzionale passato come hidden input (intero pk)
-            project = None
-            if d.get('project'):
-                from projects.models import Project
-                try:
-                    project = Project.objects.get(pk=d['project'])
-                except Project.DoesNotExist:
-                    pass
-
             try:
                 from ecn.services import create_change_notice
                 ecn = create_change_notice(
@@ -291,8 +322,8 @@ def ecn_create(request):
                     motivation=d['motivation'],
                     description=d.get('description', ''),
                     motivation_detail=d.get('motivation_detail', ''),
-                    commessa=d.get('commessa', ''),
-                    project=project,
+                    commessa=ecn_commessa,
+                    project=ecn_project,
                     send_notifications=should_send_notifications(sanatoria=form.is_sanatoria),
                 )
                 form.maybe_create_historical_record(
@@ -307,14 +338,15 @@ def ecn_create(request):
                 )
                 return redirect('ecn:ecn_detail', ecn_id=ecn.pk)
             except ValidationError as exc:
-                for msg in exc.messages:
-                    messages.error(request, msg)
+                _report_ecn_creation_error(request, exc)
     else:
         form = ChangeNoticeForm(current_user=request.user)
 
     return render(request, 'ecn/ecn_form.html', {
         'form': form,
         'document': document,
+        'ecn_project': ecn_project,
+        'ecn_commessa': ecn_commessa,
         'sanatoria_available': can_use_sanatoria(request.user),
     })
 
@@ -359,11 +391,15 @@ def ecn_create_simple(request):
             d = form.cleaned_data
             try:
                 from ecn.services import create_simple_ecn
+                from projects.services import get_project_for_folder
+                simple_project = get_project_for_folder(document.project_folder)
                 ecn = create_simple_ecn(
                     document=document,
                     proposed_by=request.user,
                     title=d['title'],
                     description=d.get('description', ''),
+                    commessa=simple_project.commessa if simple_project else '',
+                    project=simple_project,
                 )
                 messages.success(
                     request,
@@ -372,8 +408,7 @@ def ecn_create_simple(request):
                 )
                 return redirect('document_detail', document_id=document.pk)
             except ValidationError as exc:
-                for msg in exc.messages:
-                    messages.error(request, msg)
+                _report_ecn_creation_error(request, exc)
     else:
         form = SimpleEcnForm()
 
@@ -689,8 +724,8 @@ def ecn_review(request, ecn_id):
             d = form.cleaned_data
             try:
                 if d['action'] == ChangeNoticeReviewForm.ACTION_APPROVE:
-                    # Il dossier è già compilato: non passiamo ccb_class/requirements
-                    # perché il servizio usa quello già salvato sull'ECN.
+                    # Il dossier è già compilato via update_ccb_dossier: il
+                    # servizio non accetta più ccb_class/requirements/ecc. qui.
                     approve_change_notice(
                         ecn,
                         request.user,
@@ -898,8 +933,9 @@ def ecn_attachment_download(request, attachment_id):
 @login_required
 def ecn_edit(request, ecn_id):
     """
-    Modifica i dati base di un ECN in bozza:
-    titolo, motivazione, descrizione, commessa, progetto.
+    Modifica i dati base di un ECN in bozza: titolo, motivazione, descrizione.
+    Commessa/progetto non sono modificabili qui: derivati una sola volta dal
+    documento alla creazione (vedi ecn_create), non cambiano più.
 
     Accessibile a: proponente / created_by / Manager / staff, solo se DRAFT.
     """
@@ -926,8 +962,6 @@ def ecn_edit(request, ecn_id):
                     motivation=d['motivation'],
                     description=d.get('description', ''),
                     motivation_detail=d.get('motivation_detail', ''),
-                    commessa=d.get('commessa', ''),
-                    project=d.get('project'),
                 )
                 messages.success(request, f'{ecn.code} aggiornato.')
                 return redirect('ecn:ecn_detail', ecn_id=ecn_id)
@@ -940,8 +974,6 @@ def ecn_edit(request, ecn_id):
             'motivation': ecn.motivation,
             'motivation_detail': ecn.motivation_detail,
             'description': ecn.description,
-            'commessa': ecn.commessa,
-            'project': ecn.project,
         })
 
     return render(request, 'ecn/ecn_edit_form.html', {

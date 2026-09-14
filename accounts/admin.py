@@ -3,7 +3,7 @@ import base64
 from django.contrib import admin
 from django.utils.html import format_html
 
-from accounts.models import UserSignature
+from accounts.models import OperatorCode, UserSignature
 
 
 @admin.register(UserSignature)
@@ -41,3 +41,17 @@ class UserSignatureAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(OperatorCode)
+class OperatorCodeAdmin(admin.ModelAdmin):
+    """
+    Assegnazione del codice operatore: azione riservata all'amministratore
+    (nessuna view applicativa la espone — coerente con la decisione che sia
+    l'amministratore a impostarla alla creazione dell'account).
+    """
+    list_display = ('code', 'user', 'updated_at')
+    list_select_related = ('user',)
+    search_fields = ('code', 'user__username', 'user__first_name', 'user__last_name')
+    ordering = ('code',)
+    autocomplete_fields = ('user',)

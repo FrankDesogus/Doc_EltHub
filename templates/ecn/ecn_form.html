@@ -31,7 +31,22 @@
       <span class="detail-value">Rev. {{ document.current_version.revision_label }}</span>
     </div>
     {% endif %}
+    {% if ecn_project %}
+    <div class="detail-item">
+      <span class="detail-label">Progetto</span>
+      <span class="detail-value">{{ ecn_project.code }} — {{ ecn_project.name }}</span>
+    </div>
+    {% if ecn_commessa %}
+    <div class="detail-item">
+      <span class="detail-label">Commessa / ordine</span>
+      <span class="detail-value font-mono">{{ ecn_commessa }}</span>
+    </div>
+    {% endif %}
+    {% endif %}
   </div>
+  {% if ecn_project and not ecn_commessa %}
+  <p class="form-help mt-2">Il progetto {{ ecn_project.code }} non ha una commessa/ordine impostata.</p>
+  {% endif %}
 </div>
 
 <form method="post">
@@ -49,14 +64,6 @@
       {{ form.title }}
       {% if form.title.errors %}<p class="form-error">{{ form.title.errors.as_text }}</p>{% endif %}
     </div>
-
-    {% if form.commessa %}
-    <div class="form-group mb-0">
-      <label class="form-label" for="{{ form.commessa.id_for_label }}">{{ form.commessa.label }}</label>
-      {{ form.commessa }}
-      {% if form.commessa.errors %}<p class="form-error">{{ form.commessa.errors.as_text }}</p>{% endif %}
-    </div>
-    {% endif %}
   </div>
 
   <!-- Sezione: Motivazione -->

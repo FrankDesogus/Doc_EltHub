@@ -10,7 +10,61 @@
 
 <div class="page-header">
   <h1>Workspace Qualità</h1>
-  <p class="page-header-sub">Istruttorie ECN, decisioni CCB e attività documentali pendenti</p>
+  <p class="page-header-sub">Stato generale di ECN e approvazioni di tutta l'azienda, e attività pendenti da presidiare</p>
+</div>
+
+<!-- Stato generale azienda (con storico, non solo pendenti) -->
+<div class="flex items-center justify-between mb-3 mt-2">
+  <h2 class="section-title mb-0">Stato generale ECN</h2>
+  <a href="{% url 'ecn:ecn_dashboard' %}" class="text-sm text-elt-cyan-300 hover:underline">Cruscotto completo →</a>
+</div>
+<div class="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6">
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ ecn_status_counts.draft }}</span>
+    <span class="stat-chip-label">Bozza</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ ecn_status_counts.ccb_preparation }}</span>
+    <span class="stat-chip-label">Istruttoria</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ ecn_status_counts.under_review }}</span>
+    <span class="stat-chip-label">In valutazione</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ ecn_status_counts.approved }}</span>
+    <span class="stat-chip-label">Approvate</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ ecn_status_counts.closed }}</span>
+    <span class="stat-chip-label">Chiuse</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ ecn_status_counts.rejected }}</span>
+    <span class="stat-chip-label">Rifiutate</span>
+  </div>
+</div>
+
+<div class="flex items-center justify-between mb-3">
+  <h2 class="section-title mb-0">Stato generale Approvazioni documento</h2>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ approval_status_counts.PENDING }}</span>
+    <span class="stat-chip-label">In attesa</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ approval_status_counts.APPROVED }}</span>
+    <span class="stat-chip-label">Approvate</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ approval_status_counts.REJECTED }}</span>
+    <span class="stat-chip-label">Rifiutate</span>
+  </div>
+  <div class="stat-chip">
+    <span class="stat-chip-value">{{ approval_status_counts.CANCELLED }}</span>
+    <span class="stat-chip-label">Annullate</span>
+  </div>
 </div>
 
 <!-- KPI operativi -->
@@ -24,7 +78,7 @@
 
   <a href="{% url 'ecn:ecn_dashboard' %}" class="kpi-card border-t-4 border-elt-blue-600 no-underline">
     <span class="kpi-icon">📘</span>
-    <span class="kpi-value">{{ ecn_to_review|length }}</span>
+    <span class="kpi-value">{{ dossier_to_compile|length }}</span>
     <span class="kpi-label">Dossier da compilare</span>
     <span class="text-xs text-slate-400">Dati CCB da preparare</span>
   </a>
@@ -86,6 +140,47 @@
     <div class="empty-state-icon">🔍</div>
     <div class="empty-state-title">Nessuna ECN da valutare</div>
     <div class="empty-state-desc">Non ci sono ECN in attesa di valutazione Qualità.</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Dossier da compilare -->
+<div class="flex items-center gap-2 mb-3 mt-8">
+  <h2 class="section-title mb-0">Dossier da compilare</h2>
+  {% if dossier_to_compile %}<span class="badge-ecn-ccb_prep">{{ dossier_to_compile|length }}</span>{% endif %}
+</div>
+<p class="meta mb-3">ECN con CCB già configurata — compilare il dossier istruttorio prima dell'invio al voto.</p>
+{% if dossier_to_compile %}
+<div class="table-container">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Codice</th>
+        <th>Titolo</th>
+        <th>Responsabile istruttoria</th>
+        <th>Data</th>
+        <th class="w-40"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ecn in dossier_to_compile %}
+      <tr>
+        <td><a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="font-mono font-semibold text-elt-cyan-300 hover:underline">{{ ecn.code }}</a></td>
+        <td>{{ ecn.title }} {% include "ecn/_applicability_badge.html" with ecn=ecn %}</td>
+        <td class="meta">{{ ecn.ccb_coordinator.get_full_name|default:ecn.ccb_coordinator.username|default:"—" }}</td>
+        <td class="meta whitespace-nowrap">{{ ecn.proposed_at|date:"d/m/Y" }}</td>
+        <td><a href="{% url 'ecn:ecn_ccb_dossier' ecn.pk %}" class="btn-primary btn-sm">Compila dossier</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty-state py-8">
+    <div class="empty-state-icon">📘</div>
+    <div class="empty-state-title">Nessun dossier da compilare</div>
+    <div class="empty-state-desc">Non ci sono ECN con CCB configurata in attesa di dossier.</div>
   </div>
 </div>
 {% endif %}

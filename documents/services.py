@@ -6,8 +6,73 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from documents.models import Document, DocumentFile, DocumentVersion
+from documents.models import Document, DocumentCodeCounter, DocumentFile, DocumentVersion
 from auditlog.services import create_audit_log
+
+MAX_DAILY_PROGRESSIVE_PER_TYPE = 9
+
+
+def generate_document_code(document_type, user, *, today=None):
+    """
+    Genera Document.code secondo la procedura aziendale ELTHUB "Gestione
+    delle Informazioni Documentate" (230201161SYSP Rev. C, §2.1.1):
+
+        Codice Documento = [yymmdd][r][tu][post-suffisso]
+
+    - yymmdd: data odierna (o `today` se passata, solo per i test).
+    - r: progressivo giornaliero di 1 cifra (1-9), riparte da 1 ogni giorno
+      separatamente per ciascun document_type (DocumentCodeCounter).
+    - tu: codice operatore a 2 cifre dell'utente che crea il documento
+      (accounts.OperatorCode).
+    - post-suffisso: document_type stesso (acronimo a 4 caratteri, già
+      validato altrove contro la categoria — vedi documents.document_types).
+
+    Mai usato in modalità sanatoria: lì il codice è storico, inserito
+    manualmente dall'operatore (vedi DocumentCreateForm.clean()).
+
+    Raises:
+        ValidationError: se l'utente non ha un codice operatore assegnato,
+            o se sono già stati emessi 9 documenti di quel tipo oggi.
+    """
+    from accounts.models import OperatorCode
+
+    try:
+        operator_code = user.operator_code.code
+    except OperatorCode.DoesNotExist:
+        raise ValidationError(
+            'Il tuo account non ha ancora un codice operatore assegnato. '
+            'Contatta un amministratore prima di creare un documento.'
+        )
+
+    today = today or timezone.localdate()
+
+    with transaction.atomic():
+        counter, _ = (
+            DocumentCodeCounter.objects.select_for_update()
+            .get_or_create(date=today, document_type=document_type)
+        )
+        if counter.last_value >= MAX_DAILY_PROGRESSIVE_PER_TYPE:
+            raise ValidationError(
+                f'I codici disponibili oggi per il tipo documento "{document_type}" '
+                f'sono terminati ({MAX_DAILY_PROGRESSIVE_PER_TYPE}/{MAX_DAILY_PROGRESSIVE_PER_TYPE}). '
+                'Riprova domani.'
+            )
+        counter.last_value += 1
+        counter.save(update_fields=['last_value'])
+        progressive = counter.last_value
+
+    code = f"{today.strftime('%y%m%d')}{progressive}{operator_code}{document_type}"
+
+    # Rete di sicurezza difensiva: con la formula deterministica sopra una
+    # collisione è strutturalmente quasi impossibile, tranne il caso limite
+    # di un codice storico di sanatoria che combaci per puro caso.
+    if Document.objects.filter(code=code).exists():
+        raise ValidationError(
+            f'Il codice generato "{code}" risulta già assegnato a un altro documento. '
+            'Riprova: potrebbe essere un caso limite da segnalare.'
+        )
+
+    return code
 
 
 def create_new_revision(

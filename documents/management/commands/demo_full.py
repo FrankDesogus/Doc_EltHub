@@ -262,9 +262,6 @@ class Command(BaseCommand):
         )
         submit_change_notice(ecn_approved, supervisor, send_notifications=False)
         approve_change_notice(ecn_approved, supervisor,
-                              ccb_class='class2',
-                              ccb_requirements='Verificato.',
-                              ccb_technical_impact='Minimo.',
                               comment='CCB approva — demo.',
                               send_notifications=False)
         self._step('ECN-S-04: stato APPROVED (in attesa di esecuzione).')
@@ -284,9 +281,6 @@ class Command(BaseCommand):
         _setup_ccb(ecn_closed)
         submit_change_notice(ecn_closed, supervisor, send_notifications=False)
         approve_change_notice(ecn_closed, supervisor,
-                              ccb_class='class1',
-                              ccb_requirements='Approvato.',
-                              ccb_technical_impact='Limitato.',
                               comment='Approvazione per chiusura demo.',
                               send_notifications=False)
         ecn_closed.refresh_from_db()
@@ -377,15 +371,9 @@ class Command(BaseCommand):
         )
         submit_change_notice(ecn, supervisor, send_notifications=False)
         approve_change_notice(ecn, supervisor,
-                              ccb_class='class2',
-                              ccb_requirements='Approvato.',
-                              ccb_technical_impact='Limitato.',
                               comment='Supervisor approva.',
                               send_notifications=False)
         approve_change_notice(ecn, ccb_member,
-                              ccb_class='class2',
-                              ccb_requirements='Approvato.',
-                              ccb_technical_impact='Verificato.',
                               comment='CCB member approva — policy ALL soddisfatta.',
                               send_notifications=False)
         ecn.refresh_from_db()
@@ -463,8 +451,6 @@ class Command(BaseCommand):
                            ccb_requirements='Verificato.', ccb_technical_impact='Limitato.')
         submit_change_notice(ecn, supervisor, send_notifications=False)
         approve_change_notice(ecn, supervisor,
-                              ccb_class='class2', ccb_requirements='Approvato.',
-                              ccb_technical_impact='Limitato.',
                               comment='CCB approva — demo.', send_notifications=False)
 
         ver01 = create_new_revision(
@@ -544,8 +530,7 @@ class Command(BaseCommand):
                            ccb_class='class2',
                            ccb_requirements='Verificato.', ccb_technical_impact='Limitato.')
         submit_change_notice(ecn, supervisor, send_notifications=False)
-        approve_change_notice(ecn, supervisor, ccb_class='class2', ccb_requirements='Approvato.',
-                              ccb_technical_impact='Limitato.', comment='CCB approva — demo.',
+        approve_change_notice(ecn, supervisor, comment='CCB approva — demo.',
                               send_notifications=False)
 
         ver01 = create_new_revision(doc, author, '01', 1, ecn=ecn,
@@ -816,7 +801,6 @@ class Command(BaseCommand):
 
         snap = create_project_revision(
             project, supervisor,
-            snapshot_type=ProjectRevision.SnapshotType.REVISION,
             notes='Snapshot demo — storico progetto per presentazione.',
         )
         n_items = populate_project_revision_from_current_documents(snap)

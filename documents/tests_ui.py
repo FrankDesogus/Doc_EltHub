@@ -396,21 +396,45 @@ class UIECNSearchTests(TestCase):
         self.folder = _make_folder('UES-FOLD', self.qm)
         self.doc, self.ver = _make_approved_doc('UES-DOC-001', self.folder, self.qm)
 
+        # Un solo ECN aperto per documento: ciascuna delle ECN create qui
+        # sotto vive sul proprio documento (un documento dedicato per ECN),
+        # non su self.doc/self.ver condivisi — questi test riguardano
+        # ricerca/filtri/paginazione sulla lista ECN, non un'interazione fra
+        # più ECN sullo stesso documento.
+        def _make_doc_for_ecn(code):
+            doc = Document.objects.create(
+                code=code, title=f'Doc per {code}',
+                category=Document.Category.QUALITY,
+                project_folder=self.folder,
+                owner=self.qm, created_by=self.qm,
+                status=Document.Status.ACTIVE,
+            )
+            ver = DocumentVersion.objects.create(
+                document=doc, revision_label='00', revision_number=0,
+                status=DocumentVersion.Status.APPROVED, is_current=True,
+                created_by=self.qm,
+            )
+            doc.current_version = ver
+            doc.save(update_fields=['current_version'])
+            return doc, ver
+
         # Crea 22 ECN in DRAFT
         for i in range(22):
+            doc_i, ver_i = _make_doc_for_ecn(f'UES-DOC-{i+1:03d}')
             ChangeNotice.objects.create(
                 code=f'UES-{i+1:03d}',
                 title=f'ECN variante {i+1}',
                 motivation=ChangeNotice.Motivation.IMPROVEMENT,
-                document=self.doc, document_version=self.ver,
+                document=doc_i, document_version=ver_i,
                 proposed_by=self.qm, created_by=self.qm,
             )
 
         # Crea 1 ECN in UNDER_REVIEW con ccb come approvatore
+        doc_ur, ver_ur = _make_doc_for_ecn('UES-DOC-UR-001')
         self.ecn_ur = ChangeNotice.objects.create(
             code='UES-UR-001', title='ECN in revisione',
             motivation=ChangeNotice.Motivation.CUSTOMER,
-            document=self.doc, document_version=self.ver,
+            document=doc_ur, document_version=ver_ur,
             proposed_by=self.proposer, created_by=self.proposer,
             status=ChangeNotice.Status.UNDER_REVIEW,
         )
@@ -459,14 +483,31 @@ class UIECNSearchTests(TestCase):
         # Non deve vedere le ECN del qm (folder non visibile)
         self.assertNotIn('UES-001', codes)
 
-    # 6. Filtro proponente
+    # 6. Filtro proponente — funziona dentro il proprio ambito personale...
     def test_filter_proposer(self):
-        self.client.force_login(self.qm)
+        """
+        ecn_list è personale (nessun bypass "vedi tutto" per Quality
+        Manager: quella vista d'insieme aziendale è responsabilità
+        esclusiva di Workspace Qualità/Cruscotto ECN). Il filtro proponente
+        deve continuare a funzionare per chi l'ECN la vede già di suo
+        (qui: il proponente stesso)...
+        """
+        self.client.force_login(self.proposer)
         r = self.client.get(reverse('ecn:ecn_list'), {'proposer': str(self.proposer.pk)})
         self.assertEqual(r.status_code, 200)
         codes = [e.code for e in r.context['ecns']]
         self.assertIn('UES-UR-001', codes)
         self.assertNotIn('UES-001', codes)
+
+    # ...ma non deve mai permettere di scavalcare la visibilità personale:
+    # un Quality Manager senza alcun coinvolgimento sull'ECN non la vede,
+    # a prescindere dal filtro applicato.
+    def test_filter_proposer_does_not_bypass_personal_scope(self):
+        self.client.force_login(self.qm)
+        r = self.client.get(reverse('ecn:ecn_list'), {'proposer': str(self.proposer.pk)})
+        self.assertEqual(r.status_code, 200)
+        codes = [e.code for e in r.context['ecns']]
+        self.assertNotIn('UES-UR-001', codes)
 
     # 7. Filtro coordinator
     def test_filter_coordinator(self):
@@ -484,13 +525,22 @@ class UIECNSearchTests(TestCase):
         codes = [e.code for e in r.context['ecns']]
         self.assertIn('UES-COORD', codes)
 
-    # 8. Filtro membro CCB
+    # 8. Filtro membro CCB — l'approvatore assegnato vede la propria ECN...
     def test_filter_ccb_member(self):
-        self.client.force_login(self.qm)
+        self.client.force_login(self.ccb)
         r = self.client.get(reverse('ecn:ecn_list'), {'ccb_member': str(self.ccb.pk)})
         self.assertEqual(r.status_code, 200)
         codes = [e.code for e in r.context['ecns']]
         self.assertIn('UES-UR-001', codes)
+
+    # ...ma il filtro non deve mostrare l'ECN a chi non vi è coinvolto
+    # (stessa proprietà di test_filter_proposer_does_not_bypass_personal_scope).
+    def test_filter_ccb_member_does_not_bypass_personal_scope(self):
+        self.client.force_login(self.qm)
+        r = self.client.get(reverse('ecn:ecn_list'), {'ccb_member': str(self.ccb.pk)})
+        self.assertEqual(r.status_code, 200)
+        codes = [e.code for e in r.context['ecns']]
+        self.assertNotIn('UES-UR-001', codes)
 
 
 # ---------------------------------------------------------------------------

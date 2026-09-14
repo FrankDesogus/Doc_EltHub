@@ -1,18 +1,17 @@
 {% extends "base.html" %}
-{% block title %}{{ revision.get_snapshot_type_display }} {{ revision.revision_label }} — {{ project.code }} — Documentale{% endblock %}
+{% block title %}Revisione {{ revision.revision_label }} — {{ project.code }} — Documentale{% endblock %}
 
 {% block content %}
 <nav class="breadcrumb">
   <a href="{% url 'project_detail' project.pk %}">{{ project.code }} – {{ project.name }}</a>
   <span class="breadcrumb-sep">›</span>
-  <span>{{ revision.get_snapshot_type_display }} {{ revision.revision_label }}</span>
+  <span>Revisione {{ revision.revision_label }}</span>
 </nav>
 
 <div class="flex items-start justify-between gap-4 flex-wrap mb-6">
   <div>
     <div class="flex items-center gap-3 mb-1 flex-wrap">
       <span class="text-2xl font-bold text-elt-white font-mono">{{ revision.revision_label }}</span>
-      <span class="badge badge-project">{{ revision.get_snapshot_type_display }}</span>
       {% if revision.status == 'draft' %}<span class="badge-status-draft">Bozza</span>
       {% elif revision.status == 'issued' %}<span class="badge-status-approved">Emessa</span>
       {% elif revision.status == 'superseded' %}<span class="badge-status-superseded">Superata</span>
@@ -24,8 +23,7 @@
     {% if revision.snapshot_project_name %}
     <p class="meta mt-1">
       Fotografia del progetto <strong>{{ revision.snapshot_project_name }}</strong>
-      (Ver. {{ revision.snapshot_project_version }}{% if revision.snapshot_project_version_scheme %} — {{ revision.snapshot_project_version_scheme }}{% endif %},
-       Rev. {{ revision.snapshot_project_revision }}{% if revision.snapshot_project_revision_scheme %} — {{ revision.snapshot_project_revision_scheme }}{% endif %})
+      (Rev. {{ revision.snapshot_project_revision }}{% if revision.snapshot_project_revision_scheme %} — {{ revision.snapshot_project_revision_scheme }}{% endif %})
       al momento della creazione.
     </p>
     {% else %}
@@ -38,7 +36,7 @@
     {% csrf_token %}
     {% include "auditlog/sanatoria_fields.html" %}
     <button type="submit" class="btn-primary"
-      onclick="return confirm('Emettere lo snapshot {{ revision.revision_label }}? Gli snapshot precedenti dello stesso tipo verranno marcati come superati.')">
+      onclick="return confirm('Emettere lo snapshot {{ revision.revision_label }}? Gli snapshot precedenti verranno marcati come superati.')">
       Emetti snapshot
     </button>
   </form>
@@ -51,14 +49,8 @@
   <dl class="dl-grid">
     <dt>Progetto</dt>
     <dd><a href="{% url 'project_detail' project.pk %}" class="text-brand-600 hover:underline">{{ project.code }} – {{ project.name }}</a></dd>
-    <dt>Tipo snapshot</dt>
-    <dd>{{ revision.get_snapshot_type_display }}</dd>
     <dt>Etichetta</dt>
     <dd class="font-mono font-semibold">{{ revision.revision_label }}</dd>
-    {% if revision.snapshot_project_version %}
-    <dt>Versione al momento</dt>
-    <dd class="font-mono">{{ revision.snapshot_project_version }} ({{ revision.snapshot_project_version_scheme }})</dd>
-    {% endif %}
     {% if revision.snapshot_project_revision %}
     <dt>Revisione al momento</dt>
     <dd class="font-mono">{{ revision.snapshot_project_revision }} ({{ revision.snapshot_project_revision_scheme }})</dd>

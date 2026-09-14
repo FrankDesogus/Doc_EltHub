@@ -260,24 +260,21 @@ class Project(models.Model):
     code = models.CharField(max_length=50, unique=True, verbose_name='Codice')
     name = models.CharField(max_length=255, verbose_name='Nome')
     description = models.TextField(blank=True, verbose_name='Descrizione')
+    commessa = models.CharField(
+        max_length=100,
+        blank=True,
+        verbose_name='Commessa / ordine',
+        help_text=(
+            'Riferimento commessa/ordine esterno (es. gestionale aziendale). '
+            'Impostata alla creazione del progetto: tutti i documenti e gli ECN '
+            'di questo progetto la ereditano automaticamente, non è richiesta di nuovo altrove.'
+        ),
+    )
     project_type = models.CharField(
         max_length=20,
         choices=ProjectType.choices,
         default=ProjectType.OTHER,
         verbose_name='Tipo',
-    )
-    version_scheme = models.CharField(
-        max_length=20,
-        choices=SequenceScheme.choices,
-        default=SequenceScheme.NUMERIC,
-        verbose_name='Schema versione',
-        help_text='Schema usato per la versione corrente.',
-    )
-    version = models.CharField(
-        max_length=32,
-        default='00',
-        verbose_name='Versione',
-        help_text='Versione corrente del progetto. Modificabile manualmente.',
     )
     revision_scheme = models.CharField(
         max_length=20,
@@ -349,10 +346,6 @@ class ProjectRevision(models.Model):
         SUPERSEDED = 'superseded', 'Superata'
         ARCHIVED = 'archived', 'Archiviata'
 
-    class SnapshotType(models.TextChoices):
-        VERSION = 'version', 'Versione'
-        REVISION = 'revision', 'Revisione'
-
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
@@ -360,12 +353,6 @@ class ProjectRevision(models.Model):
         blank=True,
         related_name='revisions',
         verbose_name='Progetto',
-    )
-    snapshot_type = models.CharField(
-        max_length=20,
-        choices=SnapshotType.choices,
-        default=SnapshotType.REVISION,
-        verbose_name='Tipo snapshot',
     )
     revision_label = models.CharField(max_length=20, verbose_name='Etichetta')
     revision_number = models.PositiveIntegerField(default=0, verbose_name='Numero ordinamento')
@@ -411,31 +398,28 @@ class ProjectRevision(models.Model):
     snapshot_project_description = models.TextField(blank=True, default='', verbose_name='Descrizione progetto (snapshot)')
     snapshot_project_type = models.CharField(max_length=20, blank=True, default='', verbose_name='Tipo progetto (snapshot)')
     snapshot_project_manager_display = models.CharField(max_length=200, blank=True, default='', verbose_name='Responsabile (snapshot)')
-    snapshot_project_version = models.CharField(max_length=32, blank=True, default='', verbose_name='Versione progetto (snapshot)')
-    snapshot_project_version_scheme = models.CharField(max_length=20, blank=True, default='', verbose_name='Schema versione (snapshot)')
     snapshot_project_revision = models.CharField(max_length=32, blank=True, default='', verbose_name='Revisione progetto (snapshot)')
     snapshot_project_revision_scheme = models.CharField(max_length=20, blank=True, default='', verbose_name='Schema revisione (snapshot)')
 
     class Meta:
         verbose_name = 'Snapshot progetto'
         verbose_name_plural = 'Snapshot progetto'
-        ordering = ['project', 'snapshot_type', '-revision_number']
+        ordering = ['project', '-revision_number']
         unique_together = [
-            ('project', 'snapshot_type', 'revision_label'),
-            ('project', 'snapshot_type', 'revision_number'),
+            ('project', 'revision_label'),
+            ('project', 'revision_number'),
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=['project', 'snapshot_type'],
+                fields=['project'],
                 condition=models.Q(is_current=True),
-                name='unique_current_snapshot_per_type',
+                name='unique_current_revision_per_project',
             ),
         ]
 
     def __str__(self):
         project_code = self.project.code if self.project else '—'
-        type_label = self.get_snapshot_type_display()
-        return f"{project_code} {type_label} {self.revision_label} – {self.title}"
+        return f"{project_code} Revisione {self.revision_label} – {self.title}"
 
 
 class ProjectRevisionItem(models.Model):

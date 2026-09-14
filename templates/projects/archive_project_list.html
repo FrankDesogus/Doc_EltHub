@@ -9,7 +9,7 @@
   {% endif %}
 </div>
 <p class="text-sm text-gray-500 mb-4">
-  Storico completo dei progetti: snapshot versione/revisione, confronto con la baseline corrente, storico eventi.
+  Storico completo dei progetti: snapshot di revisione, confronto con la baseline corrente, storico eventi.
   Apri un progetto per vederne il dettaglio completo.
 </p>
 
@@ -33,7 +33,6 @@
     <thead><tr>
       <th>Codice</th>
       <th>Nome</th>
-      <th>Versione</th>
       <th>Revisione</th>
       <th>Cartella</th>
       <th>Responsabile</th>
@@ -44,7 +43,6 @@
       <tr class="cursor-pointer hover:bg-gray-50" onclick="window.location='{% url 'archive_project_detail' project.pk %}'">
         <td class="font-mono font-semibold text-brand-800"><a href="{% url 'archive_project_detail' project.pk %}" class="hover:underline" onclick="event.stopPropagation()">{{ project.code }}</a></td>
         <td>{{ project.name }}</td>
-        <td class="meta font-mono">{{ project.version }} <span class="text-xs text-slate-400">({{ project.get_version_scheme_display }})</span></td>
         <td class="meta font-mono">{{ project.revision }} <span class="text-xs text-slate-400">({{ project.get_revision_scheme_display }})</span></td>
         <td class="meta">
           {% if project.root_folder %}<span>{{ project.root_folder.code }}</span>{% else %}—{% endif %}

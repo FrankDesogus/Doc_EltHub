@@ -183,7 +183,15 @@ class Document(models.Model):
     code = models.CharField(max_length=50, unique=True, verbose_name='Codice')
     title = models.CharField(max_length=255, verbose_name='Titolo')
     description = models.TextField(blank=True, verbose_name='Descrizione')
-    category = models.CharField(max_length=20, choices=Category.choices, verbose_name='Categoria')
+    category = models.CharField(
+        max_length=50,
+        choices=Category.choices,
+        verbose_name='Categoria',
+        help_text=(
+            'Documenti "Altro" (fuori dalla procedura di codifica ufficiale) '
+            'memorizzano qui direttamente la categoria libera indicata alla creazione.'
+        ),
+    )
     document_type = models.CharField(
         max_length=100,
         blank=True,
@@ -367,3 +375,30 @@ class ApprovedPDFArtifact(models.Model):
 
     def __str__(self):
         return f"PDF approvato #{self.pk} [{self.get_status_display()}]"
+
+
+class DocumentCodeCounter(models.Model):
+    """
+    Progressivo giornaliero per tipo documento, usato dalla generazione
+    automatica di Document.code (procedura ELTHUB, §2.1.1 — vedi
+    documents.services.generate_document_code). Riparte da 0 ogni giorno,
+    separatamente per ciascun tipo documento: due tipi diversi creati lo
+    stesso giorno hanno ciascuno il proprio progressivo indipendente.
+
+    Non coinvolto in modalità sanatoria: lì il codice è storico e inserito
+    manualmente, nessun progressivo viene consumato.
+    """
+
+    date = models.DateField(verbose_name='Data')
+    document_type = models.CharField(max_length=10, verbose_name='Tipo documento')
+    last_value = models.PositiveSmallIntegerField(default=0, verbose_name='Ultimo progressivo emesso')
+
+    class Meta:
+        verbose_name = 'Contatore codice documento'
+        verbose_name_plural = 'Contatori codice documento'
+        constraints = [
+            models.UniqueConstraint(fields=['date', 'document_type'], name='unique_counter_per_day_and_type'),
+        ]
+
+    def __str__(self):
+        return f"{self.date} {self.document_type}: {self.last_value}"

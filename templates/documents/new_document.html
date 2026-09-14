@@ -7,6 +7,9 @@
   {% if from_project %}
   <a href="{% url 'project_detail' from_project.pk %}">{{ from_project.code }} — {{ from_project.name }}</a>
   <span class="breadcrumb-sep">›</span>
+  {% elif from_folder %}
+  <a href="{% url 'folder_detail' from_folder.pk %}">{{ from_folder.code }} — {{ from_folder.name }}</a>
+  <span class="breadcrumb-sep">›</span>
   {% else %}
   <a href="{% url 'dashboard' %}">Dashboard</a>
   <span class="breadcrumb-sep">›</span>
@@ -15,25 +18,59 @@
 </nav>
 
 <div class="page-header">
-  <h1>{% if from_project %}Nuovo documento in {{ from_project.code }}{% else %}Nuovo documento{% endif %}</h1>
+  <h1>{% if from_project %}Nuovo documento in {{ from_project.code }}{% elif from_folder %}Nuovo documento in {{ from_folder.code }}{% else %}Nuovo documento{% endif %}</h1>
 </div>
 
 {% if from_project %}
 <div class="alert-info mb-4">
-  Il documento sarà creato nella cartella radice <strong>{{ from_project.root_folder }}</strong> del progetto.
+  Cartella proposta: <strong>{{ from_project.root_folder }}</strong> (cartella radice del progetto {{ from_project.code }}).
+  Puoi scegliere un'altra destinazione qui sotto prima di salvare.
+</div>
+{% elif from_folder %}
+<div class="alert-info mb-4">
+  Cartella proposta: <strong>{{ from_folder.code }} — {{ from_folder.name }}</strong>.
+  Puoi scegliere un'altra destinazione qui sotto prima di salvare.
 </div>
 {% endif %}
 
-<form method="post" action="{% url 'document_new' %}{% if from_project %}?project={{ from_project.pk }}{% endif %}" enctype="multipart/form-data">
+<form method="post" action="{% url 'document_new' %}{% if from_project %}?project={{ from_project.pk }}{% elif from_folder %}?folder={{ from_folder.pk }}{% endif %}" enctype="multipart/form-data">
   {% csrf_token %}
 
   <!-- Sezione: Informazioni documento -->
   <div class="form-section">
     <div class="form-section-title">Informazioni documento</div>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- Cartella — selettore ad albero (vedi script in fondo alla pagina) -->
+      <div class="form-group mb-0 md:col-span-2">
+        <label class="form-label" for="folder-picker-toggle">
+          {{ form.project_folder.label }} <span class="text-red-500">*</span>
+        </label>
+        <div class="folder-picker" id="folder-picker">
+          <button type="button" id="folder-picker-toggle" class="folder-picker-trigger" aria-haspopup="true" aria-expanded="false">
+            <span class="folder-picker-trigger-icon">📁</span>
+            <span id="folder-picker-selected-path" class="folder-picker-trigger-text">— seleziona cartella —</span>
+            <span class="folder-picker-chevron" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </button>
+          <div id="folder-picker-panel" class="folder-picker-panel" hidden>
+            <div class="folder-picker-panel-header">Scegli la cartella di destinazione</div>
+            <div id="folder-picker-tree" class="folder-picker-tree" role="tree"></div>
+            <p id="folder-picker-empty" class="folder-picker-empty" hidden>Nessuna cartella disponibile.</p>
+          </div>
+        </div>
+        <div class="hidden">{{ form.project_folder }}</div>
+        {% if form.project_folder.help_text %}<p class="form-help">{{ form.project_folder.help_text }}</p>{% endif %}
+        {% for error in form.project_folder.errors %}<p class="form-error">{{ error }}</p>{% endfor %}
+      </div>
+      {{ folder_tree_data|json_script:"folder-tree-data" }}
+
       {% for field in form %}
-        {% if field.name == 'code' or field.name == 'category' or field.name == 'document_type' or field.name == 'project_folder' %}
-        <div class="form-group mb-0">
+        {% if field.name == 'code' or field.name == 'category' or field.name == 'category_other' or field.name == 'document_type' or field.name == 'document_type_other' %}
+        <div class="form-group mb-0{% if field.name == 'code' or field.name == 'category_other' or field.name == 'document_type_other' %} hidden{% endif %}"
+             {% if field.name == 'code' %}id="code-field-wrap"{% endif %}
+             {% if field.name == 'category_other' %}id="category-other-field-wrap"{% endif %}
+             {% if field.name == 'document_type_other' %}id="document-type-other-field-wrap"{% endif %}>
           <label class="form-label" for="{{ field.id_for_label }}">
             {{ field.label }}{% if field.field.required %} <span class="text-red-500">*</span>{% endif %}
           </label>
@@ -41,6 +78,16 @@
           {% if field.help_text %}<p class="form-help">{{ field.help_text }}</p>{% endif %}
           {% for error in field.errors %}<p class="form-error">{{ error }}</p>{% endfor %}
         </div>
+        {% if field.name == 'category' %}
+        <div class="form-group mb-0">
+          <p class="form-help">
+            Il codice documento viene assegnato automaticamente alla creazione,
+            secondo la procedura aziendale (data + progressivo + codice operatore
+            + tipo documento). Compare solo in modalità sanatoria o per categoria
+            "Altro", per inserire un codice manuale.
+          </p>
+        </div>
+        {% endif %}
         {% endif %}
       {% endfor %}
       <!-- Titolo — full width -->
@@ -82,13 +129,6 @@
         {{ form.revision_label }}
         {% if form.revision_label.help_text %}<p class="form-help">{{ form.revision_label.help_text }}</p>{% endif %}
         {% for error in form.revision_label.errors %}<p class="form-error">{{ error }}</p>{% endfor %}
-      </div>
-      <div class="form-group mb-0">
-        <label class="form-label" for="{{ form.revision_number.id_for_label }}">
-          {{ form.revision_number.label }} <span class="text-red-500">*</span>
-        </label>
-        {{ form.revision_number }}
-        {% for error in form.revision_number.errors %}<p class="form-error">{{ error }}</p>{% endfor %}
       </div>
       <div class="form-group mb-0 md:col-span-2">
         <label class="form-label" for="{{ form.change_summary.id_for_label }}">{{ form.change_summary.label }}</label>
@@ -154,6 +194,193 @@
 
 <script>
 (function () {
+  // Selettore ad albero per la cartella di destinazione. Sostituisce la
+  // tendina piatta: con molte cartelle annidate, trovare quella giusta
+  // scorrendo un elenco senza gerarchia è scomodo (segnalato dagli
+  // operatori). Il vero campo del form resta il <select id="id_project_folder">
+  // (nascosto ma presente e funzionante, per l'invio e per il fallback se
+  // JS è disabilitato): questo script costruisce sopra un albero
+  // navigabile e sincronizza la selezione sul <select> nascosto.
+  var dataScript = document.getElementById('folder-tree-data');
+  var select = document.getElementById('id_project_folder');
+  var toggle = document.getElementById('folder-picker-toggle');
+  var chevron = toggle ? toggle.querySelector('.folder-picker-chevron') : null;
+  var panel = document.getElementById('folder-picker-panel');
+  var treeRoot = document.getElementById('folder-picker-tree');
+  var selectedPathEl = document.getElementById('folder-picker-selected-path');
+  var emptyMsg = document.getElementById('folder-picker-empty');
+  if (!dataScript || !select || !toggle || !panel || !treeRoot) return;
+
+  var nodes = JSON.parse(dataScript.textContent || '[]');
+  var byId = {};
+  var childrenOf = {};
+  nodes.forEach(function (n) {
+    byId[n.id] = n;
+    var key = n.parent_id === null ? 'root' : n.parent_id;
+    if (!childrenOf[key]) childrenOf[key] = [];
+    childrenOf[key].push(n);
+  });
+  Object.keys(childrenOf).forEach(function (key) {
+    childrenOf[key].sort(function (a, b) { return a.label.localeCompare(b.label); });
+  });
+
+  function ancestorsOf(id) {
+    var result = [];
+    var current = byId[id];
+    while (current && current.parent_id !== null && byId[current.parent_id]) {
+      current = byId[current.parent_id];
+      result.push(current.id);
+    }
+    return result;
+  }
+
+  var expanded = {};
+  var selectedId = select.value ? parseInt(select.value, 10) : null;
+  if (selectedId && byId[selectedId]) {
+    ancestorsOf(selectedId).forEach(function (pid) { expanded[pid] = true; });
+  }
+
+  function updateSelectedDisplay() {
+    if (selectedId && byId[selectedId]) {
+      selectedPathEl.textContent = byId[selectedId].path;
+      selectedPathEl.classList.remove('folder-picker-placeholder');
+    } else {
+      selectedPathEl.textContent = '— seleziona cartella —';
+      selectedPathEl.classList.add('folder-picker-placeholder');
+    }
+  }
+
+  function selectFolder(id) {
+    selectedId = id;
+    select.value = String(id);
+    select.dispatchEvent(new Event('change'));
+    updateSelectedDisplay();
+    closePanel();
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  var EXPAND_ICON = '<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.5 5L12.5 10L7.5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var CHECK_ICON = '<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M4 10.5L8 14.5L16 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function renderNode(node, depth) {
+    var row = document.createElement('div');
+    row.className = 'folder-picker-row';
+    row.style.paddingLeft = (depth * 1.25) + 'rem';
+
+    var kids = childrenOf[node.id] || [];
+    var toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'folder-picker-expand' + (expanded[node.id] ? ' folder-picker-expand-open' : '');
+    if (kids.length) {
+      toggleBtn.innerHTML = EXPAND_ICON;
+      toggleBtn.setAttribute('aria-label', expanded[node.id] ? 'Comprimi' : 'Espandi');
+      toggleBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        expanded[node.id] = !expanded[node.id];
+        renderTree();
+      });
+    } else {
+      toggleBtn.disabled = true;
+    }
+    row.appendChild(toggleBtn);
+
+    var isSelected = node.id === selectedId;
+    var labelBtn = document.createElement('button');
+    labelBtn.type = 'button';
+    labelBtn.className = 'folder-picker-node' + (isSelected ? ' folder-picker-node-selected' : '');
+    labelBtn.setAttribute('role', 'treeitem');
+    labelBtn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+    labelBtn.innerHTML =
+      '<span class="folder-picker-node-icon">📁</span>' +
+      '<span class="folder-picker-node-label">' + escapeHtml(node.label) + '</span>' +
+      (isSelected ? '<span class="folder-picker-node-check">' + CHECK_ICON + '</span>' : '');
+    labelBtn.addEventListener('click', function () { selectFolder(node.id); });
+    row.appendChild(labelBtn);
+
+    var wrap = document.createElement('div');
+    wrap.appendChild(row);
+
+    if (kids.length && expanded[node.id]) {
+      kids.forEach(function (child) {
+        wrap.appendChild(renderNode(child, depth + 1));
+      });
+    }
+    return wrap;
+  }
+
+  function renderTree() {
+    treeRoot.innerHTML = '';
+    var roots = childrenOf['root'] || [];
+    if (!roots.length) {
+      emptyMsg.hidden = false;
+      return;
+    }
+    emptyMsg.hidden = true;
+    roots.forEach(function (n) {
+      treeRoot.appendChild(renderNode(n, 0));
+    });
+  }
+
+  function openPanel() {
+    panel.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    if (chevron) chevron.classList.add('folder-picker-chevron-open');
+    renderTree();
+  }
+  function closePanel() {
+    panel.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+    if (chevron) chevron.classList.remove('folder-picker-chevron-open');
+  }
+
+  toggle.addEventListener('click', function () {
+    if (panel.hidden) openPanel(); else closePanel();
+  });
+  document.addEventListener('click', function (ev) {
+    if (!panel.hidden && !panel.contains(ev.target) && !toggle.contains(ev.target)) {
+      closePanel();
+    }
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && !panel.hidden) closePanel();
+  });
+
+  updateSelectedDisplay();
+})();
+
+(function () {
+  // Etichetta prima revisione: sincronizza il valore con lo schema scelto
+  // (Numerica → 00, Alfabetica → A). Senza questo, cambiando schema il
+  // campo restava sul default dello schema precedente (es. "00" con
+  // Alfabetica selezionata) e il salvataggio falliva con un errore di
+  // validazione poco intuitivo — fallisce in modo sicuro (mai un codice
+  // sbagliato salvato), ma confonde inutilmente l'operatore.
+  // Sovrascrive solo se il campo è ancora a un valore di default (l'utente
+  // non ha già scelto un'etichetta personalizzata).
+  var schemeSelect = document.getElementById('id_revision_scheme');
+  var labelInput = document.getElementById('id_revision_label');
+  if (schemeSelect && labelInput) {
+    var REVISION_LABEL_DEFAULTS = { numeric: '00', alphabetic: 'A' };
+    schemeSelect.addEventListener('change', function () {
+      var currentValue = labelInput.value.trim();
+      var isStillDefault = (
+        currentValue === '' ||
+        currentValue === REVISION_LABEL_DEFAULTS.numeric ||
+        currentValue.toUpperCase() === REVISION_LABEL_DEFAULTS.alphabetic
+      );
+      if (isStillDefault) {
+        labelInput.value = REVISION_LABEL_DEFAULTS[schemeSelect.value] || '';
+      }
+    });
+  }
+})();
+
+(function () {
   // Filtra le opzioni di "Tipo documento" in base alla Categoria scelta (TASK-020).
   // Ogni <option> di document_type ha un attributo data-category (vedi
   // documents/forms.py:DocumentTypeSelect). Il form valida comunque lato
@@ -182,6 +409,41 @@
 
   categorySelect.addEventListener('change', refreshTypeOptions);
   refreshTypeOptions();
+})();
+
+(function () {
+  // Categoria "Altro": nasconde il select "Tipo documento" a vocabolario
+  // controllato e mostra i campi liberi (categoria/tipo specificati a mano)
+  // più il codice manuale — un documento fuori dalla procedura di codifica
+  // ufficiale non ha un tipo/codice generabile automaticamente.
+  var categorySelect = document.getElementById('id_category');
+  var typeSelectWrap = document.getElementById('id_document_type') ? document.getElementById('id_document_type').closest('.form-group') : null;
+  var categoryOtherWrap = document.getElementById('category-other-field-wrap');
+  var typeOtherWrap = document.getElementById('document-type-other-field-wrap');
+  var codeWrap = document.getElementById('code-field-wrap');
+  var sanatoriaCheckbox = document.getElementById('id_sanatoria');
+  if (!categorySelect || !codeWrap) return;
+
+  function isOther() {
+    return categorySelect.value === 'OTHER';
+  }
+
+  function refreshOtherFields() {
+    var other = isOther();
+    if (categoryOtherWrap) categoryOtherWrap.classList.toggle('hidden', !other);
+    if (typeOtherWrap) typeOtherWrap.classList.toggle('hidden', !other);
+    if (typeSelectWrap) typeSelectWrap.classList.toggle('hidden', other);
+    refreshCodeField();
+  }
+
+  function refreshCodeField() {
+    var sanatoria = sanatoriaCheckbox && sanatoriaCheckbox.checked;
+    codeWrap.classList.toggle('hidden', !sanatoria && !isOther());
+  }
+
+  categorySelect.addEventListener('change', refreshOtherFields);
+  if (sanatoriaCheckbox) sanatoriaCheckbox.addEventListener('change', refreshCodeField);
+  refreshOtherFields();
 })();
 </script>
 {% endblock %}

@@ -58,6 +58,38 @@ def get_folder_ancestors(folder):
     return ProjectFolder.objects.filter(pk__in=ancestor_pks).order_by(ordering)
 
 
+def get_project_for_folder(folder):
+    """
+    Risale da una cartella (o sottocartella, a qualunque profondità) al
+    Project a cui appartiene, se esiste.
+
+    Un progetto è identificato dalla propria root folder dedicata
+    (folder_kind=PROJECT, collegata 1-a-1 a Project.root_folder). Cerca
+    prima la cartella stessa, poi risale gli antenati via il path
+    materializzato. Restituisce None se la cartella (e nessun suo
+    antenato) appartiene a un progetto — es. cartelle di reparto/generiche
+    per documenti che non sono di progetto.
+    """
+    if folder is None:
+        return None
+
+    def _root_project_or_none(candidate):
+        # root_project è l'accessor inverso di una OneToOneField: solleva
+        # Project.DoesNotExist (non AttributeError) se la cartella PROJECT
+        # è orfana — stesso pattern già in uso in projects/views.py:folder_detail.
+        try:
+            return candidate.root_project
+        except Project.DoesNotExist:
+            return None
+
+    if folder.folder_kind == ProjectFolder.FolderKind.PROJECT:
+        return _root_project_or_none(folder)
+    for ancestor in reversed(list(get_folder_ancestors(folder))):
+        if ancestor.folder_kind == ProjectFolder.FolderKind.PROJECT:
+            return _root_project_or_none(ancestor)
+    return None
+
+
 def get_folder_descendants(folder):
     """
     Restituisce QuerySet di tutte le cartelle discendenti (esclusa la cartella stessa).
@@ -169,8 +201,6 @@ def update_project_metadata(
     name: str,
     description: str = '',
     manager=None,
-    version_scheme: str = None,
-    version: str = None,
     revision_scheme: str = None,
     revision: str = None,
     updated_by=None,
@@ -180,7 +210,7 @@ def update_project_metadata(
 
     Sincronizza anche il nome della root folder col nome del progetto.
     Codice progetto e root folder non vengono mai modificati.
-    version_scheme, version, revision_scheme, revision sono modificabili manualmente.
+    revision_scheme, revision sono modificabili manualmente.
     """
     from .models import Project, ProjectFolder
 
@@ -192,17 +222,6 @@ def update_project_metadata(
     project.name = name
     project.description = description
     project.manager = manager
-
-    if version_scheme is not None:
-        project.version_scheme = version_scheme
-        update_fields.append('version_scheme')
-
-    if version is not None:
-        version = version.strip()
-        if not version:
-            raise ValidationError("La versione non può essere vuota.")
-        project.version = version
-        update_fields.append('version')
 
     if revision_scheme is not None:
         project.revision_scheme = revision_scheme
@@ -227,10 +246,6 @@ def update_project_metadata(
             'project_code': project.code,
             'name': name,
         }
-        if version_scheme is not None:
-            changes['version_scheme'] = version_scheme
-        if version is not None:
-            changes['version'] = version
         if revision_scheme is not None:
             changes['revision_scheme'] = revision_scheme
         if revision is not None:
@@ -257,11 +272,10 @@ def create_project_with_root_folder(
     code: str,
     name: str,
     description: str = '',
+    commessa: str = '',
     project_type: str = 'other',
     manager=None,
     created_by=None,
-    version_scheme: str = 'numeric',
-    version: str = '00',
     revision_scheme: str = 'numeric',
     revision: str = '00',
 ) -> 'Project':
@@ -313,12 +327,11 @@ def create_project_with_root_folder(
         code=code,
         name=name,
         description=description,
+        commessa=commessa.strip() if commessa else '',
         project_type=project_type,
         manager=manager,
         created_by=created_by,
         root_folder=root_folder,
-        version_scheme=version_scheme or 'numeric',
-        version=version.strip() if version else '00',
         revision_scheme=revision_scheme or 'numeric',
         revision=revision.strip() if revision else '00',
     )
@@ -352,14 +365,12 @@ def create_project_revision(
     revision_number: int = None,
     title: str = '',
     description: str = '',
-    snapshot_type: str = 'revision',
     notes: str = '',
 ) -> ProjectRevision:
     """
-    Crea un nuovo snapshot (VERSION o REVISION) per il progetto.
+    Crea un nuovo snapshot di revisione per il progetto.
 
-    Se revision_label è omesso, viene derivato automaticamente da project.version
-    (snapshot_type='version') o project.revision (snapshot_type='revision').
+    Se revision_label è omesso, viene derivato automaticamente da project.revision.
     Se revision_number è omesso, viene calcolato tramite sequence_label_to_number.
     I metadati progetto vengono congelati automaticamente al momento della creazione.
     """
@@ -367,36 +378,28 @@ def create_project_revision(
 
     # Auto-derive label dal progetto se non fornita
     if revision_label is None:
-        if snapshot_type == ProjectRevision.SnapshotType.VERSION:
-            revision_label = project.version
-        else:
-            revision_label = project.revision
+        revision_label = project.revision
 
     # Auto-calcola revision_number se non fornito
     if revision_number is None:
-        if snapshot_type == ProjectRevision.SnapshotType.VERSION:
-            scheme = project.version_scheme
-        else:
-            scheme = project.revision_scheme
+        scheme = project.revision_scheme
         try:
             revision_number = sequence_label_to_number(revision_label, scheme)
         except Exception:
             revision_number = 0
 
     if ProjectRevision.objects.filter(
-        project=project, snapshot_type=snapshot_type, revision_label=revision_label
+        project=project, revision_label=revision_label
     ).exists():
-        type_label = 'versione' if snapshot_type == 'version' else 'revisione'
         raise ValidationError(
-            f'Esiste già uno snapshot {type_label} con etichetta "{revision_label}" '
+            f'Esiste già uno snapshot revisione con etichetta "{revision_label}" '
             f'per il progetto {project.code}.'
         )
     if ProjectRevision.objects.filter(
-        project=project, snapshot_type=snapshot_type, revision_number=revision_number
+        project=project, revision_number=revision_number
     ).exists():
-        type_label = 'versione' if snapshot_type == 'version' else 'revisione'
         raise ValidationError(
-            f'Esiste già uno snapshot {type_label} con numero ordinamento {revision_number} '
+            f'Esiste già uno snapshot revisione con numero ordinamento {revision_number} '
             f'per il progetto {project.code}.'
         )
 
@@ -408,7 +411,6 @@ def create_project_revision(
 
     revision = ProjectRevision.objects.create(
         project=project,
-        snapshot_type=snapshot_type,
         revision_label=revision_label,
         revision_number=revision_number,
         title=title or f'Snapshot {revision_label}',
@@ -421,8 +423,6 @@ def create_project_revision(
         snapshot_project_description=project.description,
         snapshot_project_type=project.project_type,
         snapshot_project_manager_display=manager_display,
-        snapshot_project_version=project.version,
-        snapshot_project_version_scheme=project.version_scheme,
         snapshot_project_revision=project.revision,
         snapshot_project_revision_scheme=project.revision_scheme,
     )
@@ -488,10 +488,9 @@ def populate_project_revision_from_current_documents(project_revision: ProjectRe
 def issue_project_revision(project_revision: ProjectRevision, issued_by: User) -> ProjectRevision:
     assert_snapshot_mutable(project_revision)
 
-    # Marca come superato il precedente snapshot corrente dello stesso tipo
+    # Marca come superato il precedente snapshot corrente
     ProjectRevision.objects.filter(
         project=project_revision.project,
-        snapshot_type=project_revision.snapshot_type,
         is_current=True,
     ).update(status=ProjectRevision.Status.SUPERSEDED, is_current=False)
 
@@ -510,7 +509,7 @@ def issue_project_revision(project_revision: ProjectRevision, issued_by: User) -
     return project_revision
 
 
-def build_project_baseline_comparison(project, snapshot_type='revision'):
+def build_project_baseline_comparison(project):
     """
     Confronta i documenti approvati correnti del progetto con lo snapshot corrente.
 
@@ -523,12 +522,12 @@ def build_project_baseline_comparison(project, snapshot_type='revision'):
         'status_label':    str,
       }
 
-    Se non esiste uno snapshot corrente del tipo richiesto restituisce (None, []).
+    Se non esiste uno snapshot corrente restituisce (None, []).
     """
     from documents.models import Document
 
     current_baseline = project.revisions.filter(
-        is_current=True, snapshot_type=snapshot_type,
+        is_current=True,
     ).first()
     if current_baseline is None:
         return None, []

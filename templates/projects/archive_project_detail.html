@@ -20,55 +20,16 @@
     <h1 class="text-xl font-semibold text-gray-800">{{ project.name }}</h1>
     <div class="flex items-center gap-4 mt-2 text-sm text-gray-500 flex-wrap">
       {% if project.manager %}<span>👤 {{ project.manager.get_full_name|default:project.manager.username }}</span>{% endif %}
-      <span class="meta">Ver. {{ project.version }} ({{ project.get_version_scheme_display }}) · Rev. {{ project.revision }} ({{ project.get_revision_scheme_display }})</span>
+      <span class="meta">Rev. {{ project.revision }} ({{ project.get_revision_scheme_display }})</span>
     </div>
   </div>
   <div class="flex items-center gap-2 flex-wrap flex-shrink-0">
     <a href="{% url 'project_detail' project.pk %}" class="btn-secondary btn-sm">Vista semplificata</a>
     {% if can_manage %}
-    <a href="{{ save_version_url }}" class="btn-primary btn-sm">Salva versione</a>
-    <a href="{{ save_revision_url }}" class="btn-secondary btn-sm">Salva revisione</a>
+    <a href="{{ save_revision_url }}" class="btn-primary btn-sm">Salva revisione</a>
     {% endif %}
   </div>
 </div>
-
-<!-- Versioni salvate -->
-<h2 class="section-title mt-4">Versioni salvate</h2>
-{% if version_snapshots %}
-<div class="table-container mb-6">
-  <table class="data-table">
-    <thead><tr>
-      <th>Versione</th>
-      <th>Titolo</th>
-      <th>Stato</th>
-      <th>Corrente</th>
-      <th>Emessa il</th>
-      <th class="w-20"></th>
-    </tr></thead>
-    <tbody>
-      {% for snap in version_snapshots %}
-      <tr>
-        <td class="font-mono font-semibold">{{ snap.revision_label }}</td>
-        <td>{{ snap.title }}</td>
-        <td>
-          {% if snap.status == 'draft' %}<span class="badge-status-draft">Bozza</span>
-          {% elif snap.status == 'issued' %}<span class="badge-status-approved">Emessa</span>
-          {% elif snap.status == 'superseded' %}<span class="badge-status-superseded">Superata</span>
-          {% elif snap.status == 'archived' %}<span class="badge-status-archived">Archiviata</span>
-          {% else %}<span>{{ snap.status }}</span>
-          {% endif %}
-        </td>
-        <td>{% if snap.is_current %}<span class="text-green-600 font-semibold">✔</span>{% endif %}</td>
-        <td class="meta whitespace-nowrap">{{ snap.issued_at|date:"d/m/Y"|default:"—" }}</td>
-        <td><a href="{% url 'project_revision_detail' snap.pk %}" class="btn-secondary btn-sm">Apri</a></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% else %}
-<p class="meta mb-6">Nessuna versione salvata.</p>
-{% endif %}
 
 <!-- Revisioni salvate -->
 <h2 class="section-title">Revisioni salvate</h2>

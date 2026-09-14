@@ -21,6 +21,7 @@ from documents.models import Document, DocumentVersion
 from documents.services import (
     create_document_file,
     create_new_revision,
+    generate_document_code,
     reopen_rejected_version_as_draft,
     submit_version_for_approval,
     update_draft_version,
@@ -279,9 +280,11 @@ class AuthorWorkflowViewTests(TestCase):
         from django.contrib.auth.models import Group
         from projects.models import ProjectFolder, ProjectFolderMembership
         mail.outbox = []
+        from accounts.models import OperatorCode
         self.author = User.objects.create_user('author', email='a@t.com', password='pw')
         self.approver = User.objects.create_user('approver', email='ap@t.com', password='pw')
         Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        OperatorCode.objects.create(user=self.author, code='01')
         self.folder = ProjectFolder.objects.create(
             code='AW-FOLD', name='Author Workflow Folder',
             folder_kind=ProjectFolder.FolderKind.GENERIC,
@@ -302,14 +305,15 @@ class AuthorWorkflowViewTests(TestCase):
                 'code': 'UI-001',
                 'title': 'Documento test UI',
                 'category': 'QUALITY',
+                'document_type': 'SYSP',
                 'project_folder': self.folder.pk,
                 'revision_scheme': 'numeric',
                 'revision_label': '00',
                 'revision_number': '0',
             })
         self.assertRedirects(response, reverse('my_drafts'))
-        self.assertTrue(Document.objects.filter(code='UI-001').exists())
-        version = DocumentVersion.objects.get(document__code='UI-001')
+        self.assertTrue(Document.objects.filter(title='Documento test UI').exists())
+        version = DocumentVersion.objects.get(document__title='Documento test UI')
         self.assertEqual(version.status, DocumentVersion.Status.DRAFT)
         self.assertFalse(version.is_current)
 
@@ -322,13 +326,14 @@ class AuthorWorkflowViewTests(TestCase):
                 'code': 'UI-002',
                 'title': 'Documento con file',
                 'category': 'QUALITY',
+                'document_type': 'SYSP',
                 'project_folder': self.folder.pk,
                 'revision_scheme': 'numeric',
                 'revision_label': '00',
                 'revision_number': '0',
                 'file': uploaded,
             })
-        version = DocumentVersion.objects.get(document__code='UI-002')
+        version = DocumentVersion.objects.get(document__title='Documento con file')
         self.assertIsNotNone(version.file)
         self.assertEqual(version.file.original_filename, 'procedura.pdf')
         self.assertEqual(version.file.extension, 'pdf')
@@ -342,12 +347,13 @@ class AuthorWorkflowViewTests(TestCase):
                 'code': 'UI-003',
                 'title': 'Documento revisioni',
                 'category': 'QUALITY',
+                'document_type': 'SYSP',
                 'project_folder': self.folder.pk,
                 'revision_scheme': 'numeric',
                 'revision_label': '00',
                 'revision_number': '0',
             })
-            doc = Document.objects.get(code='UI-003')
+            doc = Document.objects.get(title='Documento revisioni')
             # Crea nuova revisione
             response = self.client.post(
                 reverse('document_new_revision', args=[doc.pk]),
@@ -362,18 +368,101 @@ class AuthorWorkflowViewTests(TestCase):
         v01 = doc.versions.get(revision_label='01')
         self.assertEqual(v01.status, DocumentVersion.Status.DRAFT)
 
+    def test_create_document_with_other_category_uses_manual_code_and_type(self):
+        """
+        Categoria "Altro": codice e tipo documento sono inseriti a mano (il
+        documento è fuori dalla procedura di codifica ufficiale, quindi non
+        esiste un tipo/codice generabile automaticamente).
+        """
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.post(reverse('document_new'), {
+                'code': 'CONTR-2026-001',
+                'title': 'Contratto fornitore XYZ',
+                'category': 'OTHER',
+                'category_other': 'Contratto',
+                'document_type_other': 'Contratto di fornitura',
+                'project_folder': self.folder.pk,
+                'revision_scheme': 'numeric',
+                'revision_label': '00',
+            })
+        self.assertRedirects(response, reverse('my_drafts'))
+        doc = Document.objects.get(code='CONTR-2026-001')
+        self.assertEqual(doc.category, 'Contratto')
+        self.assertEqual(doc.document_type, 'Contratto di fornitura')
+
+    def test_create_document_other_category_requires_manual_code(self):
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            response = self.client.post(reverse('document_new'), {
+                'title': 'Documento senza codice',
+                'category': 'OTHER',
+                'category_other': 'Contratto',
+                'document_type_other': 'Tipo libero',
+                'project_folder': self.folder.pk,
+                'revision_scheme': 'numeric',
+                'revision_label': '00',
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Document.objects.filter(title='Documento senza codice').exists())
+
+    def test_new_revision_form_has_no_visible_revision_number_field(self):
+        """
+        'Numero revisione' è un contatore ordinale interno (ordinamento/
+        unicità), non un secondo schema di revisione: non deve mai essere
+        mostrato come campo modificabile, per non confondere l'operatore
+        con lo schema numerico/alfabetico scelto per il documento
+        (segnalato dall'operatore dopo verifica manuale).
+        """
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            self.client.post(reverse('document_new'), {
+                'code': 'UI-003C', 'title': 'Documento revisioni C',
+                'category': 'QUALITY', 'document_type': 'SYSP',
+                'project_folder': self.folder.pk,
+                'revision_scheme': 'numeric', 'revision_label': '00',
+            })
+        doc = Document.objects.get(title='Documento revisioni C')
+        r = self.client.get(reverse('document_new_revision', args=[doc.pk]))
+        self.assertNotIn('revision_number', r.context['form'].fields)
+        self.assertNotContains(r, 'Numero revisione')
+
+    def test_new_revision_ignores_submitted_revision_number(self):
+        """
+        Il numero ordinale è calcolato sempre dal server, non fidandosi del
+        valore inviato dal client: un valore alterato/sbagliato nel POST
+        non deve mai poter rompere l'ordinamento o l'unicità delle revisioni.
+        """
+        with self.settings(MEDIA_ROOT=self.temp_media):
+            self.client.post(reverse('document_new'), {
+                'code': 'UI-003B', 'title': 'Documento revisioni B',
+                'category': 'QUALITY', 'document_type': 'SYSP',
+                'project_folder': self.folder.pk,
+                'revision_scheme': 'numeric', 'revision_label': '00',
+            })
+            doc = Document.objects.get(title='Documento revisioni B')
+            response = self.client.post(
+                reverse('document_new_revision', args=[doc.pk]),
+                {
+                    'revision_label': '01',
+                    'revision_number': '999',
+                    'change_summary': 'Numero manomesso nel POST',
+                },
+            )
+        self.assertRedirects(response, reverse('my_drafts'))
+        v01 = doc.versions.get(revision_label='01')
+        self.assertEqual(v01.revision_number, 1)
+
     def test_submit_for_approval_from_ui(self):
         with self.settings(MEDIA_ROOT=self.temp_media):
             self.client.post(reverse('document_new'), {
                 'code': 'UI-004',
                 'title': 'Documento submit',
                 'category': 'QUALITY',
+                'document_type': 'SYSP',
                 'project_folder': self.folder.pk,
                 'revision_scheme': 'numeric',
                 'revision_label': '00',
                 'revision_number': '0',
             })
-        doc = Document.objects.get(code='UI-004')
+        doc = Document.objects.get(title='Documento submit')
         version = doc.versions.first()
 
         response = self.client.post(
@@ -392,8 +481,18 @@ class AuthorWorkflowViewTests(TestCase):
         self.assertEqual(version.status, DocumentVersion.Status.IN_APPROVAL)
 
     def test_duplicate_code_shows_form_error(self):
-        with self.settings(MEDIA_ROOT=self.temp_media):
-            self.client.post(reverse('document_new'), {
+        # Fuori sanatoria il codice non è più compilato dall'utente (generato
+        # automaticamente): la verifica di duplicato ha senso solo sul codice
+        # storico inserito in modalità sanatoria (vecchio schema eliminato,
+        # vedi chiarimento sul codice documento).
+        with self.settings(
+            MEDIA_ROOT=self.temp_media,
+            DOCUMENTALE_DEMO_MODE=True,
+            DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='sup_dup',
+        ):
+            supervisor = User.objects.create_user('sup_dup', password='pw', is_superuser=True)
+            self.client.login(username='sup_dup', password='pw')
+            payload = {
                 'code': 'UI-DUP',
                 'title': 'Primo',
                 'category': 'QUALITY',
@@ -401,16 +500,14 @@ class AuthorWorkflowViewTests(TestCase):
                 'revision_scheme': 'numeric',
                 'revision_label': '00',
                 'revision_number': '0',
-            })
-            response = self.client.post(reverse('document_new'), {
-                'code': 'UI-DUP',
-                'title': 'Secondo con stesso codice',
-                'category': 'QUALITY',
-                'project_folder': self.folder.pk,
-                'revision_scheme': 'numeric',
-                'revision_label': '00',
-                'revision_number': '0',
-            })
+                'sanatoria': 'on',
+                'historical_actor_name': 'Mario Storico',
+                'historical_date': '2020-01-01',
+                'date_precision': 'exact_date',
+            }
+            self.client.post(reverse('document_new'), payload)
+            payload2 = dict(payload, title='Secondo con stesso codice')
+            response = self.client.post(reverse('document_new'), payload2)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'esiste già')
 
@@ -533,8 +630,10 @@ class PermissionGroupTests(TestCase):
         g_readers = Group.objects.get_or_create(name='Document Readers')[0]
         g_auditors = Group.objects.get_or_create(name='Document Auditors')[0]
 
+        from accounts.models import OperatorCode
         self.author = User.objects.create_user('pg_author', email='pga@t.com', password='pw')
         self.author.groups.add(g_authors)
+        OperatorCode.objects.create(user=self.author, code='02')
 
         self.approver = User.objects.create_user('pg_approver', email='pgap@t.com', password='pw')
         self.approver.groups.add(g_approvers)
@@ -579,13 +678,14 @@ class PermissionGroupTests(TestCase):
             'code': 'PG-AUTH',
             'title': 'Documento autore',
             'category': 'QUALITY',
+            'document_type': 'SYSP',
             'project_folder': folder.pk,
             'revision_scheme': 'numeric',
             'revision_label': '00',
             'revision_number': '0',
         })
         self.assertRedirects(response, reverse('my_drafts'))
-        self.assertTrue(Document.objects.filter(code='PG-AUTH').exists())
+        self.assertTrue(Document.objects.filter(title='Documento autore').exists())
 
     def test_document_reader_sees_only_approved_in_list(self):
         from approvals.services import approve_version
@@ -725,6 +825,22 @@ class EditVersionTests(TestCase):
         self.client.login(username='ev_other', password='pw')
         response = self.client.get(reverse('version_edit', args=[self.draft.pk]))
         self.assertEqual(response.status_code, 403)
+
+    def test_edit_form_has_no_visible_revision_number_field(self):
+        self.client.login(username='ev_author', password='pw')
+        response = self.client.get(reverse('version_edit', args=[self.draft.pk]))
+        self.assertNotIn('revision_number', response.context['form'].fields)
+        self.assertNotContains(response, 'Numero revisione')
+
+    def test_edit_ignores_submitted_revision_number(self):
+        self.client.login(username='ev_author', password='pw')
+        self.client.post(reverse('version_edit', args=[self.draft.pk]), {
+            'revision_label': '00',
+            'revision_number': '999',
+            'change_summary': 'Numero manomesso nel POST',
+        })
+        self.draft.refresh_from_db()
+        self.assertEqual(self.draft.revision_number, 0)
 
     def test_author_can_update_change_summary(self):
         self.client.login(username='ev_author', password='pw')
@@ -1036,9 +1152,13 @@ class NewDocumentFolderRequiredTests(TestCase):
         from django.contrib.auth.models import Group
         from projects.models import ProjectFolder, ProjectFolderMembership
 
+        from accounts.models import OperatorCode
+
         self.manager = User.objects.create_user('ndfr_mgr', password='pw', is_staff=True)
         self.author = User.objects.create_user('ndfr_author', password='pw')
         self.global_author = User.objects.create_user('ndfr_global_author', password='pw')
+        OperatorCode.objects.create(user=self.manager, code='03')
+        OperatorCode.objects.create(user=self.author, code='04')
 
         g_authors = Group.objects.get_or_create(name='Document Authors')[0]
         # MB1: is_staff da solo non concede creazione documenti
@@ -1062,7 +1182,7 @@ class NewDocumentFolderRequiredTests(TestCase):
             'code': 'NDFR-DOC-001',
             'title': 'Test',
             'category': 'QUALITY',
-            'document_type': '',
+            'document_type': 'SYSP',
             'description': '',
             'revision_scheme': 'numeric',
             'revision_label': '00',
@@ -1084,14 +1204,14 @@ class NewDocumentFolderRequiredTests(TestCase):
     # 2. POST con cartella valida crea il documento
     def test_post_with_folder_creates_document(self):
         response = self._post_new_document('ndfr_mgr', {'project_folder': self.folder.pk})
-        self.assertTrue(Document.objects.filter(code='NDFR-DOC-001').exists())
-        doc = Document.objects.get(code='NDFR-DOC-001')
+        self.assertTrue(Document.objects.filter(title='Test').exists())
+        doc = Document.objects.get(title='Test')
         self.assertEqual(doc.project_folder, self.folder)
 
     # 3. Author con membership crea documento nella sua cartella
     def test_author_with_membership_can_create_with_folder(self):
         response = self._post_new_document('ndfr_author', {'project_folder': self.folder.pk})
-        self.assertTrue(Document.objects.filter(code='NDFR-DOC-001').exists())
+        self.assertTrue(Document.objects.filter(title='Test').exists())
 
     # 4. Author con membership: il campo cartella ha nel queryset solo la sua cartella
     def test_author_folder_queryset_limited_to_writable(self):
@@ -1137,7 +1257,7 @@ class NewDocumentFolderRequiredTests(TestCase):
             'code': 'NDFR-PRJ-DOC-001',
             'title': 'Doc da progetto',
             'category': 'QUALITY',
-            'document_type': '',
+            'document_type': 'SYSP',
             'description': '',
             'project_folder': self.folder.pk,
             'revision_scheme': 'numeric',
@@ -1145,10 +1265,73 @@ class NewDocumentFolderRequiredTests(TestCase):
             'revision_number': 0,
             'change_summary': '',
         })
-        self.assertTrue(Document.objects.filter(code='NDFR-PRJ-DOC-001').exists())
-        doc = Document.objects.get(code='NDFR-PRJ-DOC-001')
+        self.assertTrue(Document.objects.filter(title='Doc da progetto').exists())
+        doc = Document.objects.get(title='Doc da progetto')
         self.assertEqual(doc.project_folder, self.folder)
         self.assertRedirects(response, reverse('document_detail', args=[doc.pk]))
+
+    # 8. Il contesto progetto/cartella è solo una preselezione: NON limita
+    # più il queryset (prima lo bloccava su un'unica opzione, senza
+    # possibilità di scegliere altro — cambiato su richiesta esplicita).
+    def test_project_context_preselects_without_restricting_choices(self):
+        from projects.models import Project, ProjectFolder
+        other_folder = ProjectFolder.objects.create(
+            code='NDFR-FOLD-2', name='Altra cartella',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=self.manager,
+        )
+        project = Project.objects.create(
+            code='NDFR-PRJ-002', name='Progetto test 2',
+            project_type=Project.ProjectType.INTERNAL,
+            root_folder=self.folder, manager=self.manager, created_by=self.manager,
+        )
+        self.client.login(username='ndfr_mgr', password='pw')
+        response = self.client.get(reverse('document_new') + f'?project={project.pk}')
+        self.assertEqual(response.status_code, 200)
+        qs = list(response.context['form'].fields['project_folder'].queryset)
+        self.assertIn(other_folder, qs)  # non limitato alla sola root_folder
+        self.assertEqual(response.context['form'].fields['project_folder'].initial, self.folder)
+
+    def test_folder_context_preselects_without_restricting_choices(self):
+        from projects.models import ProjectFolder
+        other_folder = ProjectFolder.objects.create(
+            code='NDFR-FOLD-3', name='Altra cartella 2',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=self.manager,
+        )
+        self.client.login(username='ndfr_mgr', password='pw')
+        response = self.client.get(reverse('document_new') + f'?folder={self.folder.pk}')
+        self.assertEqual(response.status_code, 200)
+        qs = list(response.context['form'].fields['project_folder'].queryset)
+        self.assertIn(other_folder, qs)
+        self.assertEqual(response.context['form'].fields['project_folder'].initial, self.folder)
+
+    # 9. Si può salvare in una cartella diversa da quella preselezionata dal contesto.
+    def test_can_save_in_different_folder_than_preselected(self):
+        from projects.models import ProjectFolder
+        other_folder = ProjectFolder.objects.create(
+            code='NDFR-FOLD-4', name='Altra cartella 3',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=self.manager,
+        )
+        self.client.login(username='ndfr_mgr', password='pw')
+        response = self.client.post(reverse('document_new') + f'?folder={self.folder.pk}', {
+            'code': 'NDFR-DOC-DIFF', 'title': 'Doc cartella diversa',
+            'category': 'QUALITY', 'document_type': 'SYSP', 'description': '',
+            'project_folder': other_folder.pk,
+            'revision_scheme': 'numeric', 'revision_label': '00',
+            'change_summary': '',
+        })
+        doc = Document.objects.get(title='Doc cartella diversa')
+        self.assertEqual(doc.project_folder, other_folder)
+
+    # 10. Un parametro folder/project non valido o senza permesso viene
+    # ignorato silenziosamente, non blocca l'accesso alla pagina.
+    def test_invalid_folder_param_is_ignored(self):
+        self.client.login(username='ndfr_mgr', password='pw')
+        response = self.client.get(reverse('document_new') + '?folder=999999')
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['form'].fields['project_folder'].initial)
 
 
 # ---------------------------------------------------------------------------
@@ -1508,6 +1691,18 @@ class WorkspaceMyWorkTests(TestCase):
         r = self.client.get(reverse('workspace_my_work'))
         self.assertEqual(r.status_code, 200)
 
+    def test_shows_create_document_link_in_drafts_section(self):
+        """
+        La sezione "Mie bozze" (fusa in Il mio lavoro) deve offrire un modo
+        per creare un nuovo documento, sia con bozze esistenti sia a vuoto
+        (segnalato dall'operatore: mancava dopo l'accorpamento di "Le mie
+        bozze" in questa pagina).
+        """
+        self.client.force_login(self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        self.assertContains(r, reverse('document_new'))
+        self.assertContains(r, '+ Nuovo documento')
+
     def test_shows_my_drafts(self):
         doc = Document.objects.create(
             code='WS-001', title='WS doc', category=Document.Category.QUALITY,
@@ -1527,6 +1722,82 @@ class WorkspaceMyWorkTests(TestCase):
         self.client.force_login(self.user)
         r = self.client.get(reverse('workspace_my_work'))
         self.assertNotContains(r, 'WS-002')
+
+    def test_sequential_ccb_hides_pending_decision_for_user_not_yet_turn(self):
+        """
+        Con policy SEQUENTIAL, solo il primo approvatore in coda deve
+        vedere la pratica come "da decidere ora" — mostrarla anche al
+        secondo (che can_review_ecn blocca comunque) è un'informazione
+        fuorviante, corretta durante il controllo di coerenza interfaccia
+        seguito alla rimozione del versionamento progetti.
+        """
+        from approvals.services import approve_version
+        from ecn.services import (
+            configure_ccb, create_change_notice, submit_change_notice, update_ccb_dossier,
+        )
+        proposer = User.objects.create_user('ws_seq_proposer', password='pw', is_superuser=True)
+        approver1 = User.objects.create_user('ws_seq_approver1', password='pw')
+        approver2 = User.objects.create_user('ws_seq_approver2', password='pw')
+
+        doc = Document.objects.create(
+            code='WS-SEQ-001', title='WS seq doc', category=Document.Category.QUALITY,
+            owner=proposer, created_by=proposer,
+        )
+        v = create_new_revision(doc, proposer, '00', 0)
+        req = submit_version_for_approval(v, proposer, [proposer])
+        approve_version(req, proposer, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=proposer,
+            title='ECN sequenziale', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        configure_ccb(ecn, actor=proposer, users=[approver1, approver2],
+                      policy='sequential', coordinator=proposer)
+        update_ccb_dossier(
+            ecn, actor=proposer,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(ecn, proposer)
+
+        self.client.force_login(approver2)
+        r = self.client.get(reverse('workspace_my_work'))
+        self.assertNotContains(r, ecn.code)
+
+        self.client.force_login(approver1)
+        r = self.client.get(reverse('workspace_my_work'))
+        self.assertContains(r, ecn.code)
+
+    def test_my_work_shows_dossier_assigned_to_me_as_coordinator(self):
+        """
+        Prima mancava: il dossier CCB assegnato a me come responsabile
+        istruttoria non compariva in nessuna lista personale, solo nella
+        vista collettiva Workspace Qualità (gap trovato nel controllo di
+        coerenza interfaccia).
+        """
+        from ecn.services import configure_ccb, create_change_notice
+
+        doc = make_document(code='MYWORK-DOSSIER-001', owner=self.user)
+        v = create_new_revision(doc, self.user, '00', 0)
+        req = submit_version_for_approval(v, self.user, [self.user])
+        from approvals.services import approve_version
+        approve_version(req, self.user, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.user,
+            title='ECN mio dossier', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        self.client.force_login(self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        # L'ECN compare comunque tra "Le mie ECN aperte" (è sua, in bozza),
+        # ma senza CCB configurata non c'è ancora nessun dossier da compilare.
+        self.assertNotContains(r, 'Compila dossier')
+
+        configure_ccb(ecn, actor=self.user, users=[self.user], policy='any', coordinator=self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        self.assertContains(r, 'Compila dossier')
 
 
 class WorkspaceQualityTests(TestCase):
@@ -1575,6 +1846,48 @@ class WorkspaceQualityTests(TestCase):
         r = self.client.get(reverse('workspace_quality'))
         self.assertContains(r, 'Da valutare da Qualità')
 
+    def test_dossier_to_compile_is_distinct_from_ecn_to_review(self):
+        """
+        Le KPI "ECN da valutare" e "Dossier da compilare" erano legate alla
+        stessa query (bug di copia-incolla, trovato nel controllo di
+        coerenza interfaccia): un'ECN con CCB già configurata (quindi non
+        più "da valutare") ma dossier non compilato deve comparire SOLO
+        nella sezione dossier, non in entrambe o in nessuna.
+        """
+        from ecn.services import configure_ccb, create_change_notice
+        doc = make_document(code='WS-DOSSIER-001', owner=self.quality_manager)
+        v = create_new_revision(doc, self.quality_manager, '00', 0)
+        req = submit_version_for_approval(v, self.quality_manager, [self.quality_manager])
+        from approvals.services import approve_version
+        approve_version(req, self.quality_manager, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.quality_manager,
+            title='ECN dossier test', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        configure_ccb(ecn, actor=self.quality_manager, users=[self.quality_manager],
+                      policy='any', coordinator=self.quality_manager)
+
+        self.client.force_login(self.quality_manager)
+        r = self.client.get(reverse('workspace_quality'))
+        self.assertNotIn(ecn, list(r.context['ecn_to_review']))
+        self.assertIn(ecn, list(r.context['dossier_to_compile']))
+
+    def test_shows_general_status_summary_with_history(self):
+        """
+        Workspace Qualità deve mostrare anche lo stato generale (con
+        cronologia: approvate/chiuse/rifiutate), non solo le code pendenti
+        — altrimenti non è un vero cruscotto di stato per l'azienda.
+        """
+        self.client.force_login(self.quality_manager)
+        r = self.client.get(reverse('workspace_quality'))
+        self.assertContains(r, 'Stato generale ECN')
+        self.assertContains(r, 'Stato generale Approvazioni')
+        self.assertIn('closed', r.context['ecn_status_counts'])
+        self.assertIn('rejected', r.context['ecn_status_counts'])
+        self.assertIn('REJECTED', r.context['approval_status_counts'])
+
 
 class NavTagsTests(TestCase):
     """Test per i templatetag in nav_tags.py"""
@@ -1616,6 +1929,71 @@ class NavTagsTests(TestCase):
     def test_user_can_quality_workspace_auditor(self):
         from documents.templatetags.nav_tags import user_can_quality_workspace
         self.assertTrue(user_can_quality_workspace(self.auditor))
+
+    def test_nav_pending_ccb_excludes_sequential_not_yet_turn(self):
+        """
+        Il contatore badge della sidebar non deve annunciare un'azione CCB
+        non ancora disponibile per l'utente (stessa regola applicata alle
+        pagine Il mio lavoro / Workspace Qualità).
+        """
+        from documents.templatetags.nav_tags import nav_pending_ccb
+        from approvals.services import approve_version
+        from ecn.services import (
+            configure_ccb, create_change_notice, submit_change_notice, update_ccb_dossier,
+        )
+        proposer = User.objects.create_user('nav_seq_proposer', password='pw', is_superuser=True)
+        approver1 = User.objects.create_user('nav_seq_approver1', password='pw')
+        approver2 = User.objects.create_user('nav_seq_approver2', password='pw')
+
+        doc = Document.objects.create(
+            code='NAV-SEQ-001', title='Nav seq doc', category=Document.Category.QUALITY,
+            owner=proposer, created_by=proposer,
+        )
+        v = create_new_revision(doc, proposer, '00', 0)
+        req = submit_version_for_approval(v, proposer, [proposer])
+        approve_version(req, proposer, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=proposer,
+            title='ECN nav sequenziale', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        configure_ccb(ecn, actor=proposer, users=[approver1, approver2],
+                      policy='sequential', coordinator=proposer)
+        update_ccb_dossier(
+            ecn, actor=proposer,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(ecn, proposer)
+
+        self.assertEqual(nav_pending_ccb(approver2), 0)
+        self.assertEqual(nav_pending_ccb(approver1), 1)
+
+    def test_nav_dossier_to_compile_counts_ccb_preparation_without_dossier(self):
+        from django.contrib.auth.models import Group
+        from documents.templatetags.nav_tags import nav_dossier_to_compile
+        from ecn.services import configure_ccb, create_change_notice
+
+        qm = User.objects.create_user('nav_dossier_qm', password='pw')
+        Group.objects.get_or_create(name='Quality Manager')[0].user_set.add(qm)
+
+        doc = make_document(code='NAV-DOSSIER-001', owner=qm)
+        v = create_new_revision(doc, qm, '00', 0)
+        req = submit_version_for_approval(v, qm, [qm])
+        from approvals.services import approve_version
+        approve_version(req, qm, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=qm,
+            title='ECN nav dossier', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        self.assertEqual(nav_dossier_to_compile(qm), 0)
+        configure_ccb(ecn, actor=qm, users=[qm], policy='any', coordinator=qm)
+        self.assertEqual(nav_dossier_to_compile(qm), 1)
+        # Un utente qualunque, senza ruolo qualità, non vede il conteggio globale.
+        self.assertEqual(nav_dossier_to_compile(self.author), 0)
 
     def test_user_can_quality_workspace_false_for_plain(self):
         from documents.templatetags.nav_tags import user_can_quality_workspace
@@ -2475,11 +2853,13 @@ class StepGPerformanceTests(TestCase):
         self.assertGreaterEqual(docs_shown, 5)
 
         # Numero di query fisso indipendentemente dal numero di cartelle.
-        # La soglia è generosa (≤40) per includere session, autenticazione,
-        # template e template tags. L'importante è che NON cresca con N cartelle
-        # (assenza N+1: la bulk API carica tutti i grant in 1 query).
+        # La soglia è generosa (≤45) per includere session, autenticazione,
+        # template e template tags (incluso nav_dossier_to_compile, aggiunto
+        # per il badge "Dossier da compilare" di Workspace Qualità). L'importante
+        # è che NON cresca con N cartelle (assenza N+1: la bulk API carica
+        # tutti i grant in 1 query).
         self.assertLessEqual(
-            len(ctx), 40,
+            len(ctx), 45,
             f"document_list ha eseguito {len(ctx)} query per {len(folders)} cartelle"
         )
 
@@ -2663,9 +3043,11 @@ class DemoSupervisorTests(TestCase):
         # Configura CCB con solo sé stesso
         set_change_notice_approvers(ecn, [self.supervisor], policy='any', actor=self.supervisor)
         submit_change_notice(ecn, self.supervisor)
+        # ccb_class va sul dossier (update_ccb_dossier), non più passato al voto.
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS2
+        ecn.save(update_fields=['ccb_class'])
         approve_change_notice(
             ecn, self.supervisor,
-            ccb_class=ChangeNotice.CCBClass.CLASS2,
             comment='Approvazione demo',
         )
         ecn.refresh_from_db()
@@ -2705,9 +3087,11 @@ class DemoSupervisorTests(TestCase):
         )
         set_change_notice_approvers(ecn, [self.supervisor], policy='any', actor=self.supervisor)
         submit_change_notice(ecn, self.supervisor)
+        # ccb_class va sul dossier (update_ccb_dossier), non più passato al voto.
+        ecn.ccb_class = ChangeNotice.CCBClass.CLASS2
+        ecn.save(update_fields=['ccb_class'])
         approve_change_notice(
             ecn, self.supervisor,
-            ccb_class=ChangeNotice.CCBClass.CLASS2,
         )
         # Crea nuova revisione autorizzata dall'ECN
         ver01 = create_new_revision(
@@ -4016,11 +4400,14 @@ class ECNPolicyViewTests(TestCase):
         from approvals.services import approve_version
         mail.outbox = []
 
+        from accounts.models import OperatorCode
+
         self.author   = User.objects.create_user('pv_author', email='pv_a@t.com', password='pw')
         self.approver = User.objects.create_user('pv_approver', email='pv_ap@t.com', password='pw')
 
         Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
         Group.objects.get_or_create(name='Document Managers')[0].user_set.add(self.approver)
+        OperatorCode.objects.create(user=self.author, code='05')
 
         self.folder = ProjectFolder.objects.create(
             code='PV-FOLD', name='Policy View Folder',
@@ -4128,13 +4515,14 @@ class ECNPolicyViewTests(TestCase):
             'code': 'PV-AUDIT',
             'title': 'Doc audit policy',
             'category': 'QUALITY',
+            'document_type': 'SYSP',
             'project_folder': self.folder.pk,
             'revision_scheme': 'numeric',
             'revision_label': '00',
             'revision_number': '0',
             'ecn_exemption': 'on',   # spuntato → requires_ecn_for_revision=False
         })
-        doc = Document.objects.filter(code='PV-AUDIT').first()
+        doc = Document.objects.filter(title='Doc audit policy').first()
         self.assertIsNotNone(doc)
         self.assertFalse(doc.requires_ecn_for_revision)
         log = AuditLog.objects.filter(
@@ -4352,6 +4740,41 @@ class ArchiveDocumentDetailTests(TestCase):
         self.assertContains(r, 'Applicabilità')
         self.assertContains(r, 'badge-applicability-limited')
 
+    def test_revisions_table_shows_variant_title_not_document_title(self):
+        """
+        Il titolo del documento non viene mai sovrascritto dal titolo
+        dell'ECN: la tabella storica deve mostrare il titolo della
+        variante che ha originato ciascuna revisione, per correlarla
+        senza dover incrociare la tabella separata delle ECN collegate
+        (segnalato dall'operatore: rischio di confondere i due titoli).
+        """
+        new_version = create_new_revision(
+            self.doc, self.manager, '01', 1, _bypass_ecn_check=True,
+        )
+        ecn = ChangeNotice.objects.create(
+            code='ARCD-ECN-VARTITLE',
+            title='Titolo della variante, non del documento',
+            description='Descrizione',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            document=self.doc,
+            document_version=self.ver,
+            executed_version=new_version,
+            proposed_by=self.manager,
+            created_by=self.manager,
+        )
+        original_doc_title = self.doc.title
+        self.client.force_login(self.manager)
+        r = self.client.get(reverse('archive_document_detail', args=[self.doc.pk]))
+        self.assertContains(r, 'Titolo della variante, non del documento')
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.title, original_doc_title)
+
+    def test_revisions_table_shows_dash_for_revision_without_ecn(self):
+        create_new_revision(self.doc, self.manager, '01', 1, _bypass_ecn_check=True)
+        self.client.force_login(self.manager)
+        r = self.client.get(reverse('archive_document_detail', args=[self.doc.pk]))
+        self.assertContains(r, '<span class="meta">—</span>')
+
 
 class DocumentDetailCompactHistoryTests(TestCase):
     """document_detail fuori da Archivio non mostra più lo storico completo (TASK-021)."""
@@ -4440,9 +4863,28 @@ class DocumentTypeFormValidationTests(TestCase):
         data.update(overrides)
         return data
 
-    def test_empty_document_type_is_valid(self):
+    def test_empty_document_type_invalid_without_sanatoria(self):
+        """
+        Da quando il codice documento è generato automaticamente (post-suffisso
+        = tipo documento), il tipo è obbligatorio fuori sanatoria — a differenza
+        del comportamento originale di TASK-020 (sempre opzionale).
+        """
         from documents.forms import DocumentCreateForm
         form = DocumentCreateForm(data=self._form_data(), user=self.manager)
+        self.assertIn('document_type', form.errors)
+
+    @override_settings(DOCUMENTALE_DEMO_MODE=True, DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='doctype_sup')
+    def test_empty_document_type_valid_with_sanatoria(self):
+        """In sanatoria il codice è storico: il tipo documento resta opzionale."""
+        from documents.forms import DocumentCreateForm
+        supervisor = User.objects.create_user('doctype_sup', password='pw', is_superuser=True)
+        data = self._form_data(
+            sanatoria='on',
+            historical_actor_name='Mario Storico',
+            historical_date='2020-01-01',
+            date_precision='exact_date',
+        )
+        form = DocumentCreateForm(data=data, user=self.manager, current_user=supervisor)
         self.assertNotIn('document_type', form.errors)
 
     def test_quality_type_valid_for_quality_category(self):
@@ -5478,8 +5920,10 @@ class DocumentPDFPolicyCreationTests(TestCase):
 
     def setUp(self):
         from django.contrib.auth.models import Group
+        from accounts.models import OperatorCode
         self.author = User.objects.create_user('pdfpolicy-author', password='pw')
         Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        OperatorCode.objects.create(user=self.author, code='06')
         from projects.models import ProjectFolder, ProjectFolderMembership
         self.folder = ProjectFolder.objects.create(
             code='PDFPOL-FOLD', name='Cartella policy PDF',
@@ -5491,7 +5935,8 @@ class DocumentPDFPolicyCreationTests(TestCase):
 
     def _post_new_document(self, code, extra=None):
         data = {
-            'code': code, 'title': 'Documento test policy PDF', 'category': 'QUALITY',
+            'code': code, 'title': f'Documento test policy PDF {code}', 'category': 'QUALITY',
+            'document_type': 'SYSP',
             'project_folder': self.folder.pk, 'revision_scheme': 'numeric',
             'revision_label': '00', 'revision_number': 0,
         }
@@ -5501,31 +5946,31 @@ class DocumentPDFPolicyCreationTests(TestCase):
 
     def test_document_created_with_pdf_flow_disabled_by_default(self):
         self._post_new_document('PDFPOL-001')
-        doc = Document.objects.get(code='PDFPOL-001')
+        doc = Document.objects.get(title='Documento test policy PDF PDFPOL-001')
         self.assertFalse(doc.requires_approved_pdf)
 
     def test_document_created_with_pdf_flow_enabled(self):
         self._post_new_document('PDFPOL-002', {'requires_approved_pdf': 'on'})
-        doc = Document.objects.get(code='PDFPOL-002')
+        doc = Document.objects.get(title='Documento test policy PDF PDFPOL-002')
         self.assertTrue(doc.requires_approved_pdf)
 
     def test_creation_audit_log_records_choice(self):
         from auditlog.models import AuditLog
         self._post_new_document('PDFPOL-003', {'requires_approved_pdf': 'on'})
-        doc = Document.objects.get(code='PDFPOL-003')
+        doc = Document.objects.get(title='Documento test policy PDF PDFPOL-003')
         log = AuditLog.objects.filter(action='DOCUMENT_CREATED', object_id=str(doc.pk)).first()
         self.assertIsNotNone(log)
         self.assertTrue(log.changes['new_values']['requires_approved_pdf'])
 
     def test_badge_shown_on_document_detail_when_enabled(self):
         self._post_new_document('PDFPOL-004', {'requires_approved_pdf': 'on'})
-        doc = Document.objects.get(code='PDFPOL-004')
+        doc = Document.objects.get(title='Documento test policy PDF PDFPOL-004')
         response = self.client.get(reverse('document_detail', args=[doc.pk]))
         self.assertContains(response, 'Richiede copia PDF approvata')
 
     def test_badge_absent_on_document_detail_when_disabled(self):
         self._post_new_document('PDFPOL-005')
-        doc = Document.objects.get(code='PDFPOL-005')
+        doc = Document.objects.get(title='Documento test policy PDF PDFPOL-005')
         response = self.client.get(reverse('document_detail', args=[doc.pk]))
         self.assertNotContains(response, 'Richiede copia PDF approvata')
 
@@ -5864,8 +6309,10 @@ class AllowSimpleEcnCreationTests(TestCase):
 
     def setUp(self):
         from django.contrib.auth.models import Group
+        from accounts.models import OperatorCode
         self.author = User.objects.create_user('simplepol-author', password='pw')
         Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        OperatorCode.objects.create(user=self.author, code='08')
         self.folder = _make_folder(code='SIMPLEPOL-FOLD', owner=self.author)
         from projects.models import ProjectFolderMembership
         ProjectFolderMembership.objects.create(
@@ -5875,8 +6322,8 @@ class AllowSimpleEcnCreationTests(TestCase):
 
     def _post_new_document(self, code, allow_simple_ecn_checked):
         data = {
-            'code': code, 'title': 'Doc test', 'description': '',
-            'category': Document.Category.QUALITY, 'document_type': '',
+            'code': code, 'title': f'Doc test {code}', 'description': '',
+            'category': Document.Category.QUALITY, 'document_type': 'SYSP',
             'project_folder': self.folder.pk,
             'revision_scheme': 'numeric', 'revision_label': '00', 'revision_number': '0',
             'change_summary': '',
@@ -5892,12 +6339,12 @@ class AllowSimpleEcnCreationTests(TestCase):
 
     def test_document_created_with_flag_true_when_checked(self):
         self._post_new_document('SIMPLEPOL-001', allow_simple_ecn_checked=True)
-        doc = Document.objects.get(code='SIMPLEPOL-001')
+        doc = Document.objects.get(title='Doc test SIMPLEPOL-001')
         self.assertTrue(doc.allow_simple_ecn)
 
     def test_document_created_with_flag_false_when_unchecked(self):
         self._post_new_document('SIMPLEPOL-002', allow_simple_ecn_checked=False)
-        doc = Document.objects.get(code='SIMPLEPOL-002')
+        doc = Document.objects.get(title='Doc test SIMPLEPOL-002')
         self.assertFalse(doc.allow_simple_ecn)
 
     def test_default_value_is_true_at_model_level(self):
@@ -5918,8 +6365,10 @@ class AllowSimpleEcnMetadataEditTests(TestCase):
 
     def setUp(self):
         from django.contrib.auth.models import Group
+        from accounts.models import OperatorCode
         self.author = User.objects.create_user('simplemeta-author', password='pw')
         self.manager = User.objects.create_user('simplemeta-manager', password='pw')
+        OperatorCode.objects.create(user=self.author, code='09')
         self.superuser = User.objects.create_superuser('simplemeta-super', 'x@example.com', 'pw')
         self.stranger = User.objects.create_user('simplemeta-stranger', password='pw')
         Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
@@ -6053,14 +6502,14 @@ class AllowSimpleEcnMetadataEditTests(TestCase):
         )
         self.client.login(username='simplemeta-author', password='pw')
         response = self.client.post(reverse('document_new'), {
-            'code': 'SIMPLEMETA-CREATE-001', 'title': 'Doc test', 'description': '',
-            'category': Document.Category.QUALITY, 'document_type': '',
+            'code': 'SIMPLEMETA-CREATE-001', 'title': 'Doc test creazione flag', 'description': '',
+            'category': Document.Category.QUALITY, 'document_type': 'SYSP',
             'project_folder': folder.pk,
             'revision_scheme': 'numeric', 'revision_label': '00', 'revision_number': '0',
             'change_summary': '',
             # allow_simple_ecn assente → checkbox non spuntata
         })
-        doc = Document.objects.get(code='SIMPLEMETA-CREATE-001')
+        doc = Document.objects.get(title='Doc test creazione flag')
         self.assertFalse(doc.allow_simple_ecn)
 
 
@@ -6536,3 +6985,157 @@ class CheckboxCheckedStyleRegressionTests(SimpleTestCase):
             "@tailwindcss/forms (stessa specificità, ordine successivo) "
             "e la spunta selezionata torna invisibile (bianco su bianco).",
         )
+
+
+# ---------------------------------------------------------------------------
+# Generazione automatica del codice documento
+#
+# Procedura aziendale ELTHUB "Gestione delle Informazioni Documentate"
+# (230201161SYSP Rev. C, paragrafo 2.1.1): Codice Documento = yymmdd + r + tu + tipo.
+# r = progressivo giornaliero (1 cifra, 1-9), riparte da 1 per ogni tipo
+# documento separatamente. tu = codice operatore (2 cifre) dell'utente che
+# crea il documento. Mai usato in modalita' sanatoria (codice storico manuale).
+# ---------------------------------------------------------------------------
+
+class GenerateDocumentCodeTests(TestCase):
+    """Test diretti di documents.services.generate_document_code."""
+
+    def setUp(self):
+        import datetime
+        from accounts.models import OperatorCode
+
+        self.user = User.objects.create_user('gdc-user', password='pw')
+        OperatorCode.objects.create(user=self.user, code='07')
+        self.today = datetime.date(2026, 9, 11)
+
+    def test_generates_expected_format(self):
+        code = generate_document_code('SYSP', self.user, today=self.today)
+        expected = self.today.strftime('%y%m%d') + '1' + '07' + 'SYSP'
+        self.assertEqual(code, expected)
+
+    def test_progressive_increments_on_repeated_calls_same_type(self):
+        first = generate_document_code('SYSP', self.user, today=self.today)
+        second = generate_document_code('SYSP', self.user, today=self.today)
+        self.assertTrue(first.endswith('107SYSP'))
+        self.assertTrue(second.endswith('207SYSP'))
+
+    def test_progressive_independent_per_document_type(self):
+        sysp_code = generate_document_code('SYSP', self.user, today=self.today)
+        mchd_code = generate_document_code('MCHD', self.user, today=self.today)
+        self.assertTrue(sysp_code.endswith('107SYSP'))
+        self.assertTrue(mchd_code.endswith('107MCHD'))
+
+    def test_progressive_resets_on_a_new_day(self):
+        import datetime
+
+        generate_document_code('SYSP', self.user, today=self.today)
+        tomorrow = self.today + datetime.timedelta(days=1)
+        code = generate_document_code('SYSP', self.user, today=tomorrow)
+        self.assertTrue(code.endswith('107SYSP'))
+        self.assertTrue(code.startswith(tomorrow.strftime('%y%m%d')))
+
+    def test_blocks_the_tenth_document_of_the_same_type_and_day(self):
+        for _ in range(9):
+            generate_document_code('SYSP', self.user, today=self.today)
+        with self.assertRaises(ValidationError) as cm:
+            generate_document_code('SYSP', self.user, today=self.today)
+        self.assertIn('terminati', str(cm.exception))
+        other_type_code = generate_document_code('MCHD', self.user, today=self.today)
+        self.assertTrue(other_type_code.endswith('107MCHD'))
+
+    def test_raises_when_user_has_no_operator_code(self):
+        bare_user = User.objects.create_user('gdc-no-op', password='pw')
+        with self.assertRaises(ValidationError) as cm:
+            generate_document_code('SYSP', bare_user, today=self.today)
+        self.assertIn('codice operatore', str(cm.exception))
+
+    def test_raises_on_collision_with_existing_code(self):
+        """Rete di sicurezza difensiva (caso limite, non il percorso normale)."""
+        clashing_code = self.today.strftime('%y%m%d') + '1' + '07' + 'SYSP'
+        Document.objects.create(
+            code=clashing_code, title='Storico', category=Document.Category.QUALITY,
+            owner=self.user, created_by=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            generate_document_code('SYSP', self.user, today=self.today)
+
+
+@override_settings(EMAIL_BACKEND=LOCMEM)
+class DocumentAutoCodeCreationViewTests(TestCase):
+    """Integrazione con la view new_document: codice automatico salvo sanatoria."""
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        from accounts.models import OperatorCode
+        from projects.models import ProjectFolder, ProjectFolderMembership
+
+        self.author = User.objects.create_user('autocode-author', password='pw')
+        Group.objects.get_or_create(name='Document Authors')[0].user_set.add(self.author)
+        OperatorCode.objects.create(user=self.author, code='09')
+        self.folder = ProjectFolder.objects.create(
+            code='AUTOCODE-FOLD', name='Cartella codice automatico',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=self.author,
+        )
+        ProjectFolderMembership.objects.create(folder=self.folder, user=self.author, role='author')
+        self.client.login(username='autocode-author', password='pw')
+
+    def _payload(self, **overrides):
+        data = {
+            'code': 'IGNORATO',
+            'title': 'Documento codice automatico',
+            'category': 'QUALITY',
+            'document_type': 'SYSP',
+            'project_folder': self.folder.pk,
+            'revision_scheme': 'numeric',
+            'revision_label': '00',
+            'revision_number': '0',
+        }
+        data.update(overrides)
+        return data
+
+    def test_created_document_gets_auto_generated_code_not_the_posted_one(self):
+        response = self.client.post(reverse('document_new'), self._payload())
+        doc = Document.objects.get(title='Documento codice automatico')
+        self.assertNotEqual(doc.code, 'IGNORATO')
+        self.assertRegex(doc.code, r'^\d{7}09SYSP$')
+        self.assertRedirects(response, reverse('my_drafts'))
+
+    def test_missing_document_type_blocks_creation_outside_sanatoria(self):
+        response = self.client.post(reverse('document_new'), self._payload(document_type=''))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Document.objects.filter(title='Documento codice automatico').exists())
+        self.assertContains(response, 'obbligatorio per generare automaticamente il codice')
+
+    def test_user_without_operator_code_is_blocked_with_clear_message(self):
+        from django.contrib.auth.models import Group
+        from projects.models import ProjectFolderMembership
+
+        bare_author = User.objects.create_user('autocode-bare', password='pw')
+        Group.objects.get_or_create(name='Document Authors')[0].user_set.add(bare_author)
+        ProjectFolderMembership.objects.create(folder=self.folder, user=bare_author, role='author')
+        self.client.login(username='autocode-bare', password='pw')
+
+        self.client.post(reverse('document_new'), self._payload())
+        self.assertFalse(Document.objects.filter(title='Documento codice automatico').exists())
+
+    @override_settings(DOCUMENTALE_DEMO_MODE=True, DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='autocode-sup')
+    def test_sanatoria_uses_manual_historical_code_untouched(self):
+        from projects.models import ProjectFolderMembership
+
+        supervisor = User.objects.create_user('autocode-sup', password='pw', is_superuser=True)
+        ProjectFolderMembership.objects.create(folder=self.folder, user=supervisor, role='manager')
+        self.client.login(username='autocode-sup', password='pw')
+
+        response = self.client.post(reverse('document_new'), self._payload(
+            code='260706104MCHD-STORICO',
+            document_type='',
+            sanatoria='on',
+            historical_actor_name='Mario Storico',
+            historical_date='2020-01-01',
+            date_precision='exact_date',
+        ))
+        doc = Document.objects.get(title='Documento codice automatico')
+        self.assertEqual(doc.code, '260706104MCHD-STORICO')
+        # Nessun contesto ?project=<id> in questo test: redirect standard a my_drafts.
+        self.assertRedirects(response, reverse('my_drafts'))

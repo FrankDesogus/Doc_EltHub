@@ -12,6 +12,31 @@ from django import template
 register = template.Library()
 
 
+@register.simple_tag
+def static_versioned(path):
+    """
+    Come {% static %}, ma con `?v=<mtime del file>` in coda.
+
+    Senza questo, il browser può servire dalla cache una versione vecchia
+    di static/css/tailwind.css dopo una modifica (rebuild via `npx
+    tailwindcss ...`), mostrando uno stile non aggiornato finché l'utente
+    non fa un refresh forzato — fonte di confusione ricorrente durante
+    questa sessione di lavoro sull'interfaccia. L'mtime cambia automaticamente
+    a ogni rebuild, quindi l'URL cambia e il browser è costretto a
+    riscaricare il file, senza bisogno di intervento manuale.
+    """
+    from django.conf import settings
+    from django.templatetags.static import static as static_url
+
+    url = static_url(path)
+    try:
+        full_path = settings.BASE_DIR / 'static' / path
+        mtime = int(full_path.stat().st_mtime)
+        return f"{url}?v={mtime}"
+    except OSError:
+        return url
+
+
 # ---------------------------------------------------------------------------
 # Filtri label e badge Tailwind — usati nei template per stati documento/ECN
 # ---------------------------------------------------------------------------
@@ -164,21 +189,28 @@ def nav_pending_approvals(user):
 
 @register.simple_tag
 def nav_pending_ccb(user):
-    """Numero di decisioni CCB assegnate e non ancora espresse."""
+    """
+    Numero di decisioni CCB assegnate e non ancora espresse, su cui l'utente
+    può votare ORA — con policy SEQUENTIAL esclude chi è assegnato ma non è
+    ancora il turno (coerente con workspace_my_work/workspace_quality:
+    il badge non deve annunciare un'azione che poi non è disponibile).
+    """
     if not user or not user.is_authenticated:
         return 0
     try:
         from ecn.models import ChangeNotice, ChangeNoticeApprover, ChangeNoticeDecision
+        from ecn.permissions import can_review_ecn
         decided_ids = set(
             ChangeNoticeDecision.objects.filter(user=user)
             .values_list('approver_id', flat=True)
         )
-        return (
+        candidates = (
             ChangeNoticeApprover.objects
             .filter(user=user, change_notice__status=ChangeNotice.Status.UNDER_REVIEW)
             .exclude(pk__in=decided_ids)
-            .count()
+            .select_related('change_notice')
         )
+        return sum(1 for ca in candidates if can_review_ecn(user, ca.change_notice))
     except Exception:
         return 0
 
@@ -239,6 +271,25 @@ def nav_ecn_to_review(user):
         return ChangeNotice.objects.filter(
             status=ChangeNotice.Status.DRAFT
         ).exclude(pk__in=configured_ids).count()
+    except Exception:
+        return 0
+
+
+@register.simple_tag
+def nav_dossier_to_compile(user):
+    """ECN con CCB configurata ma dossier non ancora compilato (solo per Quality Manager/Operator)."""
+    if not user or not user.is_authenticated:
+        return 0
+    try:
+        if not user.is_superuser:
+            from documents.permissions import is_quality_manager, is_quality_operator
+            if not (is_quality_manager(user) or is_quality_operator(user)):
+                return 0
+        from ecn.models import ChangeNotice
+        return ChangeNotice.objects.filter(
+            status=ChangeNotice.Status.CCB_PREPARATION,
+            ccb_class__isnull=True,
+        ).count()
     except Exception:
         return 0
 
