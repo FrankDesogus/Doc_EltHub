@@ -203,9 +203,9 @@ class Command(BaseCommand):
                         send_notifications=False)
         doc.refresh_from_db()
 
-        def _make_ecn(code, title):
+        def _make_ecn(code, title, on_document=None):
             return create_change_notice(
-                document=doc,
+                document=on_document or doc,
                 proposed_by=supervisor,
                 title=title,
                 motivation=ChangeNotice.Motivation.IMPROVEMENT,
@@ -213,6 +213,34 @@ class Command(BaseCommand):
                 motivation_detail='Adeguamento tecnico demo.',
                 code=code,
             )
+
+        def _make_companion_document(suffix, title_suffix):
+            # Un ECN "aperto" (non rifiutato/chiuso) blocca la creazione di
+            # nuovi ECN sullo stesso documento (vincolo single-open-per-doc,
+            # TASK ECN single-open). Per mostrare più stati "aperti"
+            # contemporaneamente nella demo servono documenti distinti.
+            companion = Document.objects.create(
+                code=f'{BASE_CODE}-{suffix}',
+                title=f'Specifica tecnica componenti elettronici — {title_suffix}',
+                category=Document.Category.QUALITY,
+                document_type='SYSD',
+                project_folder=folder,
+                owner=supervisor,
+                created_by=supervisor,
+            )
+            companion_ver00 = create_new_revision(
+                companion, supervisor, '00', 0,
+                change_summary='Prima emissione.',
+                _bypass_ecn_check=True,
+            )
+            companion_req = submit_version_for_approval(
+                companion_ver00, supervisor, [supervisor], send_notifications=False,
+            )
+            approve_version(companion_req, supervisor,
+                            comment='Prima emissione approvata.',
+                            send_notifications=False)
+            companion.refresh_from_db()
+            return companion
 
         def _setup_ccb(ecn, applicability_category=ChangeNotice.Applicability.GENERAL,
                        applicability_detail=''):
@@ -236,22 +264,28 @@ class Command(BaseCommand):
             )
 
         # ECN-S-01: DRAFT (non ancora in istruttoria: applicabilità non ancora decisa)
-        _make_ecn('ECN-S-01', 'Aggiornamento tolleranze sezione 2 (DRAFT)')
+        # Ogni stato "aperto" resta tale per la demo: serve un documento
+        # dedicato per ciascuno (vincolo single-open-ecn-per-documento).
+        doc_draft = _make_companion_document('DRAFT', 'Demo ECN DRAFT')
+        _make_ecn('ECN-S-01', 'Aggiornamento tolleranze sezione 2 (DRAFT)', on_document=doc_draft)
         self._step('ECN-S-01: stato DRAFT.')
 
         # ECN-S-02: CCB_PREPARATION
-        ecn_ccb = _make_ecn('ECN-S-02', 'Revisione criteri accettazione (CCB_PREPARATION)')
+        doc_ccb = _make_companion_document('CCB', 'Demo ECN CCB_PREPARATION')
+        ecn_ccb = _make_ecn('ECN-S-02', 'Revisione criteri accettazione (CCB_PREPARATION)', on_document=doc_ccb)
         _setup_ccb(ecn_ccb, applicability_category=ChangeNotice.Applicability.FUTURE)
         self._step('ECN-S-02: stato CCB_PREPARATION (dossier compilato).')
 
         # ECN-S-03: UNDER_REVIEW
-        ecn_review = _make_ecn('ECN-S-03', 'Aggiornamento lista materiali approvati (UNDER_REVIEW)')
+        doc_review = _make_companion_document('REVIEW', 'Demo ECN UNDER_REVIEW')
+        ecn_review = _make_ecn('ECN-S-03', 'Aggiornamento lista materiali approvati (UNDER_REVIEW)', on_document=doc_review)
         _setup_ccb(ecn_review)
         submit_change_notice(ecn_review, supervisor, send_notifications=False)
         self._step('ECN-S-03: stato UNDER_REVIEW.')
 
         # ECN-S-04: APPROVED (policy='any' → basta un voto)
-        ecn_approved = _make_ecn('ECN-S-04', 'Nuova procedura testing (APPROVED)')
+        doc_approved = _make_companion_document('APPROVED', 'Demo ECN APPROVED')
+        ecn_approved = _make_ecn('ECN-S-04', 'Nuova procedura testing (APPROVED)', on_document=doc_approved)
         _setup_ccb(
             ecn_approved,
             applicability_category=ChangeNotice.Applicability.LIMITED,
