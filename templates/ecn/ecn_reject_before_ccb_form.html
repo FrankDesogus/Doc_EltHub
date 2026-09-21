@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Rifiuta prima della CCB — {{ ecn.code }} — Documentale{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<nav class="breadcrumb">
+  <a href="{% url 'ecn:ecn_list' %}">ECN / Varianti</a>
+  <span class="breadcrumb-sep">›</span>
+  <a href="{% url 'ecn:ecn_detail' ecn.pk %}">{{ ecn.code }}</a>
+  <span class="breadcrumb-sep">›</span>
+  <span>Rifiuta prima della CCB</span>
+</nav>
+
+<div class="page-header">
+  <h1>Rifiuta prima della CCB — {{ ecn.code }}</h1>
+  <p class="page-header-sub">{{ ecn.title }}</p>
+</div>
+
+<div class="next-action-box mb-4 border-red-200">
+  <div class="next-action-box-title">Rifiuto come Responsabile ECN</div>
+  <p class="next-action-box-text">
+    Stai rifiutando questa richiesta prima ancora di convocare la CCB: nessuna
+    votazione avviene, nessun membro CCB viene coinvolto. Il documento torna
+    libero per una nuova richiesta ECN.
+  </p>
+</div>
+
+<div class="card mb-4">
+  <div class="detail-grid">
+    <div class="detail-item">
+      <span class="detail-label">Documento</span>
+      <span class="detail-value">{{ ecn.document.code }} — {{ ecn.document.title }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Proponente</span>
+      <span class="detail-value">{{ ecn.proposed_by.get_full_name|default:ecn.proposed_by.username }}</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-label">Categoria motivazione</span>
+      <span class="detail-value">{{ ecn.get_motivation_display }}</span>
+    </div>
+    {% if ecn.motivation_detail %}
+    <div class="detail-item md:col-span-2">
+      <span class="detail-label">Motivazione</span>
+      <span class="detail-value whitespace-pre-wrap">{{ ecn.motivation_detail }}</span>
+    </div>
+    {% endif %}
+    {% if ecn.description %}
+    <div class="detail-item md:col-span-2">
+      <span class="detail-label">Descrizione modifica</span>
+      <span class="detail-value whitespace-pre-wrap">{{ ecn.description }}</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<form method="post">
+  {% csrf_token %}
+
+  <div class="form-section">
+    <div class="form-section-title">Motivo del rifiuto</div>
+
+    <div class="form-group">
+      <label class="form-label" for="{{ form.reason.id_for_label }}">
+        {{ form.reason.label }} <span class="text-red-500">*</span>
+      </label>
+      {{ form.reason }}
+      {% if form.reason.help_text %}<p class="form-help">{{ form.reason.help_text }}</p>{% endif %}
+      {% if form.reason.errors %}<p class="form-error">{{ form.reason.errors.as_text }}</p>{% endif %}
+    </div>
+
+    <div class="form-group mb-0">
+      <label class="form-label" for="{{ form.comment.id_for_label }}">{{ form.comment.label }}</label>
+      {{ form.comment }}
+      {% if form.comment.errors %}<p class="form-error">{{ form.comment.errors.as_text }}</p>{% endif %}
+    </div>
+  </div>
+
+  {% include "auditlog/sanatoria_fields.html" %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn-danger">Conferma rifiuto</button>
+    <a href="{% url 'ecn:ecn_detail' ecn.pk %}" class="btn-secondary">Annulla</a>
+  </div>
+</form>
+{% endblock %}

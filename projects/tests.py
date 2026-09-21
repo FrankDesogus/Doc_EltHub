@@ -557,9 +557,38 @@ class ProjectDetailViewTests(TestCase):
         self.assertContains(response, 'Progetto Dettaglio')
 
     def test_project_detail_shows_documents_in_folder(self):
+        """
+        Solo i documenti con versione corrente approvata compaiono qui —
+        stessa regola di document_list/folder_detail (allineata durante il
+        controllo di coerenza cartelle/documenti): una bozza senza versione
+        approvata non deve comparire, nemmeno al responsabile del progetto.
+        """
+        from documents.models import Document, DocumentVersion
+        doc = Document.objects.create(
+            code='PD-DOC-001', title='Doc nel progetto',
+            category=Document.Category.QUALITY,
+            project_folder=self.folder,
+            owner=self.owner, created_by=self.owner,
+        )
+        version = DocumentVersion.objects.create(
+            document=doc, revision_label='00', revision_number=0,
+            status=DocumentVersion.Status.APPROVED, is_current=True,
+            created_by=self.owner,
+        )
+        doc.current_version = version
+        doc.save(update_fields=['current_version'])
+
+        self.client.login(username='pd_owner', password='pw')
+        response = self.client.get(reverse('project_detail', args=[self.project.pk]))
+        self.assertEqual(response.status_code, 200)
+        doc_codes = [d.code for d in response.context['documents']]
+        self.assertIn('PD-DOC-001', doc_codes)
+
+    def test_project_detail_hides_document_without_approved_version(self):
+        """Controparte: un documento senza versione approvata non compare, nemmeno per il responsabile."""
         from documents.models import Document
         Document.objects.create(
-            code='PD-DOC-001', title='Doc nel progetto',
+            code='PD-DOC-DRAFT-001', title='Doc bozza nel progetto',
             category=Document.Category.QUALITY,
             project_folder=self.folder,
             owner=self.owner, created_by=self.owner,
@@ -568,7 +597,7 @@ class ProjectDetailViewTests(TestCase):
         response = self.client.get(reverse('project_detail', args=[self.project.pk]))
         self.assertEqual(response.status_code, 200)
         doc_codes = [d.code for d in response.context['documents']]
-        self.assertIn('PD-DOC-001', doc_codes)
+        self.assertNotIn('PD-DOC-DRAFT-001', doc_codes)
 
     def test_user_without_folder_access_gets_403(self):
         self.client.login(username='pd_outsider', password='pw')

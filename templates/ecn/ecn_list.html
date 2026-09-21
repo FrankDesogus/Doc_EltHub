@@ -81,11 +81,15 @@
           {% elif ecn.status == 'under_review' %}
           <span class="badge-ecn-under_review">In Valutazione CCB</span>
           {% elif ecn.status == 'approved' %}
-          <span class="badge-ecn-approved">Approvata</span>
+          <span class="badge-ecn-approved">Approvato</span>
           {% elif ecn.status == 'rejected' %}
-          <span class="badge-ecn-rejected">Rifiutata</span>
+          {% if ecn.rejection_stage == 'pre_ccb' %}
+          <span class="badge-ecn-rejected">Rifiutato (pre-CCB)</span>
+          {% else %}
+          <span class="badge-ecn-rejected">Rifiutato</span>
+          {% endif %}
           {% elif ecn.status == 'closed' %}
-          <span class="badge-ecn-closed">Chiusa</span>
+          <span class="badge-ecn-closed">Chiuso</span>
           {% else %}
           <span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
           {% endif %}

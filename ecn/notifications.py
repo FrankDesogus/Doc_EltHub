@@ -252,6 +252,32 @@ def notify_ecn_rejected(change_notice):
         _send_and_log(recipient, subject, body)
 
 
+def notify_ecn_rejected_before_ccb(change_notice):
+    """
+    Invia email quando il responsabile ECN rifiuta la richiesta prima di
+    convocare la CCB (nessuna votazione avvenuta). Stessi destinatari di
+    notify_ecn_rejected, testo diverso: non si parla mai di "CCB" perché la
+    CCB in questo caso non è mai stata coinvolta.
+    """
+    from notifications.services import _send_and_log
+
+    subject = f"[ECN] Rifiutato: {change_notice.code}"
+    recipients = _collect_ecn_outcome_recipients(change_notice)
+
+    for recipient in recipients:
+        body = (
+            f"Gentile {recipient.get_full_name() or recipient.username},\n\n"
+            f"l'ECN {change_notice.code} «{change_notice.title}» è stato rifiutato dal "
+            f"responsabile ECN prima della convocazione della CCB.\n\n"
+            f"Documento  : {change_notice.document.code} — {change_notice.document.title}\n"
+            f"Proponente : {change_notice.proposed_by.get_full_name() or change_notice.proposed_by.username}\n"
+            f"Motivo     : {change_notice.ccb_notes or '—'}\n\n"
+            f"Accedi al sistema per i dettagli.\n\n"
+            f"Questo messaggio è generato automaticamente, non rispondere a questa email."
+        )
+        _send_and_log(recipient, subject, body)
+
+
 def notify_ecn_next_approver(change_notice, next_approver_user):
     """Notifica il prossimo membro CCB in una catena SEQUENTIAL."""
     _notify_ccb_member(change_notice, next_approver_user, is_first=False)

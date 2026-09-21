@@ -153,23 +153,17 @@ def folder_detail(request, folder_id):
         else:
             explorer_items.append(('folder', sub))
 
-    # Documenti visibili nella cartella (usati in modalità explorer e come base per ricerca)
-    from django.db.models import Exists, OuterRef
+    # Documenti visibili nella cartella (usati in modalità explorer e come base
+    # per ricerca): stessa regola della scheda Documenti (document_list) —
+    # solo l'ultima versione corrente approvata, per chiunque, superuser
+    # incluso. Le bozze/versioni in approvazione/rifiutate (proprie o
+    # altrui) non si vedono qui: l'autore le gestisce da "Il mio lavoro".
     from documents.models import DocumentVersion as _DocVer, Document as _Doc
     base_docs = folder.documents.select_related('current_version', 'owner').order_by('code')
-    if user.is_superuser:
-        visible_docs_qs = base_docs
-    else:
-        own_draft_qs = _DocVer.objects.filter(
-            document=OuterRef('pk'),
-            created_by=user,
-            status__in=[_DocVer.Status.DRAFT, _DocVer.Status.REJECTED, _DocVer.Status.IN_APPROVAL],
-        )
-        visible_docs_qs = base_docs.filter(
-            Q(current_version__isnull=False,
-              current_version__status=_DocVer.Status.APPROVED)
-            | Q(Exists(own_draft_qs))
-        )
+    visible_docs_qs = base_docs.filter(
+        current_version__isnull=False,
+        current_version__status=_DocVer.Status.APPROVED,
+    )
 
     # ── Ricerca contestuale ──────────────────────────────────────────────────
     from django.core.paginator import Paginator as _Paginator
@@ -204,24 +198,13 @@ def folder_detail(request, folder_id):
             if accessible_folder_ids is not None:
                 all_scope_ids = [pk for pk in all_scope_ids if pk in accessible_folder_ids or pk == folder.pk]
 
-            # Documenti nelle sottocartelle discendenti (esclusa la root che ha già visible_docs_qs)
-            if user.is_superuser:
-                own_draft_sub = None
-                docs_qs = _Doc.objects.filter(
-                    project_folder_id__in=all_scope_ids
-                ).select_related('current_version', 'owner', 'project_folder').order_by('code')
-            else:
-                from django.db.models import Exists as _Exists, OuterRef as _OR
-                own_draft_sub = _DocVer.objects.filter(
-                    document=_OR('pk'), created_by=user,
-                    status__in=[_DocVer.Status.DRAFT, _DocVer.Status.REJECTED, _DocVer.Status.IN_APPROVAL],
-                )
-                docs_qs = _Doc.objects.filter(
-                    project_folder_id__in=all_scope_ids
-                ).filter(
-                    Q(current_version__isnull=False, current_version__status=_DocVer.Status.APPROVED)
-                    | Q(_Exists(own_draft_sub))
-                ).select_related('current_version', 'owner', 'project_folder').order_by('code')
+            # Documenti nelle sottocartelle discendenti (esclusa la root che ha
+            # già visible_docs_qs): stessa regola, solo approvati per chiunque.
+            docs_qs = _Doc.objects.filter(
+                project_folder_id__in=all_scope_ids,
+                current_version__isnull=False,
+                current_version__status=_DocVer.Status.APPROVED,
+            ).select_related('current_version', 'owner', 'project_folder').order_by('code')
 
             # Applica filtro testuale ai documenti
             docs_qs = docs_qs.filter(
@@ -460,23 +443,16 @@ def project_detail(request, project_id):
         ) | get_folder_descendants(project.root_folder)
         project_folder_ids = list(project_folders_qs.values_list('pk', flat=True))
 
-        # Documenti autorizzati nelle cartelle del progetto
+        # Documenti autorizzati nelle cartelle del progetto: stessa regola di
+        # document_list/folder_detail — solo l'ultima versione corrente
+        # approvata, per chiunque (poter gestire il progetto non equivale a
+        # poter vedere le bozze altrui: quelle si gestiscono da "Il mio
+        # lavoro").
         base_docs = _Doc.objects.filter(
-            project_folder_id__in=project_folder_ids
+            project_folder_id__in=project_folder_ids,
+            current_version__isnull=False,
+            current_version__status=_DocVer.Status.APPROVED,
         ).select_related('current_version', 'owner', 'project_folder').order_by('code')
-
-        if not _can_manage_project(request.user):
-            from django.db.models import Exists, OuterRef
-            own_draft_qs = _DocVer.objects.filter(
-                document=OuterRef('pk'),
-                created_by=request.user,
-                status__in=[_DocVer.Status.DRAFT, _DocVer.Status.REJECTED, _DocVer.Status.IN_APPROVAL],
-            )
-            base_docs = base_docs.filter(
-                Q(current_version__isnull=False,
-                  current_version__status=_DocVer.Status.APPROVED)
-                | Q(Exists(own_draft_qs))
-            )
 
         # Filtri ricerca
         if doc_q:

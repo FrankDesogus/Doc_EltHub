@@ -1995,6 +1995,7 @@ class ECNViewTests(TestCase):
         r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
             'document': self.document.pk,
             'title': 'Variante UI test',
+            'ccb_coordinator': self.manager.pk,
             'motivation': ChangeNotice.Motivation.CUSTOMER,
             'motivation_detail': '',
             'description': '',
@@ -2007,6 +2008,71 @@ class ECNViewTests(TestCase):
         self.assertIn(f'/ecn/{new_ecn.pk}/', r['Location'])
         # Nessun approvatore assegnato alla creazione
         self.assertEqual(new_ecn.approvers.count(), 0)
+
+    def test_ecn_create_inherits_commessa_from_project(self):
+        """
+        La commessa non è più un campo del form (vedi ChangeNoticeForm):
+        ecn_create la deriva da Project.commessa tramite
+        get_project_for_folder(document.project_folder) e la passa
+        direttamente al service, ignorando qualunque valore che arrivi
+        nel POST. Introdotta in af5d106 senza alcun test dedicato: qui si
+        verifica che l'eredità funzioni davvero, non solo che un valore
+        esplicito passato al service (test_create_with_project) sia salvato.
+        """
+        from projects.models import Project, ProjectFolder
+        from projects.services import set_folder_path
+
+        root_folder = ProjectFolder.objects.create(
+            code='PRJ-COMM-ROOT', name='Progetto con commessa',
+            folder_kind=ProjectFolder.FolderKind.PROJECT,
+            status=ProjectFolder.Status.ACTIVE, owner=self.manager,
+        )
+        set_folder_path(root_folder)
+        project = Project.objects.create(
+            code='PRJ-COMM', name='Progetto con commessa',
+            project_type=Project.ProjectType.INTERNAL,
+            root_folder=root_folder, commessa='COMM-2026-042',
+            manager=self.manager, created_by=self.manager,
+        )
+        doc = _make_document(self.manager, root_folder, code='DOC-COMM-001')
+        doc_version = _make_version(doc, self.manager)
+        doc.current_version = doc_version
+        doc.save(update_fields=['current_version'])
+
+        self.client.force_login(self.manager)
+        r = self.client.post(f'/ecn/new/?document={doc.pk}', {
+            'document': doc.pk,
+            'title': 'Variante con commessa ereditata',
+            'ccb_coordinator': self.manager.pk,
+            'motivation': ChangeNotice.Motivation.CUSTOMER,
+            'motivation_detail': '',
+            'description': '',
+        })
+        self.assertEqual(r.status_code, 302)
+        new_ecn = ChangeNotice.objects.get(title='Variante con commessa ereditata')
+        self.assertEqual(new_ecn.commessa, 'COMM-2026-042')
+        self.assertEqual(new_ecn.project_id, project.pk)
+
+    def test_ecn_create_commessa_empty_when_document_not_in_project(self):
+        """Controparte: cartella generica non di progetto → commessa vuota, nessun errore."""
+        # self.ecn (setUp) è ancora DRAFT sullo stesso documento: va liberato
+        # prima, altrimenti il vincolo single-open-ecn-per-documento blocca
+        # la POST per una ragione estranea al caso qui in esame.
+        self.ecn.status = ChangeNotice.Status.CLOSED
+        self.ecn.save(update_fields=['status'])
+        self.client.force_login(self.manager)
+        r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
+            'document': self.document.pk,
+            'title': 'Variante senza progetto',
+            'ccb_coordinator': self.manager.pk,
+            'motivation': ChangeNotice.Motivation.CUSTOMER,
+            'motivation_detail': '',
+            'description': '',
+        })
+        self.assertEqual(r.status_code, 302)
+        new_ecn = ChangeNotice.objects.get(title='Variante senza progetto')
+        self.assertEqual(new_ecn.commessa, '')
+        self.assertIsNone(new_ecn.project)
 
     # --- ecn_submit ---------------------------------------------------------
 
@@ -4110,6 +4176,7 @@ class ApplicabilityViewTests(TestCase):
         data = {
             'document': self.document.pk,
             'title': 'Variante UI applicabilità',
+            'ccb_coordinator': self.manager.pk,
             'motivation': ChangeNotice.Motivation.IMPROVEMENT,
             'motivation_detail': '',
             'description': '',
@@ -4128,6 +4195,7 @@ class ApplicabilityViewTests(TestCase):
         response = self.client.post(f'/ecn/new/?document={self.document.pk}', {
             'document': self.document.pk,
             'title': 'Variante senza applicabilità in creazione',
+            'ccb_coordinator': self.manager.pk,
             'motivation': ChangeNotice.Motivation.IMPROVEMENT,
             'motivation_detail': '',
             'description': '',
@@ -4808,6 +4876,10 @@ class OneOpenChangeNoticePerDocumentTests(TestCase):
     def setUp(self):
         self.proposer = _make_user('open_ecn_proposer')
         self.stranger = _make_user('open_ecn_stranger')
+        # Responsabile ECN valido per i POST di creazione via view (#11/#12):
+        # il form richiede sempre ccb_coordinator, indipendentemente da chi
+        # propone la richiesta.
+        self.qm = _make_user_in_groups('open_ecn_qm', 'Quality Manager')
         # can_create_ecn (permesso di *view*, non del service, testato qui
         # solo per i test end-to-end #11/#12): gruppo globale, non legato
         # alla cartella — serve solo a superare il gate della view.
@@ -5093,6 +5165,7 @@ class OneOpenChangeNoticePerDocumentTests(TestCase):
         self.client.post(f'/ecn/new/?document={self.document.pk}', {
             'document': self.document.pk,
             'title': 'Primo ECN via view',
+            'ccb_coordinator': self.qm.pk,
             'motivation': ChangeNotice.Motivation.IMPROVEMENT,
             'motivation_detail': '',
             'description': '',
@@ -5105,6 +5178,7 @@ class OneOpenChangeNoticePerDocumentTests(TestCase):
         r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
             'document': self.document.pk,
             'title': 'Secondo ECN via view',
+            'ccb_coordinator': self.qm.pk,
             'motivation': ChangeNotice.Motivation.OTHER,
             'motivation_detail': '',
             'description': '',
@@ -5162,6 +5236,7 @@ class OneOpenChangeNoticePerDocumentTests(TestCase):
         r = self.client.post(f'/ecn/new/?document={self.document.pk}', {
             'document': self.document.pk,
             'title': 'Tentativo stranger via view',
+            'ccb_coordinator': self.qm.pk,
             'motivation': ChangeNotice.Motivation.OTHER,
             'motivation_detail': '',
             'description': '',
@@ -5172,3 +5247,311 @@ class OneOpenChangeNoticePerDocumentTests(TestCase):
         msgs = [str(m) for m in get_messages(r.wsgi_request)]
         self.assertFalse(any('ECN-VIEW-HIDDEN-001' in m for m in msgs))
         self.assertFalse(any('Apri il dettaglio' in m for m in msgs))
+
+
+# ---------------------------------------------------------------------------
+# Responsabile ECN + rifiuto pre-CCB (2026-09-16)
+# ---------------------------------------------------------------------------
+
+class RejectChangeNoticeBeforeCCBServiceTests(TestCase):
+    """reject_change_notice_before_ccb: DRAFT/CCB_PREPARATION → REJECTED,
+    senza mai coinvolgere la CCB."""
+
+    def setUp(self):
+        self.proposer = _make_user('rbc_proposer')
+        self.coordinator = _make_user_in_groups('rbc_coordinator', 'Quality Manager')
+        self.other_qm = _make_user_in_groups('rbc_other_qm', 'Quality Manager')
+        self.folder = _make_folder(self.proposer, code='RBC-FOLD')
+        self.document, self.version = _make_approved_document(
+            self.proposer, self.folder, 'RBC-DOC-001',
+        )
+
+    def _make_ecn_with_coordinator(self, **kwargs):
+        return create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN da rifiutare pre-CCB',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            ccb_coordinator=self.coordinator,
+            send_notifications=False,
+            **kwargs,
+        )
+
+    def test_coordinator_can_reject_from_draft(self):
+        from ecn.services import reject_change_notice_before_ccb
+
+        ecn = self._make_ecn_with_coordinator()
+        result = reject_change_notice_before_ccb(
+            ecn, self.coordinator, reason='Richiesta non giustificata', send_notifications=False,
+        )
+        self.assertEqual(result.status, ChangeNotice.Status.REJECTED)
+        self.assertEqual(result.rejection_stage, ChangeNotice.RejectionStage.PRE_CCB)
+        self.assertEqual(result.ccb_notes, 'Richiesta non giustificata')
+        self.assertEqual(result.ccb_reviewed_by_id, self.coordinator.pk)
+        self.assertIsNotNone(result.ccb_reviewed_at)
+
+    def test_coordinator_can_reject_from_ccb_preparation(self):
+        from ecn.services import configure_ccb, reject_change_notice_before_ccb
+
+        ecn = self._make_ecn_with_coordinator()
+        # configure_ccb porta a CCB_PREPARATION ma non invia ancora alla CCB.
+        configure_ccb(ecn, actor=self.coordinator, users=[self.other_qm],
+                      policy='any', send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.CCB_PREPARATION)
+
+        result = reject_change_notice_before_ccb(
+            ecn, self.coordinator, reason='Non prioritario', send_notifications=False,
+        )
+        self.assertEqual(result.status, ChangeNotice.Status.REJECTED)
+        self.assertEqual(result.rejection_stage, ChangeNotice.RejectionStage.PRE_CCB)
+
+    def test_blocked_once_under_review(self):
+        """
+        can_reject_ecn_before_ccb incorpora già il controllo di stato (come
+        can_compile_dossier): una volta in UNDER_REVIEW, anche il
+        responsabile designato fallisce il permesso, non solo il controllo
+        di stato interno al service — PermissionDenied, non ValidationError.
+        """
+        from ecn.services import (
+            configure_ccb, reject_change_notice_before_ccb, submit_change_notice,
+            update_ccb_dossier,
+        )
+
+        ecn = self._make_ecn_with_coordinator()
+        configure_ccb(ecn, actor=self.coordinator, users=[self.other_qm],
+                      policy='any', send_notifications=False)
+        update_ccb_dossier(
+            ecn, actor=self.coordinator,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(ecn, self.coordinator, send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.status, ChangeNotice.Status.UNDER_REVIEW)
+
+        with self.assertRaises(PermissionDenied):
+            reject_change_notice_before_ccb(
+                ecn, self.coordinator, reason='Troppo tardi', send_notifications=False,
+            )
+
+    def test_reason_required(self):
+        from ecn.services import reject_change_notice_before_ccb
+
+        ecn = self._make_ecn_with_coordinator()
+        with self.assertRaises(ValidationError):
+            reject_change_notice_before_ccb(ecn, self.coordinator, reason='   ', send_notifications=False)
+
+    def test_permission_denied_for_non_coordinator_qm(self):
+        from ecn.services import reject_change_notice_before_ccb
+
+        ecn = self._make_ecn_with_coordinator()
+        with self.assertRaises(PermissionDenied):
+            reject_change_notice_before_ccb(
+                ecn, self.other_qm, reason='Non sono il responsabile', send_notifications=False,
+            )
+
+    def test_superuser_can_reject_even_without_being_coordinator(self):
+        from ecn.services import reject_change_notice_before_ccb
+
+        su = _make_superuser('rbc_su')
+        ecn = self._make_ecn_with_coordinator()
+        result = reject_change_notice_before_ccb(
+            ecn, su, reason='Rifiuto da admin', send_notifications=False,
+        )
+        self.assertEqual(result.status, ChangeNotice.Status.REJECTED)
+
+    def test_no_decision_record_created(self):
+        from ecn.models import ChangeNoticeDecision
+        from ecn.services import reject_change_notice_before_ccb
+
+        ecn = self._make_ecn_with_coordinator()
+        reject_change_notice_before_ccb(
+            ecn, self.coordinator, reason='Motivo', send_notifications=False,
+        )
+        self.assertFalse(ChangeNoticeDecision.objects.filter(change_notice=ecn).exists())
+
+    def test_document_freed_for_new_ecn_after_pre_ccb_rejection(self):
+        from ecn.services import reject_change_notice_before_ccb
+
+        ecn = self._make_ecn_with_coordinator()
+        reject_change_notice_before_ccb(
+            ecn, self.coordinator, reason='Motivo', send_notifications=False,
+        )
+        new_ecn = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='Nuovo tentativo', motivation=ChangeNotice.Motivation.OTHER,
+            ccb_coordinator=self.coordinator, send_notifications=False,
+        )
+        self.assertEqual(new_ecn.status, ChangeNotice.Status.DRAFT)
+
+    def test_ccb_vote_rejection_sets_ccb_stage(self):
+        """Controparte: reject_change_notice (voto CCB) imposta rejection_stage=CCB, non PRE_CCB."""
+        from ecn.services import (
+            configure_ccb, reject_change_notice, submit_change_notice, update_ccb_dossier,
+        )
+
+        ecn = self._make_ecn_with_coordinator()
+        configure_ccb(ecn, actor=self.coordinator, users=[self.other_qm],
+                      policy='any', send_notifications=False)
+        update_ccb_dossier(
+            ecn, actor=self.coordinator,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(ecn, self.coordinator, send_notifications=False)
+        reject_change_notice(ecn, self.other_qm, reason='Voto CCB negativo', send_notifications=False)
+        ecn.refresh_from_db()
+        self.assertEqual(ecn.rejection_stage, ChangeNotice.RejectionStage.CCB)
+
+
+class CanRejectEcnBeforeCcbPermissionTests(TestCase):
+    """ecn.permissions.can_reject_ecn_before_ccb."""
+
+    def setUp(self):
+        from ecn.permissions import can_reject_ecn_before_ccb
+        self.can_reject = can_reject_ecn_before_ccb
+
+        self.proposer = _make_user('cre_proposer')
+        self.coordinator = _make_user_in_groups('cre_coordinator', 'Quality Manager')
+        self.other_qm = _make_user_in_groups('cre_other_qm', 'Quality Manager')
+        self.su = _make_superuser('cre_su')
+        self.folder = _make_folder(self.proposer, code='CRE-FOLD')
+        self.document, self.version = _make_approved_document(
+            self.proposer, self.folder, 'CRE-DOC-001',
+        )
+        self.ecn = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN permessi pre-CCB', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            ccb_coordinator=self.coordinator, send_notifications=False,
+        )
+
+    def test_designated_coordinator_can_reject(self):
+        self.assertTrue(self.can_reject(self.coordinator, self.ecn))
+
+    def test_other_quality_manager_cannot_reject(self):
+        """Solo IL responsabile assegnato, non un Quality Manager qualunque."""
+        self.assertFalse(self.can_reject(self.other_qm, self.ecn))
+
+    def test_superuser_can_reject(self):
+        self.assertTrue(self.can_reject(self.su, self.ecn))
+
+    def test_proposer_cannot_reject(self):
+        self.assertFalse(self.can_reject(self.proposer, self.ecn))
+
+    def test_blocked_when_under_review(self):
+        from ecn.services import (
+            configure_ccb, submit_change_notice, update_ccb_dossier,
+        )
+        configure_ccb(self.ecn, actor=self.coordinator, users=[self.other_qm],
+                      policy='any', send_notifications=False)
+        update_ccb_dossier(
+            self.ecn, actor=self.coordinator,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(self.ecn, self.coordinator, send_notifications=False)
+        self.ecn.refresh_from_db()
+        self.assertFalse(self.can_reject(self.coordinator, self.ecn))
+
+
+class EcnRejectBeforeCcbViewTests(TestCase):
+    """Vista ecn_reject_before_ccb: GET/POST, permesso, redirect+messaggio."""
+
+    def setUp(self):
+        self.proposer = _make_user('rbcv_proposer')
+        self.proposer.groups.add(Group.objects.get_or_create(name=GROUP_AUTHORS)[0])
+        self.coordinator = _make_user_in_groups('rbcv_coordinator', 'Quality Manager')
+        self.other_qm = _make_user_in_groups('rbcv_other_qm', 'Quality Manager')
+        self.folder = _make_folder(self.proposer, code='RBCV-FOLD')
+        self.document, self.version = _make_approved_document(
+            self.proposer, self.folder, 'RBCV-DOC-001',
+        )
+        self.ecn = create_change_notice(
+            document=self.document, proposed_by=self.proposer,
+            title='ECN vista pre-CCB', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            ccb_coordinator=self.coordinator, send_notifications=False,
+        )
+
+    def test_get_requires_login(self):
+        r = self.client.get(f'/ecn/{self.ecn.pk}/reject-before-ccb/')
+        self.assertEqual(r.status_code, 302)
+
+    def test_get_forbidden_for_non_coordinator(self):
+        self.client.force_login(self.other_qm)
+        r = self.client.get(f'/ecn/{self.ecn.pk}/reject-before-ccb/')
+        self.assertEqual(r.status_code, 403)
+
+    def test_get_ok_for_coordinator(self):
+        self.client.force_login(self.coordinator)
+        r = self.client.get(f'/ecn/{self.ecn.pk}/reject-before-ccb/')
+        self.assertEqual(r.status_code, 200)
+
+    def test_post_rejects_and_redirects(self):
+        self.client.force_login(self.coordinator)
+        r = self.client.post(f'/ecn/{self.ecn.pk}/reject-before-ccb/', {
+            'reason': 'Non conforme alla procedura interna',
+            'comment': '',
+        })
+        self.assertRedirects(r, f'/ecn/{self.ecn.pk}/', fetch_redirect_response=False)
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.status, ChangeNotice.Status.REJECTED)
+        self.assertEqual(self.ecn.rejection_stage, ChangeNotice.RejectionStage.PRE_CCB)
+
+    def test_post_without_reason_shows_form_error(self):
+        self.client.force_login(self.coordinator)
+        r = self.client.post(f'/ecn/{self.ecn.pk}/reject-before-ccb/', {
+            'reason': '',
+            'comment': '',
+        })
+        self.assertEqual(r.status_code, 200)
+        self.ecn.refresh_from_db()
+        self.assertEqual(self.ecn.status, ChangeNotice.Status.DRAFT)
+
+    def test_detail_shows_pre_ccb_badge_after_rejection(self):
+        self.client.force_login(self.coordinator)
+        self.client.post(f'/ecn/{self.ecn.pk}/reject-before-ccb/', {
+            'reason': 'Motivo', 'comment': '',
+        })
+        r = self.client.get(f'/ecn/{self.ecn.pk}/')
+        self.assertContains(r, 'Rifiutato prima della CCB')
+        self.assertContains(r, 'Responsabile ECN prima della convocazione della CCB')
+
+
+class ChangeNoticeFormCoordinatorFieldTests(TestCase):
+    """ChangeNoticeForm.ccb_coordinator: obbligatorio, queryset QM+QO."""
+
+    def setUp(self):
+        self.qm = _make_user_in_groups('cnf_qm', 'Quality Manager')
+        self.qo = _make_user_in_groups('cnf_qo', 'Quality Operator')
+        self.plain = _make_user('cnf_plain')
+
+    def _data(self, **overrides):
+        data = {
+            'title': 'Test form',
+            'motivation': ChangeNotice.Motivation.IMPROVEMENT,
+            'motivation_detail': '',
+            'description': '',
+        }
+        data.update(overrides)
+        return data
+
+    def test_missing_coordinator_is_invalid(self):
+        from ecn.forms import ChangeNoticeForm
+        form = ChangeNoticeForm(data=self._data())
+        self.assertIn('ccb_coordinator', form.errors)
+
+    def test_quality_manager_is_valid_choice(self):
+        from ecn.forms import ChangeNoticeForm
+        form = ChangeNoticeForm(data=self._data(ccb_coordinator=self.qm.pk))
+        self.assertNotIn('ccb_coordinator', form.errors)
+
+    def test_quality_operator_is_valid_choice(self):
+        from ecn.forms import ChangeNoticeForm
+        form = ChangeNoticeForm(data=self._data(ccb_coordinator=self.qo.pk))
+        self.assertNotIn('ccb_coordinator', form.errors)
+
+    def test_plain_user_is_not_a_valid_choice(self):
+        from ecn.forms import ChangeNoticeForm
+        form = ChangeNoticeForm(data=self._data(ccb_coordinator=self.plain.pk))
+        self.assertIn('ccb_coordinator', form.errors)
+

@@ -209,7 +209,7 @@ class Document(models.Model):
         User,
         on_delete=models.PROTECT,
         related_name='owned_documents',
-        verbose_name='Responsabile',
+        verbose_name='Autore documento',
     )
     created_by = models.ForeignKey(
         User,

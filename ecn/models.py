@@ -16,9 +16,20 @@ class ChangeNotice(models.Model):
         DRAFT           = 'draft',           'Bozza'
         CCB_PREPARATION = 'ccb_preparation', 'Istruttoria CCB'
         UNDER_REVIEW    = 'under_review',    'In Valutazione CCB'
-        APPROVED        = 'approved',        'Approvata'
-        REJECTED        = 'rejected',        'Rifiutata'
-        CLOSED          = 'closed',          'Chiusa'
+        APPROVED        = 'approved',        'Approvato'
+        REJECTED        = 'rejected',        'Rifiutato'
+        CLOSED          = 'closed',          'Chiuso'
+
+    class RejectionStage(models.TextChoices):
+        """
+        Distingue, quando status=REJECTED, se il rifiuto è avvenuto prima
+        della CCB (dal responsabile ECN, senza mai convocare la CCB) o
+        durante la valutazione della CCB (voto di un approvatore). Campo
+        esplicito invece di dedurlo dall'assenza di ChangeNoticeDecision:
+        più robusto e interrogabile direttamente (es. per "Il mio lavoro").
+        """
+        PRE_CCB = 'pre_ccb', 'Prima della CCB'
+        CCB     = 'ccb',     'Dalla CCB'
 
     class Motivation(models.TextChoices):
         IMPROVEMENT    = 'improvement',    'Miglioramento tecnico'
@@ -303,6 +314,14 @@ class ChangeNotice(models.Model):
         null=True,
         blank=True,
         verbose_name='Revisionato il',
+    )
+    rejection_stage = models.CharField(
+        max_length=10,
+        choices=RejectionStage.choices,
+        null=True,
+        blank=True,
+        verbose_name='Fase del rifiuto',
+        help_text='Valorizzato solo quando status=Rifiutata: distingue un rifiuto del responsabile ECN prima della CCB da un rifiuto votato dalla CCB.',
     )
 
     # ------------------------------------------------------------------

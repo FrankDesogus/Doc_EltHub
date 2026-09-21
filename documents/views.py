@@ -7,6 +7,8 @@ from django.db import transaction
 from django.db.models import Q
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
 
 from documents.document_types import PROJECT_DOCUMENT_TYPE_CHOICES, SYSTEM_DOCUMENT_TYPE_CHOICES
 from documents.models import Document, DocumentVersion
@@ -258,11 +260,56 @@ def workspace_my_work(request):
 
     user = request.user
 
-    # Bozze e rifiutate create dall'utente
+    # Bozze: revisioni create dall'utente ancora "in corso" (mai inviate o
+    # in attesa di decisione). Le rifiutate NON stanno più qui: vivono in
+    # my_rejected insieme agli ECN rifiutati (vedi sotto).
     my_drafts_qs = DocumentVersion.objects.filter(
         created_by=user,
-        status__in=[DocumentVersion.Status.DRAFT, DocumentVersion.Status.REJECTED],
+        status__in=[DocumentVersion.Status.DRAFT, DocumentVersion.Status.IN_APPROVAL],
     ).select_related('document').order_by('-created_at')
+
+    # Rifiutate: unifica due tipi di oggetto distinti in una lista sola,
+    # ordinata per data di rifiuto — una revisione documento rifiutata
+    # dagli approvatori designati, e un ECN rifiutato dalla CCB (unico
+    # percorso di rifiuto ECN esistente: reject_change_notice richiede
+    # sempre lo stato UNDER_REVIEW). Il rifiuto di un singolo approvatore
+    # CCB non è un oggetto a sé: conta solo l'esito finale registrato su
+    # ChangeNotice.status, non il voto individuale (ChangeNoticeDecision).
+    my_rejected_versions_qs = DocumentVersion.objects.filter(
+        created_by=user,
+        status=DocumentVersion.Status.REJECTED,
+    ).select_related('document')
+
+    my_rejected = []
+    for v in my_rejected_versions_qs:
+        my_rejected.append({
+            'kind': 'revision',
+            'kind_label': 'Bozza rifiutata',
+            'code': v.document.code,
+            'title': v.document.title,
+            'detail': f'Rev. {v.revision_label}',
+            'url': reverse('version_detail', args=[v.pk]),
+            'date': v.rejected_at or v.created_at,
+        })
+
+    my_rejected_ecn_qs = ChangeNotice.objects.filter(
+        Q(proposed_by=user) | Q(created_by=user),
+        status=ChangeNotice.Status.REJECTED,
+    ).select_related('document').distinct()
+
+    for ecn in my_rejected_ecn_qs:
+        is_pre_ccb = ecn.rejection_stage == ChangeNotice.RejectionStage.PRE_CCB
+        my_rejected.append({
+            'kind': 'ecn',
+            'kind_label': 'ECN rifiutato (pre-CCB)' if is_pre_ccb else 'ECN rifiutato (CCB)',
+            'code': ecn.code,
+            'title': ecn.title,
+            'detail': ecn.document.code if ecn.document else '',
+            'url': reverse('ecn:ecn_detail', args=[ecn.pk]),
+            'date': ecn.ccb_reviewed_at,
+        })
+
+    my_rejected.sort(key=lambda r: r['date'] or timezone.now(), reverse=True)
 
     # Approvazioni pendenti
     pending_approvals_qs = ApprovalRequest.objects.filter(
@@ -313,6 +360,7 @@ def workspace_my_work(request):
 
     return render(request, 'workspace/my_work.html', {
         'my_drafts': my_drafts_qs,
+        'my_rejected': my_rejected,
         'pending_approvals': pending_approvals_qs,
         'pending_ccb': pending_ccb_qs,
         'my_dossier_to_compile': my_dossier_to_compile_qs,

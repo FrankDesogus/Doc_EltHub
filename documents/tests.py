@@ -1723,6 +1723,142 @@ class WorkspaceMyWorkTests(TestCase):
         r = self.client.get(reverse('workspace_my_work'))
         self.assertNotContains(r, 'WS-002')
 
+    def test_rejected_revision_moves_from_drafts_to_rejected_section(self):
+        """
+        Una revisione rifiutata non è più una "bozza in corso": esce da
+        "Mie bozze" e compare nella sezione separata "Rifiutate" (richiesto
+        dall'operatore dopo il controllo di coerenza cartelle/documenti).
+        """
+        from approvals.services import reject_version
+
+        doc = Document.objects.create(
+            code='WS-REJ-001', title='WS doc rifiutato', category=Document.Category.QUALITY,
+            owner=self.user, created_by=self.user,
+        )
+        v = create_new_revision(doc, self.user, '00', 0)
+        req = submit_version_for_approval(v, self.user, [self.user])
+        reject_version(req, self.user, rejection_reason='Manca riferimento normativo')
+
+        self.client.force_login(self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        self.assertNotIn(v, list(r.context['my_drafts']))
+        rejected_codes = [item['code'] for item in r.context['my_rejected']]
+        self.assertIn('WS-REJ-001', rejected_codes)
+        self.assertContains(r, 'Bozza rifiutata')
+
+    def test_rejected_ecn_proposed_by_me_appears_in_rejected_section(self):
+        """ECN rifiutato dalla CCB, proposto da me: deve comparire in "Rifiutate"."""
+        from ecn.services import configure_ccb, create_change_notice, reject_change_notice, submit_change_notice, update_ccb_dossier
+        from approvals.services import approve_version
+
+        ccb_member = User.objects.create_user('ws_rej_ccb', password='pw')
+        # submit_change_notice richiede un permesso di governance (manager/QM):
+        # superuser è la scorciatoia già usata altrove in questi test per
+        # non dover costruire gruppi/permessi non pertinenti al caso in esame.
+        self.user.is_superuser = True
+        self.user.save(update_fields=['is_superuser'])
+        doc = Document.objects.create(
+            code='WS-ECN-REJ-001', title='Doc con ECN rifiutato', category=Document.Category.QUALITY,
+            owner=self.user, created_by=self.user,
+        )
+        v = create_new_revision(doc, self.user, '00', 0)
+        req = submit_version_for_approval(v, self.user, [self.user])
+        approve_version(req, self.user, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.user,
+            title='ECN che sarà rifiutato', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        configure_ccb(ecn, actor=self.user, users=[ccb_member], policy='any', coordinator=self.user)
+        update_ccb_dossier(
+            ecn, actor=self.user,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(ecn, self.user)
+        reject_change_notice(ecn, ccb_member, reason='Impatto non accettabile')
+
+        self.client.force_login(self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        rejected_codes = [item['code'] for item in r.context['my_rejected']]
+        self.assertIn(ecn.code, rejected_codes)
+        self.assertContains(r, 'ECN rifiutato')
+
+    def test_rejected_ecn_proposed_by_someone_else_on_my_document_not_shown(self):
+        """
+        Un ECN proposto da un'altra persona su un documento di cui sono
+        responsabile non è "roba mia": non deve comparire nel mio "Il mio
+        lavoro" nemmeno se rifiutato (deciso esplicitamente con
+        l'operatore — essere responsabile del documento non basta).
+        """
+        from ecn.services import configure_ccb, create_change_notice, reject_change_notice, submit_change_notice, update_ccb_dossier
+        from approvals.services import approve_version
+
+        proposer = User.objects.create_user('ws_rej_other_proposer', password='pw', is_superuser=True)
+        ccb_member = User.objects.create_user('ws_rej_other_ccb', password='pw')
+        doc = Document.objects.create(
+            code='WS-ECN-OTHERPROP-001', title='Doc mio, ECN altrui', category=Document.Category.QUALITY,
+            owner=self.user, created_by=self.user,
+        )
+        v = create_new_revision(doc, self.user, '00', 0)
+        req = submit_version_for_approval(v, self.user, [self.user])
+        approve_version(req, self.user, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=proposer,
+            title='ECN proposto da altri', motivation=ChangeNotice.Motivation.IMPROVEMENT,
+        )
+        configure_ccb(ecn, actor=proposer, users=[ccb_member], policy='any', coordinator=proposer)
+        update_ccb_dossier(
+            ecn, actor=proposer,
+            applicability_category=ChangeNotice.Applicability.GENERAL,
+            ccb_class='class1', ccb_requirements='OK', ccb_technical_impact='OK',
+        )
+        submit_change_notice(ecn, proposer)
+        reject_change_notice(ecn, ccb_member, reason='Impatto non accettabile')
+
+        self.client.force_login(self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        rejected_codes = [item['code'] for item in r.context['my_rejected']]
+        self.assertNotIn(ecn.code, rejected_codes)
+        self.assertNotContains(r, ecn.code)
+
+    def test_rejected_pre_ccb_ecn_shows_distinct_label_from_ccb_rejection(self):
+        """
+        Un ECN rifiutato dal responsabile prima della CCB deve comparire in
+        "Rifiutate" con un'etichetta diversa da un rifiuto CCB — le due cose
+        non sono la stessa cosa (nessuna votazione è mai avvenuta qui).
+        """
+        from ecn.services import create_change_notice, reject_change_notice_before_ccb
+
+        doc = Document.objects.create(
+            code='WS-ECN-PRECCB-001', title='Doc con ECN rifiutato pre-CCB',
+            category=Document.Category.QUALITY, owner=self.user, created_by=self.user,
+        )
+        v = create_new_revision(doc, self.user, '00', 0)
+        req = submit_version_for_approval(v, self.user, [self.user])
+        from approvals.services import approve_version
+        approve_version(req, self.user, comment='ok')
+        doc.refresh_from_db()
+
+        ecn = create_change_notice(
+            document=doc, proposed_by=self.user,
+            title='ECN che sarà rifiutato prima della CCB',
+            motivation=ChangeNotice.Motivation.IMPROVEMENT,
+            ccb_coordinator=self.user, send_notifications=False,
+        )
+        reject_change_notice_before_ccb(
+            ecn, self.user, reason='Non serve convocare la CCB per questo', send_notifications=False,
+        )
+
+        self.client.force_login(self.user)
+        r = self.client.get(reverse('workspace_my_work'))
+        rejected = {item['code']: item['kind_label'] for item in r.context['my_rejected']}
+        self.assertEqual(rejected.get(ecn.code), 'ECN rifiutato (pre-CCB)')
+        self.assertContains(r, 'ECN rifiutato (pre-CCB)')
+
     def test_sequential_ccb_hides_pending_decision_for_user_not_yet_turn(self):
         """
         Con policy SEQUENTIAL, solo il primo approvatore in coda deve
@@ -4832,6 +4968,80 @@ class DocumentDetailCompactHistoryTests(TestCase):
         r = self.client.get(reverse('document_detail', args=[self.doc.pk]))
         self.assertEqual(r.status_code, 200)
         self.assertNotContains(r, 'Vedi storico completo')
+
+
+# ---------------------------------------------------------------------------
+# FolderChoiceField — etichetta con percorso gerarchico completo (selettore
+# cartella in new_document.html). Introdotta senza test dedicati nel commit
+# "folder tree picker" (af5d106): copre il rischio di un bug silenzioso
+# nell'ordine/risoluzione degli antenati (obj.path → pk → nome), che
+# passerebbe inosservato perché il fallback "?" non solleva mai un'eccezione.
+# ---------------------------------------------------------------------------
+
+class FolderChoiceFieldBreadcrumbTests(TestCase):
+    """documents.forms.FolderChoiceField.label_from_instance."""
+
+    def setUp(self):
+        from projects.models import ProjectFolder
+        from projects.services import set_folder_path
+
+        owner = User.objects.create_user('breadcrumb_owner', password='pw', is_staff=True)
+        self.root = ProjectFolder.objects.create(
+            code='ING', name='Ingegneria',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=owner,
+        )
+        set_folder_path(self.root)
+        self.mid = ProjectFolder.objects.create(
+            code='PRJ-DEMO-001', name='Amplificatore RF Demo',
+            folder_kind=ProjectFolder.FolderKind.PROJECT,
+            status=ProjectFolder.Status.ACTIVE, owner=owner,
+            parent=self.root,
+        )
+        set_folder_path(self.mid)
+        self.leaf = ProjectFolder.objects.create(
+            code='SPEC', name='Specifiche',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=owner,
+            parent=self.mid,
+        )
+        set_folder_path(self.leaf)
+
+    def _field(self):
+        from documents.forms import FolderChoiceField
+        from projects.models import ProjectFolder
+        field = FolderChoiceField(queryset=ProjectFolder.objects.all(), required=True)
+        field.folder_names_by_pk = dict(ProjectFolder.objects.values_list('pk', 'name'))
+        return field
+
+    def test_root_folder_label_has_no_breadcrumb_prefix(self):
+        self.assertEqual(self._field().label_from_instance(self.root), 'ING — Ingegneria')
+
+    def test_leaf_label_shows_full_ancestor_chain_in_order(self):
+        label = self._field().label_from_instance(self.leaf)
+        self.assertEqual(label, 'Ingegneria › Amplificatore RF Demo › SPEC — Specifiche')
+
+    def test_folder_without_path_falls_back_to_code_and_name(self):
+        """
+        Difesa: se una cartella non ha ancora un path valorizzato (dato
+        storico non ancora migrato, o creata fuori dal service standard),
+        l'etichetta non deve rompersi né mostrare "?" — solo codice/nome.
+        """
+        from projects.models import ProjectFolder
+        orphan = ProjectFolder.objects.create(
+            code='ORPH', name='Cartella senza path',
+            folder_kind=ProjectFolder.FolderKind.GENERIC,
+            status=ProjectFolder.Status.ACTIVE, owner=self.root.owner,
+        )
+        orphan.path = ''
+        self.assertEqual(self._field().label_from_instance(orphan), 'ORPH — Cartella senza path')
+
+    def test_document_create_form_renders_breadcrumb_in_choice_labels(self):
+        """Integrazione: il form popola davvero folder_names_by_pk prima del rendering."""
+        from documents.forms import DocumentCreateForm
+        form = DocumentCreateForm(user=self.root.owner)
+        rendered = str(form['project_folder'])
+        self.assertIn('Ingegneria › Amplificatore RF Demo › SPEC — Specifiche', rendered)
 
 
 # ---------------------------------------------------------------------------

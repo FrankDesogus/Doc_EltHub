@@ -408,6 +408,7 @@ class Command(BaseCommand):
             ),
             motivation_detail='Adeguamento ai nuovi requisiti normativi 2026.',
             code='ECN-DEMO-001',
+            ccb_coordinator=supervisor,
         )
         # Configura CCB (supervisor_demo: responsabile istruttoria + unico componente)
         from ecn.services import configure_ccb, update_ccb_dossier

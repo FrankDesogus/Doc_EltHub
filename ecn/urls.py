@@ -17,6 +17,7 @@ urlpatterns = [
     path('<int:ecn_id>/reopen-ccb/', views.ecn_reopen_ccb, name='ecn_reopen_ccb'),
     path('<int:ecn_id>/submit/', views.ecn_submit, name='ecn_submit'),
     path('<int:ecn_id>/review/', views.ecn_review, name='ecn_review'),
+    path('<int:ecn_id>/reject-before-ccb/', views.ecn_reject_before_ccb, name='ecn_reject_before_ccb'),
     path('<int:ecn_id>/close/', views.ecn_close, name='ecn_close'),
     path('<int:ecn_id>/attachment/', views.ecn_add_attachment, name='ecn_add_attachment'),
     path('attachment/<int:attachment_id>/download/', views.ecn_attachment_download, name='ecn_attachment_download'),

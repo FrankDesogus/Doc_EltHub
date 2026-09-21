@@ -171,7 +171,7 @@
 <div class="form-section" id="mie-bozze">
   <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
     <div class="flex items-center gap-2">
-      <h2 class="text-base font-semibold text-brand-800">Mie bozze e rifiutate</h2>
+      <h2 class="text-base font-semibold text-brand-800">Mie bozze</h2>
       {% if my_drafts %}<span class="badge-status-draft ml-1.5">{{ my_drafts|length }}</span>{% endif %}
     </div>
     <a href="{% url 'document_new' %}" class="btn-primary btn-sm">+ Nuovo documento</a>
@@ -200,8 +200,7 @@
           <td class="whitespace-nowrap">Rev. {{ v.revision_number }}</td>
           <td>
             {% if v.status == 'draft' %}<span class="badge-status-draft">{{ v.get_status_display }}</span>
-            {% elif v.status == 'rejected' %}<span class="badge-status-rejected">{{ v.get_status_display }}</span>
-            {% else %}<span class="badge-status-draft">{{ v.get_status_display }}</span>
+            {% else %}<span class="badge-status-in_approval">{{ v.get_status_display }}</span>
             {% endif %}
           </td>
           <td class="meta whitespace-nowrap">{{ v.created_at|date:"d/m/Y" }}</td>
@@ -221,8 +220,57 @@
   <div class="card">
     <div class="empty-state py-8">
       <div class="empty-state-icon">📝</div>
-      <div class="empty-state-title">Nessuna bozza o revisione rifiutata</div>
+      <div class="empty-state-title">Nessuna bozza in corso</div>
       <a href="{% url 'document_new' %}" class="btn-primary mt-4 btn-sm">Crea il primo documento</a>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Rifiutate ──
+     Unifica due tipi di oggetto distinti (revisione documento rifiutata
+     dagli approvatori designati / ECN rifiutato dalla CCB): stessa tabella,
+     colonna "Tipo" per distinguerli. Conta solo l'esito finale registrato
+     (ChangeNotice.status / DocumentVersion.status), mai il singolo voto di
+     un approvatore/membro CCB. -->
+<div class="form-section" id="rifiutate">
+  <div class="flex items-center gap-2 mb-3">
+    <h2 class="text-base font-semibold text-brand-800">Rifiutate</h2>
+    {% if my_rejected %}<span class="badge-status-rejected ml-1.5">{{ my_rejected|length }}</span>{% endif %}
+  </div>
+  {% if my_rejected %}
+  <div class="table-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Tipo</th>
+          <th>Codice</th>
+          <th>Titolo</th>
+          <th>Data rifiuto</th>
+          <th class="w-24"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in my_rejected %}
+        <tr>
+          <td><span class="badge-status-rejected">{{ r.kind_label }}</span></td>
+          <td>
+            <a href="{{ r.url }}" class="font-mono font-semibold text-brand-800 hover:underline">{{ r.code }}</a>
+            {% if r.detail %}<div class="text-xs text-gray-500 mt-0.5">{{ r.detail }}</div>{% endif %}
+          </td>
+          <td>{{ r.title }}</td>
+          <td class="meta whitespace-nowrap">{{ r.date|date:"d/m/Y" }}</td>
+          <td><a href="{{ r.url }}" class="btn-secondary btn-sm">Dettaglio</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card">
+    <div class="empty-state py-8">
+      <div class="empty-state-icon">🚫</div>
+      <div class="empty-state-title">Nessun rifiuto</div>
     </div>
   </div>
   {% endif %}
@@ -256,9 +304,9 @@
             {% if ecn.status == 'draft' %}<span class="badge-ecn-draft">Bozza</span>
             {% elif ecn.status == 'ccb_preparation' %}<span class="badge-ecn-ccb_prep">Istruttoria CCB</span>
             {% elif ecn.status == 'under_review' %}<span class="badge-ecn-under_review">In Valutazione CCB</span>
-            {% elif ecn.status == 'approved' %}<span class="badge-ecn-approved">Approvata</span>
-            {% elif ecn.status == 'rejected' %}<span class="badge-ecn-rejected">Rifiutata</span>
-            {% elif ecn.status == 'closed' %}<span class="badge-ecn-closed">Chiusa</span>
+            {% elif ecn.status == 'approved' %}<span class="badge-ecn-approved">Approvato</span>
+            {% elif ecn.status == 'rejected' %}<span class="badge-ecn-rejected">Rifiutato</span>
+            {% elif ecn.status == 'closed' %}<span class="badge-ecn-closed">Chiuso</span>
             {% else %}<span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
             {% endif %}
           </td>

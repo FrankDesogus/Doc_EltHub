@@ -419,8 +419,12 @@ class UIECNSearchTests(TestCase):
             return doc, ver
 
         # Crea 22 ECN in DRAFT
+        # Prefisso 'UES-ECN-DOC-' (non 'UES-DOC-') per non collidere con
+        # self.doc ('UES-DOC-001', creato sopra): con 'UES-DOC-{i+1:03d}' la
+        # prima iterazione (i=0) genererebbe di nuovo 'UES-DOC-001',
+        # violando il vincolo di unicità di Document.code.
         for i in range(22):
-            doc_i, ver_i = _make_doc_for_ecn(f'UES-DOC-{i+1:03d}')
+            doc_i, ver_i = _make_doc_for_ecn(f'UES-ECN-DOC-{i+1:03d}')
             ChangeNotice.objects.create(
                 code=f'UES-{i+1:03d}',
                 title=f'ECN variante {i+1}',

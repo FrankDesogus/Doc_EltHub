@@ -26,6 +26,7 @@ from ecn.permissions import (
     can_download_ecn_attachment,
     can_edit_ecn,
     can_reconfigure_ccb,
+    can_reject_ecn_before_ccb,
     can_reopen_ccb,
     can_review_ecn,
     can_submit_ecn,
@@ -191,7 +192,7 @@ def ecn_detail(request, ecn_id):
     ecn = get_object_or_404(
         ChangeNotice.objects.select_related(
             'document', 'document_version', 'project',
-            'proposed_by', 'created_by',
+            'proposed_by', 'created_by', 'ccb_coordinator',
             'ccb_reviewed_by', 'closed_by', 'executed_version',
         ),
         pk=ecn_id,
@@ -267,6 +268,7 @@ def ecn_detail(request, ecn_id):
         'can_reopen': can_reopen_ccb(request.user, ecn),
         'has_decisions': has_decisions,
         'can_compile_dossier': can_compile_dossier(request.user, ecn),
+        'can_reject_before_ccb': can_reject_ecn_before_ccb(request.user, ecn),
         'historical_records': historical_records,
         'sanatoria_available': can_use_sanatoria(request.user),
     })
@@ -324,6 +326,7 @@ def ecn_create(request):
                     motivation_detail=d.get('motivation_detail', ''),
                     commessa=ecn_commessa,
                     project=ecn_project,
+                    ccb_coordinator=d['ccb_coordinator'],
                     send_notifications=should_send_notifications(sanatoria=form.is_sanatoria),
                 )
                 form.maybe_create_historical_record(
@@ -331,10 +334,11 @@ def ecn_create(request):
                     target_instance=ecn,
                     recorded_by=request.user,
                 )
+                responsabile = d['ccb_coordinator'].get_full_name() or d['ccb_coordinator'].username
                 messages.success(
                     request,
                     f'ECN {ecn.code} creato come bozza. '
-                    f'Il Responsabile Qualità configurerà gli approvatori CCB.',
+                    f'{responsabile} valuterà la richiesta e, se necessario, convocherà la CCB.',
                 )
                 return redirect('ecn:ecn_detail', ecn_id=ecn.pk)
             except ValidationError as exc:
@@ -777,6 +781,74 @@ def ecn_review(request, ecn_id):
         'form': form,
         'ecn': ecn,
         'approvers': approvers,
+        'sanatoria_available': can_use_sanatoria(request.user),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Rifiuto del Responsabile ECN prima della CCB
+# ---------------------------------------------------------------------------
+
+@login_required
+def ecn_reject_before_ccb(request, ecn_id):
+    """
+    Il Responsabile ECN designato rifiuta la richiesta prima ancora di
+    convocare la CCB: DRAFT/CCB_PREPARATION → REJECTED.
+
+    Nessun lock: a differenza del voto CCB (ecn_review), è un'azione a
+    singolo attore (il solo responsabile può compierla, vedi
+    can_reject_ecn_before_ccb), non c'è concorrenza tra più decisori da
+    serializzare.
+    """
+    from ecn.forms import ChangeNoticeRejectBeforeCCBForm
+    from ecn.services import reject_change_notice_before_ccb
+
+    ecn = get_object_or_404(
+        ChangeNotice.objects.select_related('document', 'document_version', 'ccb_coordinator'),
+        pk=ecn_id,
+    )
+
+    if not can_reject_ecn_before_ccb(request.user, ecn):
+        raise PermissionDenied
+
+    if ecn.status not in (ChangeNotice.Status.DRAFT, ChangeNotice.Status.CCB_PREPARATION):
+        messages.error(
+            request,
+            f'L\'ECN non è più in uno stato pre-CCB (stato: {ecn.get_status_display()}).',
+        )
+        return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+
+    if request.method == 'POST':
+        form = ChangeNoticeRejectBeforeCCBForm(request.POST, current_user=request.user)
+        if form.is_valid():
+            d = form.cleaned_data
+            try:
+                reject_change_notice_before_ccb(
+                    ecn,
+                    request.user,
+                    reason=d['reason'],
+                    comment=d.get('comment', ''),
+                    send_notifications=should_send_notifications(sanatoria=form.is_sanatoria),
+                )
+                form.maybe_create_historical_record(
+                    event_type=HistoricalRecord.EventType.ECN_REJECTED_PRE_CCB,
+                    target_instance=ecn,
+                    recorded_by=request.user,
+                )
+                messages.success(request, f'{ecn.code} rifiutato prima della convocazione della CCB.')
+                return redirect('ecn:ecn_detail', ecn_id=ecn_id)
+            except (PermissionDenied, ValidationError) as exc:
+                if isinstance(exc, PermissionDenied):
+                    messages.error(request, str(exc))
+                else:
+                    for msg in exc.messages:
+                        messages.error(request, msg)
+    else:
+        form = ChangeNoticeRejectBeforeCCBForm(current_user=request.user)
+
+    return render(request, 'ecn/ecn_reject_before_ccb_form.html', {
+        'form': form,
+        'ecn': ecn,
         'sanatoria_available': can_use_sanatoria(request.user),
     })
 

@@ -21,11 +21,15 @@
     {% elif ecn.status == 'under_review' %}
     <span class="badge-ecn-under_review">In Valutazione CCB</span>
     {% elif ecn.status == 'approved' %}
-    <span class="badge-ecn-approved">Approvata</span>
+    <span class="badge-ecn-approved">Approvato</span>
     {% elif ecn.status == 'rejected' %}
-    <span class="badge-ecn-rejected">Rifiutata</span>
+    {% if ecn.rejection_stage == 'pre_ccb' %}
+    <span class="badge-ecn-rejected">Rifiutato prima della CCB</span>
+    {% else %}
+    <span class="badge-ecn-rejected">Rifiutato dalla CCB</span>
+    {% endif %}
     {% elif ecn.status == 'closed' %}
-    <span class="badge-ecn-closed">Chiusa</span>
+    <span class="badge-ecn-closed">Chiuso</span>
     {% else %}
     <span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
     {% endif %}
@@ -49,12 +53,19 @@
         <li>Impatti stimati su documenti correlati</li>
         <li>Eventuale commessa o progetto associato</li>
       </ul>
-      <p class="text-sm text-amber-800">Quando sei pronto, configura i componenti CCB, il responsabile istruttoria e la policy.</p>
+      <p class="text-sm text-amber-800">
+        Quando sei pronto, configura i componenti CCB, il responsabile istruttoria e la policy —
+        oppure, se la richiesta non deve proseguire,
+        {% if can_reject_before_ccb %}<a href="{% url 'ecn:ecn_reject_before_ccb' ecn.pk %}" class="underline font-semibold">rifiutala direttamente</a>{% else %}il Responsabile ECN può rifiutarla direttamente{% endif %}
+        prima di convocare la CCB.
+      </p>
     </div>
     {% else %}
     <div class="alert-warning mb-4">
       <strong>In attesa di valutazione Qualità:</strong>
-      La richiesta è stata ricevuta. Il Responsabile Qualità la analizzerà e configurerà la CCB prima dell'invio.
+      La richiesta è stata ricevuta.
+      {% if ecn.ccb_coordinator %}{{ ecn.ccb_coordinator.get_full_name|default:ecn.ccb_coordinator.username }}, responsabile ECN, la analizzerà{% else %}Il Responsabile Qualità la analizzerà{% endif %}
+      e configurerà la CCB prima dell'invio.
     </div>
     {% endif %}
   {% else %}
@@ -119,7 +130,11 @@
 </div>
 {% elif ecn.status == 'rejected' %}
 <div class="alert-danger mb-4">
+  {% if ecn.rejection_stage == 'pre_ccb' %}
+  <strong>Rifiutato:</strong> Questo ECN è stato rifiutato dal Responsabile ECN prima della convocazione della CCB.{% if ecn.ccb_notes %} Motivo: {{ ecn.ccb_notes }}{% endif %}
+  {% else %}
   <strong>Rifiutato:</strong> Questo ECN è stato rifiutato dalla CCB.{% if ecn.ccb_notes %} Motivo: {{ ecn.ccb_notes }}{% endif %}
+  {% endif %}
 </div>
 {% endif %}
 
@@ -166,6 +181,10 @@
 
   {% if ecn.status == 'ccb_preparation' and can_compile_dossier %}
   <a href="{% url 'ecn:ecn_ccb_dossier' ecn.pk %}" class="btn-primary">Istruttoria CCB</a>
+  {% endif %}
+
+  {% if ecn.status == 'draft' and can_reject_before_ccb or ecn.status == 'ccb_preparation' and can_reject_before_ccb %}
+  <a href="{% url 'ecn:ecn_reject_before_ccb' ecn.pk %}" class="btn-danger">Rifiuta prima della CCB</a>
   {% endif %}
 
   {% if ecn.status == 'draft' and can_submit and has_ccb_configured %}

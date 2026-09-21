@@ -179,6 +179,7 @@ def create_change_notice(
     document_version=None,
     code=None,
     created_by=None,
+    ccb_coordinator=None,
     send_notifications=True,
 ):
     """
@@ -187,6 +188,14 @@ def create_change_notice(
     Se document_version è None, usa document.current_version come snapshot.
     Se code è None, genera automaticamente un codice ECN-NNNN univoco.
     Se created_by è None, usa proposed_by.
+
+    ccb_coordinator: responsabile ECN assegnato già alla richiesta (nel
+    form di creazione è obbligatorio — vedi ChangeNoticeForm — ma qui resta
+    opzionale per non rompere chiamate interne/script/sanatoria che creano
+    ECN senza passare dalla view). Può comunque essere assegnato o
+    cambiato più avanti tramite configure_ccb. Se valorizzato qui, il
+    responsabile riceve la stessa notifica di "assegnato al dossier" che
+    riceverebbe da configure_ccb.
 
     L'ECN nasce senza applicabilità (applicability_category=None): non è
     una dichiarazione del proponente, ma una valutazione della CCB fatta
@@ -227,6 +236,7 @@ def create_change_notice(
                 project=project,
                 proposed_by=proposed_by,
                 created_by=created_by,
+                ccb_coordinator=ccb_coordinator,
             )
 
             _write_audit(
@@ -235,6 +245,7 @@ def create_change_notice(
                 ecn=ecn,
                 old_status=None,
                 new_status=ecn.status,
+                extra_metadata={'coordinator_id': ccb_coordinator.pk} if ccb_coordinator else None,
             )
     except IntegrityError:
         _reraise_after_open_change_notice_integrity_error(document, proposed_by)
@@ -246,6 +257,13 @@ def create_change_notice(
             notify_ecn_created_inapp(ecn)
         except Exception:
             pass
+        if ccb_coordinator:
+            _notify_silently('notify_ecn_coordinator_assigned', ecn)
+            try:
+                from notifications.inbox import notify_ccb_dossier_assigned
+                notify_ccb_dossier_assigned(ecn)
+            except Exception:
+                pass
 
     return ecn
 
@@ -826,10 +844,13 @@ def reject_change_notice(change_notice, user, reason, comment=None, send_notific
         )
 
         change_notice.status           = ChangeNotice.Status.REJECTED
+        change_notice.rejection_stage  = ChangeNotice.RejectionStage.CCB
         change_notice.ccb_notes        = reason.strip()
         change_notice.ccb_reviewed_by  = user
         change_notice.ccb_reviewed_at  = now
-        change_notice.save(update_fields=['status', 'ccb_notes', 'ccb_reviewed_by', 'ccb_reviewed_at'])
+        change_notice.save(update_fields=[
+            'status', 'rejection_stage', 'ccb_notes', 'ccb_reviewed_by', 'ccb_reviewed_at',
+        ])
 
     _write_audit(
         actor=user,
@@ -851,6 +872,75 @@ def reject_change_notice(change_notice, user, reason, comment=None, send_notific
         try:
             from ecn.notifications import notify_ecn_vote_cast
             notify_ecn_vote_cast(change_notice, user, 'reject', decision_comment)
+        except Exception:
+            pass
+
+    return change_notice
+
+
+def reject_change_notice_before_ccb(change_notice, user, reason, comment=None, send_notifications=True):
+    """
+    Il responsabile ECN (ccb_coordinator) rifiuta la richiesta prima ancora
+    di convocare la CCB: DRAFT/CCB_PREPARATION → REJECTED.
+
+    A differenza di reject_change_notice, qui non c'è mai stata una
+    votazione: nessun ChangeNoticeApprover coinvolto, nessun
+    ChangeNoticeDecision creato. rejection_stage=PRE_CCB distingue questo
+    caso da un rifiuto votato dalla CCB ovunque nel sistema (badge, "Il mio
+    lavoro", audit).
+
+    reason è obbligatorio e viene salvato in ccb_notes, come per il rifiuto
+    CCB — stessa convenzione, stesso campo.
+
+    Raises:
+      PermissionDenied: se l'utente non è il responsabile ECN assegnato
+        (né superuser).
+      ValidationError: se lo stato non è DRAFT/CCB_PREPARATION o reason è vuoto.
+    """
+    from ecn.models import ChangeNotice
+    from ecn.permissions import can_reject_ecn_before_ccb
+
+    if not can_reject_ecn_before_ccb(user, change_notice):
+        raise PermissionDenied("Non hai il permesso di rifiutare questo ECN prima della CCB.")
+
+    allowed = (ChangeNotice.Status.DRAFT, ChangeNotice.Status.CCB_PREPARATION)
+    if change_notice.status not in allowed:
+        raise ValidationError(
+            f"Solo un ECN in bozza o istruttoria (non ancora inviato alla CCB) può essere "
+            f"rifiutato prima della CCB. Stato attuale: {change_notice.get_status_display()}."
+        )
+
+    if not reason or not reason.strip():
+        raise ValidationError("Il motivo del rifiuto è obbligatorio.")
+
+    old_status = change_notice.status
+    now = timezone.now()
+    notes = reason.strip()
+    if comment and comment.strip():
+        notes = f"{notes}\n\n{comment.strip()}"
+
+    with transaction.atomic():
+        change_notice.status           = ChangeNotice.Status.REJECTED
+        change_notice.rejection_stage  = ChangeNotice.RejectionStage.PRE_CCB
+        change_notice.ccb_notes        = notes
+        change_notice.ccb_reviewed_by  = user
+        change_notice.ccb_reviewed_at  = now
+        change_notice.save(update_fields=[
+            'status', 'rejection_stage', 'ccb_notes', 'ccb_reviewed_by', 'ccb_reviewed_at',
+        ])
+
+    _write_audit(
+        actor=user,
+        action='ECN_REJECTED_PRE_CCB',
+        ecn=change_notice,
+        old_status=old_status,
+        new_status=change_notice.status,
+    )
+    if send_notifications:
+        _notify_silently('notify_ecn_rejected_before_ccb', change_notice)
+        try:
+            from notifications.inbox import notify_ecn_outcome_inapp
+            notify_ecn_outcome_inapp(change_notice, approved=False)
         except Exception:
             pass
 
@@ -1354,7 +1444,7 @@ def _notify_silently(func_name, change_notice):
         pass
 
 
-def _write_audit(actor, action, ecn, old_status, new_status):
+def _write_audit(actor, action, ecn, old_status, new_status, extra_metadata=None):
     """
     Scrive un AuditLog per una transizione ECN.
 
@@ -1362,6 +1452,9 @@ def _write_audit(actor, action, ecn, old_status, new_status):
     gli eventi ECN appaiono automaticamente nello storico documento
     (la query AuditLog.objects.filter(changes__document_id=doc.pk)
     già esistente nelle views li cattura senza modifiche).
+
+    extra_metadata: dict opzionale di campi aggiuntivi da unire ai metadata
+    standard (es. coordinator_id assegnato in creazione).
     """
     try:
         from auditlog.services import create_audit_log
@@ -1385,6 +1478,9 @@ def _write_audit(actor, action, ecn, old_status, new_status):
             metadata['applicability_category'] = ecn.applicability_category
             if ecn.applicability_detail:
                 metadata['applicability_detail'] = ecn.applicability_detail
+
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         create_audit_log(
             user=actor,

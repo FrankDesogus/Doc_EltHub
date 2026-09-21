@@ -212,6 +212,8 @@ class Command(BaseCommand):
                 description=f'Descrizione demo ECN {code}.',
                 motivation_detail='Adeguamento tecnico demo.',
                 code=code,
+                ccb_coordinator=supervisor,
+                send_notifications=False,
             )
 
         def _make_companion_document(suffix, title_suffix):
@@ -338,6 +340,21 @@ class Command(BaseCommand):
             f'dopo l\'approvazione di Rev. 01 di {BASE_CODE}.'
         )
 
+        # ECN-S-07: REJECTED prima della CCB (dal responsabile ECN, mai
+        # convocata nessuna CCB — a differenza di ECN-S-05, rifiutato invece
+        # dopo l'invio alla CCB).
+        from ecn.services import reject_change_notice_before_ccb
+        doc_pre_ccb = _make_companion_document('PRECCB', 'Demo ECN rifiutato pre-CCB')
+        ecn_pre_ccb = _make_ecn(
+            'ECN-S-07', 'Richiesta non giustificata (REJECTED pre-CCB)', on_document=doc_pre_ccb,
+        )
+        reject_change_notice_before_ccb(
+            ecn_pre_ccb, supervisor,
+            reason='Richiesta priva di analisi di impatto: da ripresentare con dati sufficienti.',
+            send_notifications=False,
+        )
+        self._step('ECN-S-07: stato REJECTED — rifiutato dal responsabile prima della convocazione CCB.')
+
     # ──────────────────────────────────────────────────────────────────────
     # Scenario 4 — ECN che origina una revisione (mostra "ECN di origine")
     # ──────────────────────────────────────────────────────────────────────
@@ -383,6 +400,8 @@ class Command(BaseCommand):
             description='Non conformità NC-2026-017: metodo calibrazione obsoleto.',
             motivation_detail='Adeguamento a norma ISO 9001:2015.',
             code='ECN-EXEC-001',
+            ccb_coordinator=supervisor,
+            send_notifications=False,
         )
         configure_ccb(ecn, actor=supervisor, users=[supervisor, ccb_member],
                       policy='all', coordinator=supervisor,
@@ -476,6 +495,8 @@ class Command(BaseCommand):
             title='Aggiornamento sezione 5 — procedura demo',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
             code='ECN-PENDING-001',
+            ccb_coordinator=supervisor,
+            send_notifications=False,
         )
         configure_ccb(ecn, actor=supervisor, users=[supervisor], policy='any',
                       coordinator=supervisor, send_notifications=False)
@@ -556,6 +577,8 @@ class Command(BaseCommand):
             title='Aggiornamento sezione 2 — solo standard consentito',
             motivation=ChangeNotice.Motivation.IMPROVEMENT,
             code='ECN-NOSIMPLE-001',
+            ccb_coordinator=supervisor,
+            send_notifications=False,
         )
         configure_ccb(ecn, actor=supervisor, users=[supervisor], policy='any',
                       coordinator=supervisor, send_notifications=False)

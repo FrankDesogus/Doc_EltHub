@@ -7,11 +7,36 @@ from auditlog.historical_forms import SanatoriaFieldsMixin
 from ecn.models import ChangeNotice
 
 
+def _ecn_responsible_queryset():
+    """
+    Utenti selezionabili come "Responsabile ECN" alla richiesta: Quality
+    Manager + Quality Operator (unica eccezione concordata alla regola
+    generale "nessuna selezione di persone qui, solo alla configurazione
+    CCB" — il responsabile va indicato subito perché può rifiutare la
+    richiesta prima ancora di convocare la CCB, vedi
+    reject_change_notice_before_ccb).
+    """
+    from documents.permissions import GROUP_QUALITY_MANAGER, GROUP_QUALITY_OPERATOR
+
+    return User.objects.filter(
+        groups__name__in=[GROUP_QUALITY_MANAGER, GROUP_QUALITY_OPERATOR],
+        is_active=True,
+    ).distinct().order_by('last_name', 'first_name', 'username')
+
+
 class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
     """Form per la creazione di un nuovo ECN da parte del proponente.
 
-    Non include la selezione degli approvatori CCB: quella è responsabilità
-    del Responsabile Qualità / Document Manager, tramite ChangeNoticeCCBConfigForm.
+    Include un'eccezione alla regola generale sotto: il Responsabile ECN
+    (ccb_coordinator) va scelto già qui, obbligatoriamente, tra Quality
+    Manager e Quality Operator — perché con più responsabili qualità
+    disponibili nessuno è "il" responsabile di una specifica ECN finché non
+    viene indicato esplicitamente, e perché quella persona può rifiutare la
+    richiesta prima ancora di convocare la CCB (reject_change_notice_before_ccb).
+
+    Non include la selezione degli approvatori/membri CCB: quella resta
+    responsabilità del Responsabile Qualità, tramite ChangeNoticeCCBConfigForm
+    (il responsabile può comunque essere riassegnato più avanti da lì).
 
     Non include l'applicabilità: è una valutazione della CCB, compilata nel
     dossier istruttorio (ChangeNoticeDossierForm) dal responsabile
@@ -31,6 +56,15 @@ class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
         label='Titolo',
         help_text='Titolo breve e descrittivo della variante proposta.',
     )
+    ccb_coordinator = forms.ModelChoiceField(
+        queryset=User.objects.none(),
+        label='Responsabile ECN',
+        empty_label='— seleziona responsabile —',
+        help_text=(
+            'Chi valuterà questa richiesta e, se necessario, convocherà la CCB. '
+            'Può rifiutarla direttamente prima di convocare la CCB.'
+        ),
+    )
     motivation = forms.ChoiceField(
         choices=ChangeNotice.Motivation.choices,
         label='Categoria motivazione',
@@ -47,6 +81,10 @@ class ChangeNoticeForm(SanatoriaFieldsMixin, forms.Form):
         label='Descrizione modifica proposta',
         help_text='Descrizione della modifica tecnica proposta.',
     )
+
+    def __init__(self, *args, current_user=None, **kwargs):
+        super().__init__(*args, current_user=current_user, **kwargs)
+        self.fields['ccb_coordinator'].queryset = _ecn_responsible_queryset()
 
 
 class SimpleEcnForm(forms.Form):
@@ -239,6 +277,26 @@ class ChangeNoticeReviewForm(SanatoriaFieldsMixin, forms.Form):
                 'Il motivo del rifiuto è obbligatorio.',
             )
         return cleaned
+
+
+class ChangeNoticeRejectBeforeCCBForm(SanatoriaFieldsMixin, forms.Form):
+    """
+    Form di rifiuto del Responsabile ECN prima della convocazione della CCB
+    (nessuna votazione, nessun dossier): solo motivo obbligatorio ed
+    eventuale nota libera aggiuntiva. Vedi
+    ecn.services.reject_change_notice_before_ccb.
+    """
+
+    reason = forms.CharField(
+        widget=forms.Textarea(attrs={'rows': 3}),
+        label='Motivo del rifiuto',
+        help_text='Obbligatorio: perché questa richiesta non deve proseguire alla CCB.',
+    )
+    comment = forms.CharField(
+        widget=forms.Textarea(attrs={'rows': 2}),
+        required=False,
+        label='Nota aggiuntiva',
+    )
 
 
 # ---------------------------------------------------------------------------

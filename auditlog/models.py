@@ -128,6 +128,7 @@ class HistoricalRecord(models.Model):
         ECN_VOTE_REJECTED    = 'ecn_vote_rejected',    'Voto CCB: rifiutato'
         ECN_APPROVED         = 'ecn_approved',         'ECN approvata dalla CCB'
         ECN_REJECTED         = 'ecn_rejected',         'ECN rifiutata dalla CCB'
+        ECN_REJECTED_PRE_CCB = 'ecn_rejected_pre_ccb', 'ECN rifiutata prima della CCB'
         ECN_EXECUTED         = 'ecn_executed',         'ECN eseguita'
         ECN_CLOSED           = 'ecn_closed',           'ECN chiusa'
         # Progetti

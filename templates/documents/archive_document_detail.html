@@ -38,11 +38,11 @@
   </div>
 </div>
 
-<!-- Versione corrente -->
+<!-- Revisione corrente -->
 {% if document.current_version %}
 <div class="card mb-4">
   <div class="card-header flex items-center justify-between">
-    <h2 class="section-title mb-0">Versione corrente — Rev. {{ document.current_version.revision_label }}</h2>
+    <h2 class="section-title mb-0">Revisione corrente — Rev. {{ document.current_version.revision_label }}</h2>
     {% if document.current_version.file %}
     <a href="{% url 'version_download' document.current_version.pk %}" class="btn-secondary btn-sm">⬇ Scarica</a>
     {% endif %}
@@ -186,9 +186,9 @@
             {% if ecn.status == 'draft' %}<span class="badge-ecn-draft">Bozza</span>
             {% elif ecn.status == 'ccb_preparation' %}<span class="badge-ecn-ccb_prep">Istruttoria CCB</span>
             {% elif ecn.status == 'under_review' %}<span class="badge-ecn-under_review">In Valutazione CCB</span>
-            {% elif ecn.status == 'approved' %}<span class="badge-ecn-approved">Approvata</span>
-            {% elif ecn.status == 'rejected' %}<span class="badge-ecn-rejected">Rifiutata</span>
-            {% elif ecn.status == 'closed' %}<span class="badge-ecn-closed">Chiusa</span>
+            {% elif ecn.status == 'approved' %}<span class="badge-ecn-approved">Approvato</span>
+            {% elif ecn.status == 'rejected' %}<span class="badge-ecn-rejected">Rifiutato</span>
+            {% elif ecn.status == 'closed' %}<span class="badge-ecn-closed">Chiuso</span>
             {% else %}<span class="badge-ecn-draft">{{ ecn.get_status_display }}</span>
             {% endif %}
           </td>

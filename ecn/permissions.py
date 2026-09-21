@@ -222,6 +222,32 @@ def can_compile_dossier(user, change_notice):
     return False
 
 
+def can_reject_ecn_before_ccb(user, change_notice):
+    """
+    Può rifiutare l'ECN prima di convocare la CCB (nessuna votazione):
+      - superuser
+      - ccb_coordinator (responsabile ECN assegnato) — e SOLO lui: a
+        differenza di can_compile_dossier, un Quality Manager generico non
+        assegnato come responsabile di QUESTA specifica ECN non basta. È
+        un potere personale del responsabile designato, non di governance
+        generica (deciso esplicitamente con l'operatore).
+
+    Consentito solo in stato DRAFT o CCB_PREPARATION — dopo l'invio alla
+    CCB (UNDER_REVIEW+) il rifiuto passa solo da reject_change_notice.
+    """
+    if not user.is_authenticated:
+        return False
+    from ecn.models import ChangeNotice
+    if change_notice.status not in (
+        ChangeNotice.Status.DRAFT,
+        ChangeNotice.Status.CCB_PREPARATION,
+    ):
+        return False
+    if user.is_superuser:
+        return True
+    return bool(change_notice.ccb_coordinator_id) and change_notice.ccb_coordinator_id == user.pk
+
+
 def can_edit_ecn(user, change_notice):
     """
     Può modificare i dati base (solo DRAFT):
