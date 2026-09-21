@@ -129,8 +129,13 @@ Prima di iniziare nuovi task, leggere `PROJECT_HANDOFF.md` per il checkpoint cor
 La modalità sanatoria è una funzionalità opzionale per il backfill di dati storici.
 Non modifica il workflow live. Non invia notifiche. Non usa firma digitale.
 
-Attivazione: variabile d'ambiente `DOCUMENTALE_DEMO_MODE=true`.
-Accesso: solo utenti con `is_demo_supervisor=True` (o `is_superuser` con username `supervisor_demo`).
+Attivazione: variabile d'ambiente `DOCUMENTALE_DEMO_MODE=true` (interruttore di
+sistema, richiede riavvio del servizio — non modificabile da UI).
+Accesso, con l'interruttore attivo: utenti con il permesso Django individuale
+`auditlog.can_use_sanatoria` (assegnabile per singolo utente da Django Admin →
+utente → "Permessi utente", nessun gruppo necessario), automaticamente vero
+per i superuser, oppure — percorso legacy mantenuto per compatibilità — utenti
+con username `supervisor_demo` quando `is_demo_supervisor()` è vero.
 Controllo: `can_use_sanatoria(user)` in `auditlog/permissions.py`.
 
 Principio:

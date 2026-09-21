@@ -244,6 +244,9 @@ class HistoricalRecord(models.Model):
             models.Index(fields=['historical_date']),
             models.Index(fields=['is_verified']),
         ]
+        permissions = [
+            ('can_use_sanatoria', 'Può registrare sanatoria storica'),
+        ]
 
     def __str__(self):
         actor = (

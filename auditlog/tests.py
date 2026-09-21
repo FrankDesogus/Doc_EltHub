@@ -298,16 +298,43 @@ class SanatoriaPermissionsTests(TestCase):
         DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='supervisor_demo',
     )
     def test_can_use_sanatoria_demo_mode_on_superuser(self):
-        """Demo mode ON + superuser ordinario (non supervisor_demo) → False."""
-        self.assertFalse(can_use_sanatoria(self.superuser))
+        """Demo mode ON + superuser ordinario (non supervisor_demo) → True.
+
+        Un superuser ottiene automaticamente ogni permesso Django, incluso
+        'auditlog.can_use_sanatoria' — coerente con il bypass totale che
+        i superuser hanno già ovunque nell'app (documents/ecn/projects).
+        """
+        self.assertTrue(can_use_sanatoria(self.superuser))
 
     @override_settings(
         DOCUMENTALE_DEMO_MODE=True,
         DOCUMENTALE_DEMO_SUPERVISOR_USERNAME='supervisor_demo',
     )
     def test_can_use_sanatoria_demo_mode_on_qm(self):
-        """Demo mode ON + Quality Manager → False (non è supervisor_demo)."""
+        """Demo mode ON + Quality Manager senza permesso individuale → False."""
         self.assertFalse(can_use_sanatoria(self.qm_user))
+
+    @override_settings(DOCUMENTALE_DEMO_MODE=True)
+    def test_can_use_sanatoria_via_individual_permission(self):
+        """Demo mode ON + permesso individuale assegnato → True, anche senza
+        essere supervisor_demo né superuser."""
+        from django.contrib.auth.models import Permission
+        perm = Permission.objects.get(
+            codename='can_use_sanatoria', content_type__app_label='auditlog',
+        )
+        self.normal_user.user_permissions.add(perm)
+        self.assertTrue(can_use_sanatoria(self.normal_user))
+
+    def test_can_use_sanatoria_individual_permission_but_demo_mode_off(self):
+        """Il permesso individuale da solo non basta: serve anche
+        DOCUMENTALE_DEMO_MODE=true."""
+        from django.contrib.auth.models import Permission
+        perm = Permission.objects.get(
+            codename='can_use_sanatoria', content_type__app_label='auditlog',
+        )
+        self.normal_user.user_permissions.add(perm)
+        with override_settings(DOCUMENTALE_DEMO_MODE=False):
+            self.assertFalse(can_use_sanatoria(self.normal_user))
 
     # --- can_view_historical_records ---
 
